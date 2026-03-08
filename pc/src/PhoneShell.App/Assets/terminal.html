@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0e1116; }
+  #terminal { width: 100%; height: 100%; }
+</style>
+<link rel="stylesheet" href="xterm.min.css" />
+<script src="xterm.min.js"></script>
+<script src="addon-fit.min.js"></script>
+</head>
+<body>
+<div id="terminal"></div>
+<script>
+  var term = new Terminal({
+    cursorBlink: true,
+    fontSize: 14,
+    fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
+    theme: { background: '#0e1116', foreground: '#e6e6e6', cursor: '#e6e6e6' }
+  });
+
+  var fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(document.getElementById('terminal'));
+  fitAddon.fit();
+
+  window.writeTerminal = function(data) {
+    term.write(data);
+  };
+
+  window.resetTerminal = function() {
+    term.reset();
+  };
+
+  window.getScreenSnapshot = function() {
+    var buf = term.buffer.active;
+    var lines = [];
+    var startLine = buf.baseY;
+    for (var i = 0; i < term.rows; i++) {
+      var line = buf.getLine(startLine + i);
+      lines.push(line ? line.translateToString(true) : '');
+    }
+    while (lines.length > 0 && lines[lines.length - 1] === '') {
+      lines.pop();
+    }
+    // Detect buffer type: prefer buf.type, fallback to identity check
+    var bufType = buf.type;
+    if (!bufType) {
+      bufType = (buf === term.buffer.alternate) ? 'alternate' : 'normal';
+    }
+    return JSON.stringify({
+      type: bufType,
+      cursorX: buf.cursorX,
+      cursorY: buf.cursorY,
+      cols: term.cols,
+      rows: term.rows,
+      lines: lines
+    });
+  };
+
+  if (window.chrome && window.chrome.webview) {
+    term.onData(function(data) {
+      window.chrome.webview.postMessage(JSON.stringify({ type: 'input', data: data }));
+    });
+
+    function sendResize() {
+      fitAddon.fit();
+      window.chrome.webview.postMessage(JSON.stringify({
+        type: 'resize', cols: term.cols, rows: term.rows
+      }));
+    }
+
+    new ResizeObserver(sendResize).observe(document.getElementById('terminal'));
+    setTimeout(sendResize, 200);
+  }
+</script>
+</body>
+</html>

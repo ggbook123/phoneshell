@@ -1,0 +1,9 @@
+<Application x:Class="PhoneShell.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:utils="clr-namespace:PhoneShell.Utilities">
+    <Application.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisConverter" />
+        <utils:InvertBoolConverter x:Key="InvertBoolConverter" />
+    </Application.Resources>
+</Application>
