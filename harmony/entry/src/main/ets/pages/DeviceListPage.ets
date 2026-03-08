@@ -1,7 +1,11 @@
 import { LengthMetrics } from '@kit.ArkUI';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppColors, AppSizes, AppStrings, ConnectionState } from '../common/Constants';
 import { WebSocketService } from '../services/WebSocketService';
 import { DeviceInfo } from '../models/MessageTypes';
+
+const DOMAIN = 0x0000;
+const PAGE_TAG = 'DeviceListPage';
 
 @Entry
 @Component
@@ -11,6 +15,43 @@ struct DeviceListPage {
   @State isRefreshing: boolean = false;
   private stateListenerId: number = -1;
   private messageListenerId: number = -1;
+
+  private normalizeString(value: string | undefined | null, fallback: string = ''): string {
+    if (typeof value === 'string') {
+      return value;
+    }
+    return fallback;
+  }
+
+  private getDeviceId(device: DeviceInfo): string {
+    return this.normalizeString(device.deviceId);
+  }
+
+  private getDeviceDisplayName(device: DeviceInfo): string {
+    const deviceId: string = this.getDeviceId(device);
+    return this.normalizeString(device.displayName, deviceId.length > 0 ? deviceId : 'Unknown device');
+  }
+
+  private getDeviceOs(device: DeviceInfo): string {
+    return this.normalizeString(device.os, 'Unknown');
+  }
+
+  private getAvailableShells(device: DeviceInfo): Array<string> {
+    const rawShells: Array<string> | undefined = device.availableShells as Array<string> | undefined;
+    if (!Array.isArray(rawShells)) {
+      return [];
+    }
+
+    let normalized: Array<string> = [];
+    for (let i: number = 0; i < rawShells.length; i++) {
+      const shell: string | undefined = rawShells[i];
+      if (typeof shell === 'string' && shell.length > 0) {
+        normalized.push(shell as string);
+      }
+    }
+
+    return normalized;
+  }
 
   aboutToAppear(): void {
     this.activatePage();
@@ -45,16 +86,21 @@ struct DeviceListPage {
     if (this.messageListenerId === -1) {
       this.messageListenerId = WebSocketService.addOnMessage((type: string, data: Record<string, Object>) => {
         if (type === 'device.list') {
-          const devicesData: Object | undefined = data['devices'];
-          if (devicesData !== undefined && devicesData !== null) {
-            this.devices = devicesData as Array<DeviceInfo>;
-          }
+          this.devices = WebSocketService.getCachedDevices();
           this.isRefreshing = false;
         } else if (type === 'terminal.opened') {
           const sessionId: Object | undefined = data['sessionId'];
           const deviceId: Object | undefined = data['deviceId'];
-          if (sessionId !== undefined && sessionId !== null) {
-            WebSocketService.setActiveSession(deviceId as string, sessionId as string);
+          const resolvedSessionId: string =
+            (typeof sessionId === 'string' && sessionId.length > 0) ? sessionId as string : '';
+          const resolvedDeviceId: string =
+            (typeof deviceId === 'string' && deviceId.length > 0)
+              ? deviceId as string
+              : WebSocketService.getActiveDeviceId();
+          if (resolvedSessionId.length > 0) {
+            hilog.info(DOMAIN, PAGE_TAG, 'terminal.opened session=%{public}s device=%{public}s',
+              resolvedSessionId, resolvedDeviceId);
+            WebSocketService.setActiveSession(resolvedDeviceId, resolvedSessionId);
             this.getUIContext().getRouter().pushUrl({ url: 'pages/TerminalPage' });
           }
         } else if (type === 'error') {
@@ -90,12 +136,18 @@ struct DeviceListPage {
     if (!device.isOnline) {
       return;
     }
+    const deviceId: string = this.getDeviceId(device);
+    if (deviceId.length === 0) {
+      return;
+    }
     // Open first available shell by default
     let shellId: string = '';
-    if (device.availableShells.length > 0) {
-      shellId = device.availableShells[0];
+    const availableShells: Array<string> = this.getAvailableShells(device);
+    if (availableShells.length > 0) {
+      shellId = availableShells[0];
     }
-    WebSocketService.openTerminal(device.deviceId, shellId);
+    hilog.info(DOMAIN, PAGE_TAG, 'openTerminal device=%{public}s shell=%{public}s', deviceId, shellId);
+    WebSocketService.openTerminal(deviceId, shellId);
   }
 
   private getOsIcon(os: string): string {
@@ -189,7 +241,7 @@ struct DeviceListPage {
               ListItem() {
                 this.DeviceCard(device)
               }
-            }, (device: DeviceInfo) => device.deviceId)
+            }, (device: DeviceInfo, index: number) => `${this.getDeviceId(device)}_${index}`)
           }
           .width('100%')
           .padding({
@@ -215,19 +267,19 @@ struct DeviceListPage {
     Column() {
       Row() {
         // OS icon + device name
-        Text(this.getOsIcon(device.os))
+        Text(this.getOsIcon(this.getDeviceOs(device)))
           .fontSize(24)
           .margin({ right: 12 })
 
         Column() {
-          Text(device.displayName)
+          Text(this.getDeviceDisplayName(device))
             .fontSize(AppSizes.FONT_SIZE_BODY)
             .fontColor(AppColors.TEXT_PRIMARY)
             .fontWeight(FontWeight.Medium)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-          Text(device.os)
+          Text(this.getDeviceOs(device))
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.TEXT_SECONDARY)
             .margin({ top: 4 })
@@ -251,9 +303,9 @@ struct DeviceListPage {
       .width('100%')
 
       // Available shells as tags
-      if (device.availableShells.length > 0) {
+      if (this.getAvailableShells(device).length > 0) {
         Flex({ wrap: FlexWrap.Wrap, space: { main: new LengthMetrics(8), cross: new LengthMetrics(8) } }) {
-          ForEach(device.availableShells, (shell: string) => {
+          ForEach(this.getAvailableShells(device), (shell: string) => {
             Text(shell)
               .fontSize(12)
               .fontColor(AppColors.ACCENT)

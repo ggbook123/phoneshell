@@ -1,6 +1,10 @@
 import { webview } from '@kit.ArkWeb';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppColors, AppSizes, AppStrings, ConnectionState } from '../common/Constants';
 import { WebSocketService } from '../services/WebSocketService';
+
+const DOMAIN = 0x0000;
+const PAGE_TAG = 'TerminalPage';
 
 interface ShortcutKey {
   label: string;
@@ -47,6 +51,21 @@ struct TerminalPage {
   private lastReportedCols: number = 0;
   private lastReportedRows: number = 0;
 
+  private normalizeString(value: string | undefined | null, fallback: string = ''): string {
+    if (typeof value === 'string') {
+      return value;
+    }
+    return fallback;
+  }
+
+  private getMessageString(data: Record<string, Object>, key: string, fallback: string = ''): string {
+    const value: Object | undefined = data[key];
+    if (typeof value === 'string') {
+      return value as string;
+    }
+    return fallback;
+  }
+
   private shortcutKeys: Array<ShortcutKey> = [
     { label: 'Ctrl+C', data: '\x03' } as ShortcutKey,
     { label: 'Ctrl+D', data: '\x04' } as ShortcutKey,
@@ -62,22 +81,28 @@ struct TerminalPage {
   ];
 
   aboutToAppear(): void {
+    hilog.info(DOMAIN, PAGE_TAG, 'aboutToAppear');
     this.activatePage();
   }
 
   aboutToDisappear(): void {
+    hilog.warn(DOMAIN, PAGE_TAG, 'aboutToDisappear sessionActive=%{public}s',
+      this.sessionActive ? 'true' : 'false');
     this.deactivatePage();
 
     if (this.sessionActive) {
+      hilog.warn(DOMAIN, PAGE_TAG, 'aboutToDisappear -> closeTerminal');
       WebSocketService.closeTerminal();
     }
   }
 
   onPageShow(): void {
+    hilog.info(DOMAIN, PAGE_TAG, 'onPageShow');
     this.activatePage();
   }
 
   onPageHide(): void {
+    hilog.warn(DOMAIN, PAGE_TAG, 'onPageHide');
     this.deactivatePage();
   }
 
@@ -94,6 +119,8 @@ struct TerminalPage {
 
     this.connectionState = WebSocketService.getConnectionState();
     this.sessionActive = WebSocketService.getActiveSessionId().length > 0;
+    hilog.info(DOMAIN, PAGE_TAG, 'activatePage connected=%{public}d sessionActive=%{public}s session=%{public}s',
+      this.connectionState, this.sessionActive ? 'true' : 'false', WebSocketService.getActiveSessionId());
 
     if (!this.seededCachedOutput) {
       this.seededCachedOutput = true;
@@ -102,6 +129,7 @@ struct TerminalPage {
 
     if (this.stateListenerId === -1) {
       this.stateListenerId = WebSocketService.addOnStateChange((state: ConnectionState) => {
+        hilog.info(DOMAIN, PAGE_TAG, 'state listener %{public}d', state);
         this.connectionState = state;
         if (state === ConnectionState.DISCONNECTED) {
           this.sessionActive = false;
@@ -112,17 +140,14 @@ struct TerminalPage {
 
     if (this.messageListenerId === -1) {
       this.messageListenerId = WebSocketService.addOnMessage((type: string, data: Record<string, Object>) => {
+        hilog.info(DOMAIN, PAGE_TAG, 'message listener %{public}s', type);
         if (type === 'terminal.output') {
-          const outputData: Object | undefined = data['data'];
-          if (outputData !== undefined && outputData !== null) {
-            this.enqueueTerminalOutput(outputData as string);
-          }
+          this.enqueueTerminalOutput(this.getMessageString(data, 'data'));
         } else if (type === 'terminal.closed') {
           this.sessionActive = false;
           this.terminalHint = '终端已断开';
         } else if (type === 'error') {
-          const msgValue: Object | undefined = data['message'];
-          const errorMsg: string = (msgValue !== undefined && msgValue !== null) ? msgValue as string : 'Error';
+          const errorMsg: string = this.getMessageString(data, 'message', 'Error');
           this.enqueueTerminalOutput(`\r\n[错误] ${errorMsg}\r\n`);
         }
       });
@@ -147,11 +172,12 @@ struct TerminalPage {
   }
 
   private enqueueTerminalOutput(data: string): void {
-    if (data.length === 0) {
+    const output: string = this.normalizeString(data);
+    if (output.length === 0) {
       return;
     }
 
-    this.pendingTerminalOutput += data;
+    this.pendingTerminalOutput += output;
     if (this.pendingTerminalOutput.length > this.maxOutputLength) {
       this.pendingTerminalOutput = this.pendingTerminalOutput.substring(
         this.pendingTerminalOutput.length - this.maxOutputLength
@@ -215,6 +241,7 @@ struct TerminalPage {
 
   private sendInput(): void {
     const text: string = this.inputText;
+    hilog.info(DOMAIN, PAGE_TAG, 'sendInput textLen=%{public}d', text.length);
     if (text.length === 0) {
       WebSocketService.sendTerminalInput('\r');
       return;

@@ -3,34 +3,210 @@
 <head>
 <meta charset="utf-8" />
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0e1116; }
-  #terminal { width: 100%; height: 100%; }
+  :root {
+    --app-surface: #f1f3f5;
+    --terminal-bg: #0e1116;
+    --terminal-shadow: rgba(15, 23, 42, 0.14);
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    background: var(--app-surface);
+  }
+
+  #terminalHost {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: stretch;
+    justify-content: stretch;
+    overflow: hidden;
+    box-sizing: border-box;
+    padding: 16px;
+    background: var(--app-surface);
+  }
+
+  #terminalHost.geometry-locked {
+    align-items: center;
+    justify-content: center;
+  }
+
+  #terminal {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    box-sizing: border-box;
+    overflow: hidden;
+    background: var(--terminal-bg);
+    border-radius: 10px;
+    box-shadow: 0 10px 24px var(--terminal-shadow);
+  }
+
+  #terminalHost.geometry-locked #terminal {
+    flex: 0 0 auto;
+  }
+
+  #terminalHost:not(.geometry-locked) #terminal {
+    flex: 1 1 auto;
+  }
+
+  .xterm,
+  .xterm .xterm-viewport {
+    background-color: var(--terminal-bg) !important;
+  }
 </style>
 <link rel="stylesheet" href="xterm.min.css" />
 <script src="xterm.min.js"></script>
 <script src="addon-fit.min.js"></script>
 </head>
 <body>
-<div id="terminal"></div>
+<div id="terminalHost">
+  <div id="terminal"></div>
+</div>
 <script>
+  var terminalHost = document.getElementById('terminalHost');
+  var terminalElement = document.getElementById('terminal');
+  var defaultScrollback = 2000;
   var term = new Terminal({
     cursorBlink: true,
     fontSize: 14,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
+    scrollback: defaultScrollback,
     theme: { background: '#0e1116', foreground: '#e6e6e6', cursor: '#e6e6e6' }
   });
 
   var fitAddon = new FitAddon.FitAddon();
+  var manualGeometryLock = false;
+  var lastReportedCols = 0;
+  var lastReportedRows = 0;
+
   term.loadAddon(fitAddon);
-  term.open(document.getElementById('terminal'));
+  term.open(terminalElement);
   fitAddon.fit();
 
+  function syncHostLayout() {
+    if (manualGeometryLock) {
+      terminalHost.classList.add('geometry-locked');
+      term.options.scrollback = 0;
+      return;
+    }
+
+    terminalHost.classList.remove('geometry-locked');
+    if (term.options.scrollback !== defaultScrollback) {
+      term.options.scrollback = defaultScrollback;
+    }
+  }
+
+  function stabilizeViewport() {
+    if (typeof term.clearTextureAtlas === 'function') {
+      term.clearTextureAtlas();
+    }
+
+    term.scrollToBottom();
+    term.refresh(0, Math.max(0, term.rows - 1));
+  }
+
+  function postResize(cols, rows, force) {
+    if (!(window.chrome && window.chrome.webview)) {
+      return;
+    }
+
+    if (!force && cols === lastReportedCols && rows === lastReportedRows) {
+      return;
+    }
+
+    lastReportedCols = cols;
+    lastReportedRows = rows;
+    window.chrome.webview.postMessage(JSON.stringify({
+      type: 'resize', cols: cols, rows: rows
+    }));
+  }
+
+  function fitAndNotify(force) {
+    if (manualGeometryLock) {
+      return;
+    }
+
+    syncHostLayout();
+    terminalElement.style.width = '100%';
+    terminalElement.style.height = '100%';
+    fitAddon.fit();
+    stabilizeViewport();
+
+    if (term.cols > 0 && term.rows > 0) {
+      postResize(term.cols, term.rows, force === true);
+    }
+  }
+
+  function getCellMetrics() {
+    if (!term._core || !term._core._renderService || !term._core._renderService.dimensions) {
+      return null;
+    }
+
+    var cell = term._core._renderService.dimensions.css.cell;
+    if (!cell || !cell.width || !cell.height) {
+      return null;
+    }
+
+    return cell;
+  }
+
+  function setManualGeometry(cols, rows) {
+    manualGeometryLock = true;
+    syncHostLayout();
+
+    var cell = getCellMetrics();
+    if (cell) {
+      var computed = window.getComputedStyle(terminalElement);
+      var paddingX = parseInt(computed.getPropertyValue('padding-left') || '0', 10) +
+        parseInt(computed.getPropertyValue('padding-right') || '0', 10);
+      var paddingY = parseInt(computed.getPropertyValue('padding-top') || '0', 10) +
+        parseInt(computed.getPropertyValue('padding-bottom') || '0', 10);
+      var scrollBarWidth = 0;
+
+      if (term._core && term._core.viewport && typeof term._core.viewport.scrollBarWidth === 'number') {
+        scrollBarWidth = term._core.viewport.scrollBarWidth;
+      }
+
+      terminalElement.style.width = Math.ceil(cols * cell.width + paddingX + scrollBarWidth) + 'px';
+      terminalElement.style.height = Math.ceil(rows * cell.height + paddingY) + 'px';
+    }
+
+    if (term.cols !== cols || term.rows !== rows) {
+      term.resize(cols, rows);
+    }
+
+    lastReportedCols = cols;
+    lastReportedRows = rows;
+    stabilizeViewport();
+  }
+
   window.writeTerminal = function(data) {
-    term.write(data);
+    term.write(data, function() {
+      if (manualGeometryLock) {
+        stabilizeViewport();
+      }
+    });
   };
 
   window.resetTerminal = function() {
     term.reset();
+  };
+
+  window.setTerminalGeometry = function(cols, rows) {
+    if (cols > 0 && rows > 0) {
+      setManualGeometry(cols, rows);
+    }
+  };
+
+  window.fitTerminalToContainer = function() {
+    manualGeometryLock = false;
+    syncHostLayout();
+    fitAndNotify(true);
   };
 
   window.getScreenSnapshot = function() {
@@ -64,16 +240,16 @@
       window.chrome.webview.postMessage(JSON.stringify({ type: 'input', data: data }));
     });
 
-    function sendResize() {
-      fitAddon.fit();
-      window.chrome.webview.postMessage(JSON.stringify({
-        type: 'resize', cols: term.cols, rows: term.rows
-      }));
-    }
+    new ResizeObserver(function() {
+      fitAndNotify(false);
+    }).observe(terminalHost);
 
-    new ResizeObserver(sendResize).observe(document.getElementById('terminal'));
-    setTimeout(sendResize, 200);
+    setTimeout(function() {
+      fitAndNotify(true);
+    }, 200);
   }
+
+  syncHostLayout();
 </script>
 </body>
 </html>

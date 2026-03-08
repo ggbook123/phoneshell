@@ -24,6 +24,8 @@ public partial class MainWindow : Window
         _viewModel.ExecuteTerminalCommand = cmd => _viewModel.TerminalManager.WriteInput(cmd);
         _viewModel.TerminalOutputForwarded += OnTerminalOutputForwarded;
         _viewModel.TerminalRestarted += OnTerminalRestarted;
+        _viewModel.TerminalViewportLockRequested += OnTerminalViewportLockRequested;
+        _viewModel.TerminalViewportAutoFitRequested += OnTerminalViewportAutoFitRequested;
         _viewModel.ChatMessages.CollectionChanged += ChatMessages_CollectionChanged;
 
         Loaded += MainWindow_Loaded;
@@ -67,11 +69,32 @@ public partial class MainWindow : Window
                 var rows = root.GetProperty("rows").GetInt32();
                 if (cols > 0 && rows > 0)
                 {
-                    _viewModel.ApplyTerminalSize(cols, rows, startIfNeeded: true);
-                    _viewModel.SessionStatus = "Running";
+                    _viewModel.HandleLocalViewportResize(cols, rows);
                 }
                 break;
         }
+    }
+
+    private void OnTerminalViewportLockRequested(int cols, int rows)
+    {
+        if (!_webViewReady) return;
+
+        Dispatcher.InvokeAsync(() =>
+        {
+            TerminalWebView.CoreWebView2.ExecuteScriptAsync(
+                $"window.setTerminalGeometry && window.setTerminalGeometry({cols}, {rows})");
+        });
+    }
+
+    private void OnTerminalViewportAutoFitRequested()
+    {
+        if (!_webViewReady) return;
+
+        Dispatcher.InvokeAsync(() =>
+        {
+            TerminalWebView.CoreWebView2.ExecuteScriptAsync(
+                "window.fitTerminalToContainer && window.fitTerminalToContainer()");
+        });
     }
 
     /// <summary>
@@ -138,6 +161,8 @@ public partial class MainWindow : Window
     {
         _viewModel.TerminalOutputForwarded -= OnTerminalOutputForwarded;
         _viewModel.TerminalRestarted -= OnTerminalRestarted;
+        _viewModel.TerminalViewportLockRequested -= OnTerminalViewportLockRequested;
+        _viewModel.TerminalViewportAutoFitRequested -= OnTerminalViewportAutoFitRequested;
         _viewModel.Dispose();
         base.OnClosed(e);
     }

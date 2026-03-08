@@ -12,6 +12,7 @@ public sealed class RelayClient : IDisposable
 {
     private ClientWebSocket? _ws;
     private CancellationTokenSource? _cts;
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
     private bool _disposed;
     private string _serverUrl = string.Empty;
     private int _reconnectDelayMs = 3000;
@@ -150,6 +151,7 @@ public sealed class RelayClient : IDisposable
     private async Task ReceiveLoopAsync(CancellationToken ct)
     {
         var buffer = new byte[8192];
+        using var messageBuffer = new MemoryStream();
 
         while (_ws?.State == WebSocketState.Open && !ct.IsCancellationRequested)
         {
@@ -161,9 +163,18 @@ public sealed class RelayClient : IDisposable
                 break;
             }
 
-            if (result.MessageType == WebSocketMessageType.Text)
+            if (result.MessageType == WebSocketMessageType.Text ||
+                (result.MessageType == WebSocketMessageType.Binary && messageBuffer.Length > 0))
             {
-                var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                messageBuffer.Write(buffer, 0, result.Count);
+
+                if (!result.EndOfMessage)
+                    continue;
+
+                var json = Encoding.UTF8.GetString(
+                    messageBuffer.GetBuffer(), 0, (int)messageBuffer.Length);
+                messageBuffer.SetLength(0);
+
                 HandleMessage(json);
             }
         }
@@ -202,8 +213,10 @@ public sealed class RelayClient : IDisposable
     {
         if (_ws?.State != WebSocketState.Open) return;
         var bytes = Encoding.UTF8.GetBytes(message);
+        await _sendLock.WaitAsync();
         try
         {
+            if (_ws?.State != WebSocketState.Open) return;
             await _ws.SendAsync(
                 new ArraySegment<byte>(bytes),
                 WebSocketMessageType.Text,
@@ -212,5 +225,9 @@ public sealed class RelayClient : IDisposable
         }
         catch (WebSocketException) { }
         catch (ObjectDisposedException) { }
+        finally
+        {
+            _sendLock.Release();
+        }
     }
 }

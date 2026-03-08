@@ -21,7 +21,7 @@ namespace PhoneShell.ViewModels;
 
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
-    // Key token mapping: {TOKEN} â†?VT sequence
+    // Key token mapping: {TOKEN} -> VT sequence
     private static readonly Dictionary<string, string> KeyTokens = new(StringComparer.OrdinalIgnoreCase)
     {
         ["ENTER"] = "\r",
@@ -118,6 +118,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private ShellInfo? _selectedShell;
     private int _terminalCols;
     private int _terminalRows;
+    private int _desktopTerminalCols;
+    private int _desktopTerminalRows;
+    private bool _isMobileTerminalViewportLocked;
 
     public MainViewModel()
     {
@@ -170,6 +173,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// Raised when terminal output is received. MainWindow subscribes to push to WebView2.
     /// </summary>
     public event Action<string>? TerminalOutputForwarded;
+
+    /// <summary>
+    /// Raised when the desktop terminal viewport should lock to explicit terminal geometry.
+    /// </summary>
+    public event Action<int, int>? TerminalViewportLockRequested;
+
+    /// <summary>
+    /// Raised when the desktop terminal viewport should return to auto-fit mode.
+    /// </summary>
+    public event Action? TerminalViewportAutoFitRequested;
 
     // --- Properties ---
 
@@ -406,6 +419,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void ForceDisconnect()
     {
+        RestoreDesktopTerminalViewport();
         IsMobileConnected = false;
         ControlOwner = ControlOwner.Pc;
         ConnectionStatus = "Mobile disconnected by PC";
@@ -476,6 +490,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayServer.Log += OnNetworkLog;
                 _relayServer.LocalTerminalInputReceived += OnRemoteTerminalInput;
                 _relayServer.LocalTerminalResizeReceived += OnRemoteTerminalResize;
+                _relayServer.LocalTerminalSessionEnded += OnRemoteTerminalSessionEnded;
                 _relayServer.LocalTerminalSnapshotProvider = CaptureCurrentTerminalViewAsync;
                 _relayServer.LocalTerminalSizeProvider = GetCurrentTerminalSize;
 
@@ -509,6 +524,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayClient.ConnectionStateChanged += OnClientConnectionStateChanged;
                 _relayClient.TerminalInputReceived += OnRemoteTerminalInput;
                 _relayClient.TerminalResizeRequested += OnRemoteTerminalResize;
+                _relayClient.TerminalCloseRequested += OnRemoteTerminalCloseRequested;
 
                 _ = _relayClient.ConnectAsync(url);
 
@@ -535,6 +551,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayServer.Log -= OnNetworkLog;
             _relayServer.LocalTerminalInputReceived -= OnRemoteTerminalInput;
             _relayServer.LocalTerminalResizeReceived -= OnRemoteTerminalResize;
+            _relayServer.LocalTerminalSessionEnded -= OnRemoteTerminalSessionEnded;
             _relayServer.LocalTerminalSnapshotProvider = null;
             _relayServer.LocalTerminalSizeProvider = null;
             _relayServer.Dispose();
@@ -547,10 +564,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayClient.ConnectionStateChanged -= OnClientConnectionStateChanged;
             _relayClient.TerminalInputReceived -= OnRemoteTerminalInput;
             _relayClient.TerminalResizeRequested -= OnRemoteTerminalResize;
+            _relayClient.TerminalCloseRequested -= OnRemoteTerminalCloseRequested;
             _relayClient.Dispose();
             _relayClient = null;
         }
 
+        RestoreDesktopTerminalViewport();
         IsServerRunning = false;
         UpdateRelayAddressPreview();
         ConnectionStatus = "Local only";
@@ -609,8 +628,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnRemoteTerminalInput(string sessionId, string data)
     {
-        // Write remote input into local terminal
-        TerminalManager.WriteInput(data);
+        try
+        {
+            if (!TerminalManager.IsRunning)
+            {
+                OnNetworkLog(
+                    $"Remote terminal input ignored because terminal is not running. session={sessionId}");
+                return;
+            }
+
+            TerminalManager.WriteInput(data);
+        }
+        catch (Exception ex)
+        {
+            OnNetworkLog(
+                $"Remote terminal input failed. session={sessionId}, len={data.Length}, error={ex.Message}");
+        }
     }
 
     private void OnRemoteTerminalResize(string sessionId, int cols, int rows)
@@ -620,9 +653,60 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         _dispatcher.InvokeAsync(() =>
         {
-            ApplyTerminalSize(cols, rows, startIfNeeded: true);
-            SessionStatus = $"Running ({cols}x{rows})";
+            try
+            {
+                if (!_isMobileTerminalViewportLocked)
+                {
+                    if (_desktopTerminalCols <= 0 || _desktopTerminalRows <= 0)
+                    {
+                        _desktopTerminalCols = _terminalCols > 0 ? _terminalCols : cols;
+                        _desktopTerminalRows = _terminalRows > 0 ? _terminalRows : rows;
+                    }
+
+                    _isMobileTerminalViewportLocked = true;
+                }
+
+                TerminalViewportLockRequested?.Invoke(cols, rows);
+                ApplyTerminalSize(cols, rows, startIfNeeded: true);
+                IsMobileConnected = true;
+                ControlOwner = ControlOwner.Mobile;
+                SessionStatus = $"Running ({cols}x{rows})";
+            }
+            catch (Exception ex)
+            {
+                OnNetworkLog(
+                    $"Remote terminal resize failed. session={sessionId}, size={cols}x{rows}, error={ex.Message}");
+            }
         });
+    }
+
+    private void OnRemoteTerminalSessionEnded()
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            RestoreDesktopTerminalViewport();
+        });
+    }
+
+    private void OnRemoteTerminalCloseRequested(string sessionId)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            RestoreDesktopTerminalViewport();
+        });
+    }
+
+    private void RestoreDesktopTerminalViewport()
+    {
+        if (!_isMobileTerminalViewportLocked)
+            return;
+
+        _isMobileTerminalViewportLocked = false;
+        IsMobileConnected = false;
+        ControlOwner = ControlOwner.Pc;
+
+        TerminalViewportAutoFitRequested?.Invoke();
+        SessionStatus = "Running";
     }
 
     private (int Cols, int Rows) GetCurrentTerminalSize()
@@ -787,6 +871,21 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         TerminalManager.Resize(cols, rows);
         VirtualScreen.Resize(cols, rows);
+    }
+
+    public void HandleLocalViewportResize(int cols, int rows)
+    {
+        if (cols <= 0 || rows <= 0)
+            return;
+
+        _desktopTerminalCols = cols;
+        _desktopTerminalRows = rows;
+
+        if (_isMobileTerminalViewportLocked)
+            return;
+
+        ApplyTerminalSize(cols, rows, startIfNeeded: true);
+        SessionStatus = "Running";
     }
 
     private void RequestTerminalRestart()

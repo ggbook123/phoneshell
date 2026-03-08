@@ -50,14 +50,6 @@
                             </StackPanel>
                             <TextBlock Text="{Binding ServerStatus}" Margin="0,4,0,0"
                                        FontSize="11" Foreground="#666" TextWrapping="Wrap" />
-                            <TextBlock Text="Reachable Address" Margin="0,8,0,0" FontWeight="SemiBold" />
-                            <TextBox Text="{Binding RelayReachableAddresses, Mode=OneWay}"
-                                     Margin="0,2,0,0"
-                                     IsReadOnly="True"
-                                     AcceptsReturn="True"
-                                     TextWrapping="Wrap"
-                                     MinHeight="56"
-                                     VerticalScrollBarVisibility="Auto" />
                         </StackPanel>
                     </Expander>
 
@@ -232,7 +224,7 @@
             </Border>
 
             <!-- Terminal -->
-            <Border Grid.Column="2" Background="#0E1116" CornerRadius="10" Padding="0">
+            <Border Grid.Column="2" Background="#F1F3F5" BorderBrush="#D9DEE5" BorderThickness="1" CornerRadius="10" Padding="0">
                 <wv2:WebView2 x:Name="TerminalWebView" />
             </Border>
         </Grid>

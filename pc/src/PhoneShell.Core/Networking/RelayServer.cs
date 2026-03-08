@@ -114,7 +114,7 @@ public sealed class RelayServer : IDisposable
         {
             if (client.SubscribedDeviceId == deviceId)
             {
-                await SendAsync(client.WebSocket, msg);
+                await SendAsync(client, msg);
             }
         }
     }
@@ -128,6 +128,11 @@ public sealed class RelayServer : IDisposable
     /// Event raised when a remote client resizes the local device terminal.
     /// </summary>
     public event Action<string, int, int>? LocalTerminalResizeReceived; // sessionId, cols, rows
+
+    /// <summary>
+    /// Event raised when a remote client ends its local terminal viewing session.
+    /// </summary>
+    public event Action? LocalTerminalSessionEnded;
 
     public List<DeviceInfo> GetDeviceList()
     {
@@ -187,6 +192,9 @@ public sealed class RelayServer : IDisposable
     private async Task HandleClientAsync(ConnectedClient client, CancellationToken ct)
     {
         var buffer = new byte[8192];
+        var messageBuffer = new MemoryStream();
+        using var pingCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var pingTask = RunPingLoopAsync(client, pingCts.Token);
         try
         {
             while (client.WebSocket.State == WebSocketState.Open && !ct.IsCancellationRequested)
@@ -196,6 +204,9 @@ public sealed class RelayServer : IDisposable
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
+                    Log?.Invoke(
+                        $"Client {client.ClientId} requested close: " +
+                        $"{result.CloseStatus} {result.CloseStatusDescription}");
                     await client.WebSocket.CloseAsync(
                         WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
                     break;
@@ -203,19 +214,55 @@ public sealed class RelayServer : IDisposable
 
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
-                    var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    await HandleMessageAsync(client, json, ct);
+                    messageBuffer.Write(buffer, 0, result.Count);
+
+                    if (!result.EndOfMessage)
+                        continue;
+
+                    var json = Encoding.UTF8.GetString(
+                        messageBuffer.GetBuffer(), 0, (int)messageBuffer.Length);
+                    messageBuffer.SetLength(0);
+
+                    try
+                    {
+                        await HandleMessageAsync(client, json, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log?.Invoke(
+                            $"Client {client.ClientId} message handling failed: {ex.Message}");
+                    }
                 }
             }
         }
         catch (OperationCanceledException) { }
-        catch (WebSocketException) { }
+        catch (WebSocketException ex)
+        {
+            Log?.Invoke($"Client {client.ClientId} websocket error: {ex.Message}");
+        }
         catch (Exception ex)
         {
             Log?.Invoke($"Client {client.ClientId} error: {ex.Message}");
         }
         finally
         {
+            pingCts.Cancel();
+            try { await pingTask; } catch { }
+            if (client.SubscribedDeviceId is not null &&
+                _devices.TryGetValue(client.SubscribedDeviceId, out var subscribedDevice) &&
+                subscribedDevice.IsLocal)
+            {
+                try
+                {
+                    LocalTerminalSessionEnded?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    Log?.Invoke(
+                        $"Local terminal session end handler failed for {client.ClientId}: {ex.Message}");
+                }
+            }
+
             // Clean up device registration if this client registered one
             if (client.RegisteredDeviceId is not null)
             {
@@ -232,7 +279,13 @@ public sealed class RelayServer : IDisposable
     private async Task HandleMessageAsync(ConnectedClient client, string json, CancellationToken ct)
     {
         var message = MessageSerializer.DeserializeMessage(json);
-        if (message is null) return;
+        if (message is null)
+        {
+            Log?.Invoke($"Client {client.ClientId} sent unrecognized message");
+            return;
+        }
+
+        Log?.Invoke($"Client {client.ClientId} -> {message.GetType().Name}");
 
         switch (message)
         {
@@ -254,7 +307,7 @@ public sealed class RelayServer : IDisposable
 
             case DeviceListRequestMessage:
                 var list = new DeviceListMessage { Devices = GetDeviceList() };
-                await SendAsync(client.WebSocket, MessageSerializer.Serialize(list));
+                await SendAsync(client, MessageSerializer.Serialize(list));
                 break;
 
             case TerminalInputMessage input:
@@ -263,14 +316,14 @@ public sealed class RelayServer : IDisposable
                 {
                     if (targetDevice.IsLocal)
                     {
-                        // Local device â€?invoke direct handler
-                        LocalTerminalInputReceived?.Invoke(input.SessionId, input.Data);
+                        // Local device - invoke direct handler
+                        InvokeLocalTerminalInput(client, input);
                     }
                     else if (targetDevice.ClientId is not null &&
                              _clients.TryGetValue(targetDevice.ClientId, out var deviceClient))
                     {
                         // Forward to remote PC
-                        await SendAsync(deviceClient.WebSocket, json);
+                        await SendAsync(deviceClient, json);
                     }
                 }
                 break;
@@ -282,7 +335,7 @@ public sealed class RelayServer : IDisposable
                 {
                     if (c.ClientId != client.ClientId && c.SubscribedDeviceId == output.DeviceId)
                     {
-                        await SendAsync(c.WebSocket, json);
+                        await SendAsync(c, json);
                     }
                 }
                 break;
@@ -312,7 +365,7 @@ public sealed class RelayServer : IDisposable
                             }
                         }
 
-                        // Local device â€?reply with terminal.opened so mobile can proceed
+                        // Local device - reply with terminal.opened so mobile can proceed
                         var opened = new TerminalOpenedMessage
                         {
                             DeviceId = open.DeviceId,
@@ -320,7 +373,7 @@ public sealed class RelayServer : IDisposable
                             Cols = cols,
                             Rows = rows
                         };
-                        await SendAsync(client.WebSocket, MessageSerializer.Serialize(opened));
+                        await SendAsync(client, MessageSerializer.Serialize(opened));
 
                         string? snapshot = null;
                         if (LocalTerminalSnapshotProvider is not null)
@@ -343,7 +396,7 @@ public sealed class RelayServer : IDisposable
                                 SessionId = opened.SessionId,
                                 Data = snapshot
                             };
-                            await SendAsync(client.WebSocket, MessageSerializer.Serialize(initialOutput));
+                            await SendAsync(client, MessageSerializer.Serialize(initialOutput));
                         }
 
                         Log?.Invoke($"Local terminal opened for client {client.ClientId}");
@@ -351,7 +404,7 @@ public sealed class RelayServer : IDisposable
                     else if (openTarget.ClientId is not null &&
                              _clients.TryGetValue(openTarget.ClientId, out var openClient))
                     {
-                        await SendAsync(openClient.WebSocket, json);
+                        await SendAsync(openClient, json);
                     }
                 }
                 break;
@@ -361,15 +414,12 @@ public sealed class RelayServer : IDisposable
                 {
                     if (resizeTarget.IsLocal)
                     {
-                        LocalTerminalResizeReceived?.Invoke(
-                            resize.SessionId,
-                            resize.Cols,
-                            resize.Rows);
+                        InvokeLocalTerminalResize(client, resize);
                     }
                     else if (resizeTarget.ClientId is not null &&
                              _clients.TryGetValue(resizeTarget.ClientId, out var resizeClient))
                     {
-                        await SendAsync(resizeClient.WebSocket, json);
+                        await SendAsync(resizeClient, json);
                     }
                 }
                 break;
@@ -379,19 +429,21 @@ public sealed class RelayServer : IDisposable
                 {
                     if (closeTarget.IsLocal)
                     {
-                        // Local device â€?reply with terminal.closed
+                        // Local device - reply with terminal.closed
                         var closed = new TerminalClosedMessage
                         {
                             DeviceId = close.DeviceId,
                             SessionId = close.SessionId
                         };
-                        await SendAsync(client.WebSocket, MessageSerializer.Serialize(closed));
+                        await SendAsync(client, MessageSerializer.Serialize(closed));
+                        client.SubscribedDeviceId = null;
+                        InvokeLocalTerminalSessionEnded(client, close);
                         Log?.Invoke($"Local terminal closed for client {client.ClientId}");
                     }
                     else if (closeTarget.ClientId is not null &&
                              _clients.TryGetValue(closeTarget.ClientId, out var closeClient))
                     {
-                        await SendAsync(closeClient.WebSocket, json);
+                        await SendAsync(closeClient, json);
                     }
                 }
                 break;
@@ -403,7 +455,7 @@ public sealed class RelayServer : IDisposable
                 {
                     if (c.ClientId != client.ClientId)
                     {
-                        await SendAsync(c.WebSocket, json);
+                        await SendAsync(c, json);
                     }
                 }
                 break;
@@ -416,20 +468,53 @@ public sealed class RelayServer : IDisposable
                 {
                     if (c.ClientId != client.ClientId)
                     {
-                        await SendAsync(c.WebSocket, json);
+                        await SendAsync(c, json);
                     }
                 }
                 break;
         }
     }
 
-    private static async Task SendAsync(WebSocket ws, string message)
+    private static async Task RunPingLoopAsync(ConnectedClient client, CancellationToken ct)
     {
-        if (ws.State != WebSocketState.Open) return;
-        var bytes = Encoding.UTF8.GetBytes(message);
+        var pingInterval = TimeSpan.FromSeconds(30);
+        var pingPayload = new byte[] { 0x70, 0x69, 0x6E, 0x67 }; // "ping"
         try
         {
-            await ws.SendAsync(
+            while (!ct.IsCancellationRequested && client.WebSocket.State == WebSocketState.Open)
+            {
+                await Task.Delay(pingInterval, ct);
+                if (client.WebSocket.State != WebSocketState.Open) break;
+                await client.SendLock.WaitAsync(ct);
+                try
+                {
+                    if (client.WebSocket.State != WebSocketState.Open) break;
+                    await client.WebSocket.SendAsync(
+                        new ArraySegment<byte>(pingPayload),
+                        WebSocketMessageType.Binary,
+                        true,
+                        ct);
+                }
+                finally
+                {
+                    client.SendLock.Release();
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (WebSocketException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private static async Task SendAsync(ConnectedClient client, string message)
+    {
+        if (client.WebSocket.State != WebSocketState.Open) return;
+        var bytes = Encoding.UTF8.GetBytes(message);
+        await client.SendLock.WaitAsync();
+        try
+        {
+            if (client.WebSocket.State != WebSocketState.Open) return;
+            await client.WebSocket.SendAsync(
                 new ArraySegment<byte>(bytes),
                 WebSocketMessageType.Text,
                 true,
@@ -437,6 +522,60 @@ public sealed class RelayServer : IDisposable
         }
         catch (WebSocketException) { }
         catch (ObjectDisposedException) { }
+        finally
+        {
+            client.SendLock.Release();
+        }
+    }
+
+    private void InvokeLocalTerminalInput(ConnectedClient client, TerminalInputMessage input)
+    {
+        try
+        {
+            Log?.Invoke(
+                $"Local terminal input from {client.ClientId}: " +
+                $"session={input.SessionId}, len={input.Data.Length}");
+            LocalTerminalInputReceived?.Invoke(input.SessionId, input.Data);
+        }
+        catch (Exception ex)
+        {
+            Log?.Invoke(
+                $"Local terminal input handler failed for {client.ClientId}: {ex.Message}");
+        }
+    }
+
+    private void InvokeLocalTerminalResize(ConnectedClient client, TerminalResizeMessage resize)
+    {
+        try
+        {
+            Log?.Invoke(
+                $"Local terminal resize from {client.ClientId}: " +
+                $"session={resize.SessionId}, size={resize.Cols}x{resize.Rows}");
+            LocalTerminalResizeReceived?.Invoke(
+                resize.SessionId,
+                resize.Cols,
+                resize.Rows);
+        }
+        catch (Exception ex)
+        {
+            Log?.Invoke(
+                $"Local terminal resize handler failed for {client.ClientId}: {ex.Message}");
+        }
+    }
+
+    private void InvokeLocalTerminalSessionEnded(ConnectedClient client, TerminalCloseMessage close)
+    {
+        try
+        {
+            Log?.Invoke(
+                $"Local terminal session ended by {client.ClientId}: session={close.SessionId}");
+            LocalTerminalSessionEnded?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            Log?.Invoke(
+                $"Local terminal close handler failed for {client.ClientId}: {ex.Message}");
+        }
     }
 
     private void NotifyDeviceListChanged()
@@ -501,6 +640,7 @@ public sealed class RelayServer : IDisposable
         public WebSocket WebSocket { get; init; } = null!;
         public string? RegisteredDeviceId { get; set; }
         public string? SubscribedDeviceId { get; set; }
+        public SemaphoreSlim SendLock { get; } = new(1, 1);
     }
 }
 
