@@ -7,10 +7,12 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using PhoneShell.Core.Models;
 using PhoneShell.Core.Networking;
+using PhoneShell.Core.Protocol;
 using PhoneShell.Core.Services;
 using PhoneShell.Core.Terminals;
 using PhoneShell.Core.Terminals.Windows;
@@ -18,6 +20,116 @@ using PhoneShell.Services;
 using PhoneShell.Utilities;
 
 namespace PhoneShell.ViewModels;
+
+/// <summary>
+/// Represents a single terminal tab with its own session, buffers, and state.
+/// </summary>
+public sealed class TerminalTab : ObservableObject, IDisposable
+{
+    private string _title;
+    private bool _isCompactMode;
+    private int _cols;
+    private int _rows;
+    private int _desktopCols;
+    private int _desktopRows;
+    private int _mobileCols;
+    private int _mobileRows;
+    private bool _hasMobileSession;
+    private bool _isMobileControlPaused;
+    private bool _isMobileViewportLocked;
+    private int _tabNumber;
+
+    public TerminalTab(string tabId, ShellInfo shell, int tabNumber)
+    {
+        TabId = tabId;
+        Shell = shell;
+        _tabNumber = tabNumber;
+        _title = $"{shell.DisplayName} #{tabNumber}";
+        SessionManager = new TerminalSessionManager();
+        OutputBuffer = new TerminalOutputBuffer();
+        VirtualScreen = new VirtualScreen();
+        OutputStabilizer = new TerminalOutputStabilizer();
+    }
+
+    public string TabId { get; }
+    public ShellInfo Shell { get; }
+    public TerminalSessionManager SessionManager { get; }
+    public TerminalOutputBuffer OutputBuffer { get; }
+    public VirtualScreen VirtualScreen { get; }
+    public TerminalOutputStabilizer OutputStabilizer { get; }
+
+    public string Title
+    {
+        get => _title;
+        set => SetProperty(ref _title, value);
+    }
+
+    public bool IsCompactMode
+    {
+        get => _isCompactMode;
+        set => SetProperty(ref _isCompactMode, value);
+    }
+
+    public int Cols
+    {
+        get => _cols;
+        set => SetProperty(ref _cols, value);
+    }
+
+    public int Rows
+    {
+        get => _rows;
+        set => SetProperty(ref _rows, value);
+    }
+
+    public int DesktopCols
+    {
+        get => _desktopCols;
+        set => SetProperty(ref _desktopCols, value);
+    }
+
+    public int DesktopRows
+    {
+        get => _desktopRows;
+        set => SetProperty(ref _desktopRows, value);
+    }
+
+    public int MobileCols
+    {
+        get => _mobileCols;
+        set => SetProperty(ref _mobileCols, value);
+    }
+
+    public int MobileRows
+    {
+        get => _mobileRows;
+        set => SetProperty(ref _mobileRows, value);
+    }
+
+    public bool HasMobileSession
+    {
+        get => _hasMobileSession;
+        set => SetProperty(ref _hasMobileSession, value);
+    }
+
+    public bool IsMobileControlPaused
+    {
+        get => _isMobileControlPaused;
+        set => SetProperty(ref _isMobileControlPaused, value);
+    }
+
+    public bool IsMobileViewportLocked
+    {
+        get => _isMobileViewportLocked;
+        set => SetProperty(ref _isMobileViewportLocked, value);
+    }
+
+    public void Dispose()
+    {
+        OutputStabilizer.Dispose();
+        SessionManager.Dispose();
+    }
+}
 
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
@@ -81,7 +193,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _connectionStatus = "Initializing";
     private ControlOwner _controlOwner = ControlOwner.Pc;
     private bool _isMobileConnected;
-    private string _sessionStatus = "Starting...";
+    private string _sessionStatus = "No session";
 
     // AI fields
     private AiSettings _aiSettings;
@@ -110,17 +222,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _relayReachableAddresses = string.Empty;
     private RelayServer? _relayServer;
     private RelayClient? _relayClient;
-    private const string LocalSessionId = "local";
 
     // Shell selection fields
     private readonly IShellLocator _shellLocator;
     private ObservableCollection<ShellInfo> _availableShells = new();
     private ShellInfo? _selectedShell;
-    private int _terminalCols;
-    private int _terminalRows;
-    private int _desktopTerminalCols;
-    private int _desktopTerminalRows;
-    private bool _isMobileTerminalViewportLocked;
+
+    // Multi-tab fields
+    private TerminalTab? _activeTab;
+    private int _tabCounter;
 
     public MainViewModel()
     {
@@ -132,10 +242,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _serverSettingsStore = new ServerSettingsStore(AppContext.BaseDirectory);
         _shellLocator = new WindowsShellLocator();
         _dispatcher = Application.Current.Dispatcher;
-        TerminalOutputBuffer = new TerminalOutputBuffer();
-        OutputStabilizer = new TerminalOutputStabilizer();
-        VirtualScreen = new VirtualScreen();
-        TerminalManager = new TerminalSessionManager();
 
         _aiSettings = _aiSettingsStore.Load();
         _aiEndpoint = _aiSettings.ApiEndpoint;
@@ -156,7 +262,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RefreshShellsCommand = new RelayCommand(RefreshShells);
         StartNetworkCommand = new AsyncRelayCommand(StartNetworkAsync, () => !IsServerRunning);
         StopNetworkCommand = new RelayCommand(StopNetwork, () => IsServerRunning);
-        RestartTerminalCommand = new RelayCommand(RequestTerminalRestart);
+        NewSessionCommand = new RelayCommand(CreateNewSession);
+        CloseTabCommand = new RelayCommand<string>(CloseTab);
+        SwitchTabCommand = new RelayCommand<string>(SwitchTab);
+        ToggleCompactModeCommand = new RelayCommand<string>(ToggleCompactMode);
 
         Initialize();
     }
@@ -164,13 +273,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     // --- Events ---
 
     /// <summary>
-    /// Raised when the terminal needs to be restarted. MainWindow subscribes to handle WebView2 reset.
-    /// Carries (cols, rows) of the current terminal for the new session.
+    /// Raised when a tab switch occurs. MainWindow subscribes to reset xterm.js and replay output.
+    /// Carries the new active tab (null if no tabs).
     /// </summary>
-    public event Action? TerminalRestarted;
+    public event Action<TerminalTab?>? ActiveTabChanged;
 
     /// <summary>
-    /// Raised when terminal output is received. MainWindow subscribes to push to WebView2.
+    /// Raised when terminal output is received for the active tab. MainWindow pushes to WebView2.
     /// </summary>
     public event Action<string>? TerminalOutputForwarded;
 
@@ -366,12 +475,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         set => SetProperty(ref _selectedShell, value);
     }
 
+    // Multi-tab properties
+    public ObservableCollection<TerminalTab> Tabs { get; } = new();
+
+    public TerminalTab? ActiveTab
+    {
+        get => _activeTab;
+        private set
+        {
+            if (SetProperty(ref _activeTab, value))
+            {
+                OnPropertyChanged(nameof(HasTabs));
+                UpdateExecuteTerminalCommand();
+            }
+        }
+    }
+
+    public bool HasTabs => Tabs.Count > 0;
+
     public ObservableCollection<ChatMessage> ChatMessages { get; } = new();
     public ObservableCollection<string> DebugLogs { get; } = new();
-    public TerminalOutputBuffer TerminalOutputBuffer { get; }
-    public TerminalOutputStabilizer OutputStabilizer { get; }
-    public VirtualScreen VirtualScreen { get; }
-    public TerminalSessionManager TerminalManager { get; private set; }
     public TerminalSnapshotService SnapshotService { get; } = new();
     public Action<string>? ExecuteTerminalCommand { get; set; }
 
@@ -385,18 +508,355 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand RefreshShellsCommand { get; }
     public AsyncRelayCommand StartNetworkCommand { get; }
     public RelayCommand StopNetworkCommand { get; }
-    public RelayCommand RestartTerminalCommand { get; }
+    public RelayCommand NewSessionCommand { get; }
+    public RelayCommand<string> CloseTabCommand { get; }
+    public RelayCommand<string> SwitchTabCommand { get; }
+    public RelayCommand<string> ToggleCompactModeCommand { get; }
 
     public void Dispose()
     {
         _autoExecCts?.Cancel();
         _autoExecCts?.Dispose();
-        OutputStabilizer.Dispose();
         _aiChatService.Dispose();
-        TerminalManager.Dispose();
+
+        foreach (var tab in Tabs)
+            tab.Dispose();
+        Tabs.Clear();
+
         _relayServer?.Dispose();
         _relayClient?.Dispose();
     }
+
+    // --- Multi-Tab Management ---
+
+    public void CreateNewSession()
+    {
+        var shell = SelectedShell ?? _shellLocator.GetDefaultShell();
+        CreateTab(shell, 0, 0);
+    }
+
+    public TerminalTab CreateTab(ShellInfo shell, int cols, int rows)
+    {
+        _tabCounter++;
+        var tabId = Guid.NewGuid().ToString("N")[..8];
+        var tab = new TerminalTab(tabId, shell, _tabCounter);
+
+        tab.SessionManager.OutputReceived += text => OnTabOutput(tab, text);
+
+        Tabs.Add(tab);
+        OnPropertyChanged(nameof(HasTabs));
+
+        SetActiveTab(tab);
+
+        if (cols > 0 && rows > 0)
+        {
+            StartTabTerminal(tab, cols, rows);
+        }
+
+        return tab;
+    }
+
+    private void StartTabTerminal(TerminalTab tab, int cols, int rows)
+    {
+        if (tab.SessionManager.IsRunning) return;
+
+        tab.Cols = cols;
+        tab.Rows = rows;
+        tab.VirtualScreen.Resize(cols, rows);
+
+        var session = new ConPtySession();
+        tab.SessionManager.Start(session, tab.Shell, cols, rows);
+        SessionStatus = $"Running ({tab.Shell.DisplayName})";
+    }
+
+    public void StartActiveTabTerminal(int cols, int rows)
+    {
+        if (ActiveTab is null) return;
+        StartTabTerminal(ActiveTab, cols, rows);
+    }
+
+    private void SetActiveTab(TerminalTab? tab)
+    {
+        ActiveTab = tab;
+        UpdateMobileConnectionState();
+        ActiveTabChanged?.Invoke(tab);
+    }
+
+    private void SwitchTab(string? tabId)
+    {
+        if (string.IsNullOrEmpty(tabId)) return;
+        var tab = Tabs.FirstOrDefault(t => t.TabId == tabId);
+        if (tab is null || tab == ActiveTab) return;
+        SetActiveTab(tab);
+    }
+
+    private void CloseTab(string? tabId)
+    {
+        if (string.IsNullOrEmpty(tabId)) return;
+        var tab = Tabs.FirstOrDefault(t => t.TabId == tabId);
+        if (tab is null) return;
+
+        var index = Tabs.IndexOf(tab);
+        tab.SessionManager.OutputReceived -= text => OnTabOutput(tab, text);
+        tab.Dispose();
+        Tabs.Remove(tab);
+        OnPropertyChanged(nameof(HasTabs));
+        UpdateMobileConnectionState();
+
+        if (ActiveTab == tab)
+        {
+            if (Tabs.Count > 0)
+            {
+                var newIndex = Math.Min(index, Tabs.Count - 1);
+                SetActiveTab(Tabs[newIndex]);
+            }
+            else
+            {
+                SetActiveTab(null);
+                SessionStatus = "No session";
+            }
+        }
+    }
+
+    private void ToggleCompactMode(string? tabId)
+    {
+        if (string.IsNullOrEmpty(tabId)) return;
+        var tab = Tabs.FirstOrDefault(t => t.TabId == tabId);
+        if (tab is null) return;
+
+        if (TryGetMobileViewport(tab, out var mobileCols, out var mobileRows))
+        {
+            if (tab.IsCompactMode && !tab.IsMobileControlPaused)
+            {
+                PauseMobileViewport(tab);
+            }
+            else
+            {
+                ShowMobileViewport(tab, mobileCols, mobileRows);
+            }
+
+            return;
+        }
+
+        tab.IsCompactMode = !tab.IsCompactMode;
+        tab.IsMobileControlPaused = false;
+
+        if (tab == ActiveTab)
+        {
+            if (tab.IsCompactMode)
+            {
+                // Switch to mobile-size viewport (e.g. 80x24)
+                TerminalViewportLockRequested?.Invoke(80, 24);
+                ApplyTabTerminalSize(tab, 80, 24);
+            }
+            else
+            {
+                // Restore to desktop size
+                // Clear mobile lock so HandleLocalViewportResize will apply the new size
+                tab.IsMobileViewportLocked = false;
+                TerminalViewportAutoFitRequested?.Invoke();
+
+                // If we have saved desktop dimensions, apply them immediately
+                if (tab.DesktopCols > 0 && tab.DesktopRows > 0)
+                {
+                    ApplyTabTerminalSize(tab, tab.DesktopCols, tab.DesktopRows);
+                }
+            }
+        }
+
+        UpdateMobileConnectionState();
+    }
+
+    private bool TryGetMobileViewport(TerminalTab tab, out int cols, out int rows)
+    {
+        cols = tab.MobileCols;
+        rows = tab.MobileRows;
+        return tab.HasMobileSession && cols > 0 && rows > 0;
+    }
+
+    private void ShowMobileViewport(TerminalTab tab, int cols, int rows)
+    {
+        tab.HasMobileSession = true;
+        tab.MobileCols = cols;
+        tab.MobileRows = rows;
+        tab.IsCompactMode = true;
+        tab.IsMobileViewportLocked = true;
+        tab.IsMobileControlPaused = false;
+
+        if (tab == ActiveTab)
+        {
+            TerminalViewportLockRequested?.Invoke(cols, rows);
+        }
+
+        ApplyTabTerminalSize(tab, cols, rows);
+        UpdateMobileConnectionState();
+        SessionStatus = $"Running ({cols}x{rows})";
+    }
+
+    private void PauseMobileViewport(TerminalTab tab)
+    {
+        if (tab.DesktopCols <= 0 || tab.DesktopRows <= 0)
+        {
+            tab.DesktopCols = 120;
+            tab.DesktopRows = 30;
+        }
+
+        tab.IsCompactMode = false;
+        tab.IsMobileViewportLocked = false;
+        tab.IsMobileControlPaused = true;
+
+        if (tab == ActiveTab)
+        {
+            TerminalViewportAutoFitRequested?.Invoke();
+        }
+
+        if (tab.DesktopCols > 0 && tab.DesktopRows > 0)
+        {
+            ApplyTabTerminalSize(tab, tab.DesktopCols, tab.DesktopRows);
+        }
+
+        UpdateMobileConnectionState();
+        SessionStatus = "Running (mobile paused)";
+    }
+
+    private void ClearMobileViewport(TerminalTab tab)
+    {
+        var hadMobileSession = tab.HasMobileSession || tab.IsMobileViewportLocked || tab.IsMobileControlPaused;
+
+        tab.IsCompactMode = false;
+        tab.IsMobileViewportLocked = false;
+        tab.IsMobileControlPaused = false;
+        tab.HasMobileSession = false;
+        tab.MobileCols = 0;
+        tab.MobileRows = 0;
+
+        if (hadMobileSession && tab.DesktopCols > 0 && tab.DesktopRows > 0)
+        {
+            ApplyTabTerminalSize(tab, tab.DesktopCols, tab.DesktopRows);
+        }
+
+        if (hadMobileSession && tab == ActiveTab)
+        {
+            TerminalViewportAutoFitRequested?.Invoke();
+            SessionStatus = "Running";
+        }
+
+        UpdateMobileConnectionState();
+    }
+
+    private void UpdateMobileConnectionState()
+    {
+        var mobileTab = ActiveTab?.HasMobileSession == true
+            ? ActiveTab
+            : Tabs.FirstOrDefault(t => t.HasMobileSession);
+
+        if (mobileTab is null)
+        {
+            IsMobileConnected = false;
+            ControlOwner = ControlOwner.Pc;
+            return;
+        }
+
+        IsMobileConnected = true;
+        ControlOwner = mobileTab.IsMobileControlPaused ? ControlOwner.Pc : ControlOwner.Mobile;
+    }
+
+    private void UpdateExecuteTerminalCommand()
+    {
+        if (ActiveTab is not null)
+            ExecuteTerminalCommand = cmd => ActiveTab.SessionManager.WriteInput(cmd);
+        else
+            ExecuteTerminalCommand = null;
+    }
+
+    private void OnTabOutput(TerminalTab tab, string text)
+    {
+        tab.OutputBuffer.Append(text);
+        tab.VirtualScreen.Write(text);
+        tab.OutputStabilizer.NotifyOutputReceived();
+
+        // Forward to network
+        ForwardTabOutputToNetwork(tab, text);
+
+        // Only forward to UI if this is the active tab
+        if (tab == ActiveTab)
+            TerminalOutputForwarded?.Invoke(text);
+    }
+
+    private void ForwardTabOutputToNetwork(TerminalTab tab, string text)
+    {
+        if (_relayServer is not null && _relayServer.IsRunning)
+        {
+            _ = _relayServer.BroadcastLocalTerminalOutputAsync(_identity.DeviceId, tab.TabId, text);
+        }
+        else if (_relayClient is not null && _relayClient.IsConnected)
+        {
+            _ = _relayClient.SendTerminalOutputAsync(_identity.DeviceId, tab.TabId, text);
+        }
+    }
+
+    /// <summary>
+    /// Get the buffered output for a tab to replay when switching tabs.
+    /// Returns raw VT data suitable for replaying into xterm.js.
+    /// </summary>
+    public string GetTabReplayData(TerminalTab tab)
+    {
+        return tab.OutputBuffer.GetRecentRaw();
+    }
+
+    // --- Viewport resize handling ---
+
+    public void HandleLocalViewportResize(int cols, int rows)
+    {
+        if (cols <= 0 || rows <= 0) return;
+
+        if (ActiveTab is not null)
+        {
+            // Always save desktop dimensions unless in compact mode
+            if (!ActiveTab.IsCompactMode)
+            {
+                ActiveTab.DesktopCols = cols;
+                ActiveTab.DesktopRows = rows;
+            }
+
+            // Don't apply resize if compact mode or mobile viewport is locked
+            if (ActiveTab.IsCompactMode || ActiveTab.IsMobileViewportLocked) return;
+
+            ApplyTabTerminalSize(ActiveTab, cols, rows);
+            SessionStatus = "Running";
+        }
+    }
+
+    private void ApplyTabTerminalSize(TerminalTab tab, int cols, int rows)
+    {
+        if (cols <= 0 || rows <= 0) return;
+
+        tab.Cols = cols;
+        tab.Rows = rows;
+
+        if (!tab.SessionManager.IsRunning)
+        {
+            StartTabTerminal(tab, cols, rows);
+            return;
+        }
+
+        tab.SessionManager.Resize(cols, rows);
+        tab.VirtualScreen.Resize(cols, rows);
+    }
+
+    // --- Backward compatibility for AI ---
+
+    /// <summary>Active tab's VirtualScreen, or a fallback empty one for AI context.</summary>
+    public VirtualScreen VirtualScreen => ActiveTab?.VirtualScreen ?? _fallbackVirtualScreen;
+    private readonly VirtualScreen _fallbackVirtualScreen = new();
+
+    /// <summary>Active tab's OutputBuffer, or a fallback empty one for AI context.</summary>
+    public TerminalOutputBuffer TerminalOutputBuffer => ActiveTab?.OutputBuffer ?? _fallbackOutputBuffer;
+    private readonly TerminalOutputBuffer _fallbackOutputBuffer = new();
+
+    /// <summary>Active tab's OutputStabilizer, or a fallback for AI auto-exec.</summary>
+    public TerminalOutputStabilizer OutputStabilizer => ActiveTab?.OutputStabilizer ?? _fallbackOutputStabilizer;
+    private readonly TerminalOutputStabilizer _fallbackOutputStabilizer = new();
 
     private void Initialize()
     {
@@ -491,8 +951,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayServer.LocalTerminalInputReceived += OnRemoteTerminalInput;
                 _relayServer.LocalTerminalResizeReceived += OnRemoteTerminalResize;
                 _relayServer.LocalTerminalSessionEnded += OnRemoteTerminalSessionEnded;
-                _relayServer.LocalTerminalSnapshotProvider = CaptureCurrentTerminalViewAsync;
-                _relayServer.LocalTerminalSizeProvider = GetCurrentTerminalSize;
+                _relayServer.LocalTerminalOpenRequested += OnRemoteTerminalOpenRequested;
+                _relayServer.LocalTerminalSnapshotProvider = CaptureTabTerminalViewAsync;
+                _relayServer.LocalTerminalSizeProvider = GetTabTerminalSize;
+                _relayServer.LocalSessionListProvider = GetLocalSessionList;
 
                 await _relayServer.StartAsync(ServerPort);
 
@@ -552,8 +1014,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayServer.LocalTerminalInputReceived -= OnRemoteTerminalInput;
             _relayServer.LocalTerminalResizeReceived -= OnRemoteTerminalResize;
             _relayServer.LocalTerminalSessionEnded -= OnRemoteTerminalSessionEnded;
+            _relayServer.LocalTerminalOpenRequested -= OnRemoteTerminalOpenRequested;
             _relayServer.LocalTerminalSnapshotProvider = null;
             _relayServer.LocalTerminalSizeProvider = null;
+            _relayServer.LocalSessionListProvider = null;
             _relayServer.Dispose();
             _relayServer = null;
         }
@@ -630,61 +1094,100 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         try
         {
-            if (!TerminalManager.IsRunning)
+            var tab = FindTabBySessionId(sessionId);
+            if (tab is null)
             {
-                OnNetworkLog(
-                    $"Remote terminal input ignored because terminal is not running. session={sessionId}");
+                OnNetworkLog($"Remote terminal input: no tab for session={sessionId}");
                 return;
             }
 
-            TerminalManager.WriteInput(data);
+            if (!tab.SessionManager.IsRunning)
+            {
+                OnNetworkLog($"Remote terminal input ignored, terminal not running. session={sessionId}");
+                return;
+            }
+
+            if (tab.HasMobileSession && tab.IsMobileControlPaused &&
+                TryGetMobileViewport(tab, out var mobileCols, out var mobileRows))
+            {
+                _dispatcher.Invoke(() => ShowMobileViewport(tab, mobileCols, mobileRows));
+            }
+
+            tab.SessionManager.WriteInput(data);
         }
         catch (Exception ex)
         {
-            OnNetworkLog(
-                $"Remote terminal input failed. session={sessionId}, len={data.Length}, error={ex.Message}");
+            OnNetworkLog($"Remote terminal input failed. session={sessionId}, error={ex.Message}");
         }
     }
 
     private void OnRemoteTerminalResize(string sessionId, int cols, int rows)
     {
-        if (cols <= 0 || rows <= 0)
-            return;
+        if (cols <= 0 || rows <= 0) return;
 
-        _dispatcher.InvokeAsync(() =>
+        _dispatcher.InvokeAsync(async () =>
         {
             try
             {
-                if (!_isMobileTerminalViewportLocked)
-                {
-                    if (_desktopTerminalCols <= 0 || _desktopTerminalRows <= 0)
-                    {
-                        _desktopTerminalCols = _terminalCols > 0 ? _terminalCols : cols;
-                        _desktopTerminalRows = _terminalRows > 0 ? _terminalRows : rows;
-                    }
+                var tab = FindTabBySessionId(sessionId);
+                if (tab is null) return;
 
-                    _isMobileTerminalViewportLocked = true;
+                var isFirstMobileAttach = !tab.HasMobileSession;
+                if (isFirstMobileAttach && (tab.DesktopCols <= 0 || tab.DesktopRows <= 0))
+                {
+                    tab.DesktopCols = tab.Cols > 0 ? tab.Cols : 120;
+                    tab.DesktopRows = tab.Rows > 0 ? tab.Rows : 30;
                 }
 
-                TerminalViewportLockRequested?.Invoke(cols, rows);
-                ApplyTerminalSize(cols, rows, startIfNeeded: true);
-                IsMobileConnected = true;
-                ControlOwner = ControlOwner.Mobile;
-                SessionStatus = $"Running ({cols}x{rows})";
+                if (isFirstMobileAttach)
+                {
+                    _ = SendTabSnapshotToNetworkAsync(tab);
+                }
+
+                ShowMobileViewport(tab, cols, rows);
             }
             catch (Exception ex)
             {
-                OnNetworkLog(
-                    $"Remote terminal resize failed. session={sessionId}, size={cols}x{rows}, error={ex.Message}");
+                OnNetworkLog($"Remote terminal resize failed. session={sessionId}, error={ex.Message}");
             }
         });
     }
 
-    private void OnRemoteTerminalSessionEnded()
+    private async Task SendTabSnapshotToNetworkAsync(TerminalTab tab)
+    {
+        try
+        {
+            var snapshot = await CaptureTabTerminalViewAsync(tab.TabId);
+            if (!string.IsNullOrWhiteSpace(snapshot))
+            {
+                ForwardTabOutputToNetwork(tab, snapshot);
+            }
+        }
+        catch (Exception ex)
+        {
+            OnNetworkLog($"Send tab snapshot failed. session={tab.TabId}, error={ex.Message}");
+        }
+    }
+
+    private void OnRemoteTerminalSessionEnded(string sessionId)
     {
         _dispatcher.InvokeAsync(() =>
         {
-            RestoreDesktopTerminalViewport();
+            if (string.IsNullOrEmpty(sessionId))
+            {
+                // Client disconnected entirely
+                foreach (var openTab in Tabs.ToList())
+                {
+                    ClearMobileViewport(openTab);
+                }
+                return;
+            }
+
+            var tab = FindTabBySessionId(sessionId);
+            if (tab is not null)
+            {
+                ClearMobileViewport(tab);
+            }
         });
     }
 
@@ -692,49 +1195,100 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher.InvokeAsync(() =>
         {
-            RestoreDesktopTerminalViewport();
+            var tab = FindTabBySessionId(sessionId);
+            if (tab is not null)
+            {
+                ClearMobileViewport(tab);
+            }
+            else
+            {
+                RestoreDesktopTerminalViewport();
+            }
         });
     }
 
-    private void RestoreDesktopTerminalViewport()
+    private async Task<(string SessionId, int Cols, int Rows)> OnRemoteTerminalOpenRequested(
+        string deviceId, string shellId)
     {
-        if (!_isMobileTerminalViewportLocked)
-            return;
+        var tcs = new TaskCompletionSource<(string, int, int)>();
 
-        _isMobileTerminalViewportLocked = false;
-        IsMobileConnected = false;
-        ControlOwner = ControlOwner.Pc;
-
-        TerminalViewportAutoFitRequested?.Invoke();
-        SessionStatus = "Running";
-    }
-
-    private (int Cols, int Rows) GetCurrentTerminalSize()
-    {
-        if (_terminalCols > 0 && _terminalRows > 0)
-            return (_terminalCols, _terminalRows);
-
-        return (120, 30);
-    }
-
-    private async Task<string> CaptureCurrentTerminalViewAsync()
-    {
-        try
+        await _dispatcher.InvokeAsync(() =>
         {
-            var snapshot = await CaptureTerminalSnapshotOnUiThreadAsync();
-            if (snapshot is not null)
+            try
             {
-                var bootstrap = BuildBootstrapSequence(snapshot);
-                if (!string.IsNullOrWhiteSpace(bootstrap))
-                    return bootstrap;
+                var shell = AvailableShells.FirstOrDefault(s =>
+                    string.Equals(s.Id, shellId, StringComparison.OrdinalIgnoreCase));
+                shell ??= SelectedShell ?? _shellLocator.GetDefaultShell();
+
+                var tab = CreateTab(shell, 0, 0);
+
+                // Use default size if no size has been reported yet
+                var cols = tab.Cols > 0 ? tab.Cols : 120;
+                var rows = tab.Rows > 0 ? tab.Rows : 30;
+
+                if (!tab.SessionManager.IsRunning)
+                {
+                    StartTabTerminal(tab, cols, rows);
+                }
+
+                tcs.TrySetResult((tab.TabId, cols, rows));
+            }
+            catch (Exception ex)
+            {
+                tcs.TrySetException(ex);
+            }
+        });
+
+        return await tcs.Task;
+    }
+
+    private List<SessionInfo> GetLocalSessionList()
+    {
+        if (_dispatcher.CheckAccess())
+        {
+            return Tabs.Select(t => new SessionInfo
+            {
+                SessionId = t.TabId,
+                ShellId = t.Shell.Id,
+                Title = t.Title
+            }).ToList();
+        }
+
+        return _dispatcher.Invoke(() =>
+            Tabs.Select(t => new SessionInfo
+            {
+                SessionId = t.TabId,
+                ShellId = t.Shell.Id,
+                Title = t.Title
+            }).ToList()
+        );
+    }
+
+    private async Task<string> CaptureTabTerminalViewAsync(string sessionId)
+    {
+        var tab = FindTabBySessionId(sessionId);
+        if (tab is null) return string.Empty;
+
+        // Only try xterm snapshot if this is the active tab
+        if (tab == ActiveTab)
+        {
+            try
+            {
+                var snapshot = await CaptureTerminalSnapshotOnUiThreadAsync();
+                if (snapshot is not null)
+                {
+                    var bootstrap = BuildBootstrapSequence(snapshot);
+                    if (!string.IsNullOrWhiteSpace(bootstrap))
+                        return bootstrap;
+                }
+            }
+            catch (Exception ex)
+            {
+                OnNetworkLog($"Snapshot capture error: {ex.Message}");
             }
         }
-        catch (Exception ex)
-        {
-            OnNetworkLog($"Snapshot capture error: {ex.Message}");
-        }
 
-        var virtualScreenSnapshot = VirtualScreen.GetSnapshot();
+        var virtualScreenSnapshot = tab.VirtualScreen.GetSnapshot();
         if (!string.IsNullOrWhiteSpace(virtualScreenSnapshot))
         {
             var lines = virtualScreenSnapshot.Split('\n');
@@ -745,8 +1299,51 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 cursorY: Math.Max(0, lines.Length - 1));
         }
 
-        return TerminalOutputBuffer.GetRecentRaw();
+        return tab.OutputBuffer.GetRecentRaw();
     }
+
+    private (int Cols, int Rows) GetTabTerminalSize(string sessionId)
+    {
+        var tab = FindTabBySessionId(sessionId);
+        if (tab is not null && tab.Cols > 0 && tab.Rows > 0)
+            return (tab.Cols, tab.Rows);
+        return (120, 30);
+    }
+
+    private TerminalTab? FindTabBySessionId(string sessionId)
+    {
+        if (_dispatcher.CheckAccess())
+            return Tabs.FirstOrDefault(t => t.TabId == sessionId);
+
+        return _dispatcher.Invoke(() =>
+            Tabs.FirstOrDefault(t => t.TabId == sessionId));
+    }
+
+    private void RestoreDesktopTerminalViewport()
+    {
+        if (Tabs.Count > 0)
+        {
+            foreach (var tab in Tabs.ToList())
+            {
+                ClearMobileViewport(tab);
+            }
+        }
+        else
+        {
+            IsMobileConnected = false;
+            ControlOwner = ControlOwner.Pc;
+        }
+    }
+
+    private void RestoreTabDesktopViewport(TerminalTab tab)
+    {
+        if (!tab.IsMobileViewportLocked && !tab.HasMobileSession)
+            return;
+
+        ClearMobileViewport(tab);
+    }
+
+    // --- Bootstrap Sequence Helpers ---
 
     private static string BuildBootstrapSequence(TerminalSnapshot snapshot)
     {
@@ -801,122 +1398,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         return sb.ToString();
-    }
-
-    // --- Terminal Output Forwarding ---
-
-    /// <summary>
-    /// Called by MainWindow when terminal produces output. Handles buffer, stabilizer, and network forwarding.
-    /// </summary>
-    public void HandleTerminalOutput(string text)
-    {
-        TerminalOutputBuffer.Append(text);
-        VirtualScreen.Write(text);
-        OutputStabilizer.NotifyOutputReceived();
-
-        // Forward to network if active
-        ForwardTerminalOutputToNetwork(text);
-
-        // Notify UI
-        TerminalOutputForwarded?.Invoke(text);
-    }
-
-    private void ForwardTerminalOutputToNetwork(string text)
-    {
-        if (_relayServer is not null && _relayServer.IsRunning)
-        {
-            _ = _relayServer.BroadcastLocalTerminalOutputAsync(_identity.DeviceId, LocalSessionId, text);
-        }
-        else if (_relayClient is not null && _relayClient.IsConnected)
-        {
-            _ = _relayClient.SendTerminalOutputAsync(_identity.DeviceId, LocalSessionId, text);
-        }
-    }
-
-    // --- Terminal Start / Restart ---
-
-    /// <summary>
-    /// Start the terminal using the selected shell. Called from MainWindow after WebView2 reports size.
-    /// </summary>
-    public void StartTerminal(int cols, int rows)
-    {
-        if (TerminalManager.IsRunning) return;
-
-        _terminalCols = cols;
-        _terminalRows = rows;
-        VirtualScreen.Resize(cols, rows);
-
-        var shell = SelectedShell ?? _shellLocator.GetDefaultShell();
-        var session = new ConPtySession();
-        TerminalManager.OutputReceived += OnTerminalManagerOutput;
-        TerminalManager.Start(session, shell, cols, rows);
-    }
-
-    public void ApplyTerminalSize(int cols, int rows, bool startIfNeeded)
-    {
-        if (cols <= 0 || rows <= 0)
-            return;
-
-        _terminalCols = cols;
-        _terminalRows = rows;
-
-        if (!TerminalManager.IsRunning)
-        {
-            if (!startIfNeeded)
-                return;
-
-            StartTerminal(cols, rows);
-            return;
-        }
-
-        TerminalManager.Resize(cols, rows);
-        VirtualScreen.Resize(cols, rows);
-    }
-
-    public void HandleLocalViewportResize(int cols, int rows)
-    {
-        if (cols <= 0 || rows <= 0)
-            return;
-
-        _desktopTerminalCols = cols;
-        _desktopTerminalRows = rows;
-
-        if (_isMobileTerminalViewportLocked)
-            return;
-
-        ApplyTerminalSize(cols, rows, startIfNeeded: true);
-        SessionStatus = "Running";
-    }
-
-    private void RequestTerminalRestart()
-    {
-        if (_terminalCols <= 0 || _terminalRows <= 0) return;
-
-        // Dispose old terminal
-        TerminalManager.OutputReceived -= OnTerminalManagerOutput;
-        TerminalManager.Dispose();
-
-        // Create new manager and start
-        TerminalManager = new TerminalSessionManager();
-
-        var shell = SelectedShell ?? _shellLocator.GetDefaultShell();
-        var session = new ConPtySession();
-        TerminalManager.OutputReceived += OnTerminalManagerOutput;
-        TerminalManager.Start(session, shell, _terminalCols, _terminalRows);
-
-        // Update the command delegate
-        ExecuteTerminalCommand = cmd => TerminalManager.WriteInput(cmd);
-
-        SessionStatus = $"Running ({shell.DisplayName})";
-
-        // Notify MainWindow to reset WebView2 terminal
-        OnPropertyChanged(nameof(TerminalManager));
-        TerminalRestarted?.Invoke();
-    }
-
-    private void OnTerminalManagerOutput(string text)
-    {
-        HandleTerminalOutput(text);
     }
 
     // --- AI Chat ---
@@ -1232,4 +1713,3 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         return commands;
     }
 }
-

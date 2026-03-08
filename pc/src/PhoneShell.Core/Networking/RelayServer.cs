@@ -23,8 +23,8 @@ public sealed class RelayServer : IDisposable
 
     public event Action<string>? Log;
     public event Action<List<DeviceInfo>>? DeviceListChanged;
-    public Func<Task<string>>? LocalTerminalSnapshotProvider { get; set; }
-    public Func<(int Cols, int Rows)>? LocalTerminalSizeProvider { get; set; }
+    public Func<string, Task<string>>? LocalTerminalSnapshotProvider { get; set; } // sessionId -> snapshot
+    public Func<string, (int Cols, int Rows)>? LocalTerminalSizeProvider { get; set; } // sessionId -> size
 
     public bool IsRunning => _httpListener?.IsListening == true;
     public IReadOnlyList<string> ListenPrefixes => _listenPrefixes;
@@ -132,7 +132,17 @@ public sealed class RelayServer : IDisposable
     /// <summary>
     /// Event raised when a remote client ends its local terminal viewing session.
     /// </summary>
-    public event Action? LocalTerminalSessionEnded;
+    public event Action<string>? LocalTerminalSessionEnded; // sessionId
+
+    /// <summary>
+    /// Event raised when a remote client requests to open a new terminal session on the local device.
+    /// </summary>
+    public event Func<string, string, Task<(string SessionId, int Cols, int Rows)>>? LocalTerminalOpenRequested; // deviceId, shellId -> (sessionId, cols, rows)
+
+    /// <summary>
+    /// Returns active session list for local device.
+    /// </summary>
+    public Func<List<Protocol.SessionInfo>>? LocalSessionListProvider { get; set; }
 
     public List<DeviceInfo> GetDeviceList()
     {
@@ -254,7 +264,7 @@ public sealed class RelayServer : IDisposable
             {
                 try
                 {
-                    LocalTerminalSessionEnded?.Invoke();
+                    LocalTerminalSessionEnded?.Invoke(string.Empty);
                 }
                 catch (Exception ex)
                 {
@@ -310,10 +320,40 @@ public sealed class RelayServer : IDisposable
                 await SendAsync(client, MessageSerializer.Serialize(list));
                 break;
 
+            case SessionListRequestMessage sessionReq:
+                if (_devices.TryGetValue(sessionReq.DeviceId, out var sessionDevice))
+                {
+                    List<Protocol.SessionInfo> sessions;
+                    if (sessionDevice.IsLocal)
+                    {
+                        sessions = LocalSessionListProvider?.Invoke() ?? new List<Protocol.SessionInfo>();
+                    }
+                    else
+                    {
+                        // Forward to remote device
+                        if (sessionDevice.ClientId is not null &&
+                            _clients.TryGetValue(sessionDevice.ClientId, out var sessionClient))
+                        {
+                            await SendAsync(sessionClient, json);
+                        }
+                        break;
+                    }
+                    var sessionList = new SessionListMessage
+                    {
+                        DeviceId = sessionReq.DeviceId,
+                        Sessions = sessions
+                    };
+                    await SendAsync(client, MessageSerializer.Serialize(sessionList));
+                }
+                break;
+
             case TerminalInputMessage input:
                 // Route to the target device
                 if (_devices.TryGetValue(input.DeviceId, out var targetDevice))
                 {
+                    // Ensure the client is subscribed so it receives terminal output
+                    client.SubscribedDeviceId ??= input.DeviceId;
+
                     if (targetDevice.IsLocal)
                     {
                         // Local device - invoke direct handler
@@ -347,59 +387,88 @@ public sealed class RelayServer : IDisposable
                     client.SubscribedDeviceId = open.DeviceId;
                     if (openTarget.IsLocal)
                     {
-                        var cols = 120;
-                        var rows = 30;
-                        if (LocalTerminalSizeProvider is not null)
+                        if (LocalTerminalOpenRequested is not null)
                         {
                             try
                             {
-                                var size = LocalTerminalSizeProvider();
-                                if (size.Cols > 0)
-                                    cols = size.Cols;
-                                if (size.Rows > 0)
-                                    rows = size.Rows;
+                                var (sessionId, openCols, openRows) =
+                                    await LocalTerminalOpenRequested.Invoke(open.DeviceId, open.ShellId);
+
+                                var opened = new TerminalOpenedMessage
+                                {
+                                    DeviceId = open.DeviceId,
+                                    SessionId = sessionId,
+                                    Cols = openCols,
+                                    Rows = openRows
+                                };
+                                await SendAsync(client, MessageSerializer.Serialize(opened));
+
+                                string? snapshot = null;
+                                if (LocalTerminalSnapshotProvider is not null)
+                                {
+                                    try
+                                    {
+                                        snapshot = await LocalTerminalSnapshotProvider(sessionId);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Log?.Invoke($"Local terminal snapshot failed: {ex.Message}");
+                                    }
+                                }
+
+                                if (!string.IsNullOrWhiteSpace(snapshot))
+                                {
+                                    var initialOutput = new TerminalOutputMessage
+                                    {
+                                        DeviceId = open.DeviceId,
+                                        SessionId = sessionId,
+                                        Data = snapshot
+                                    };
+                                    await SendAsync(client, MessageSerializer.Serialize(initialOutput));
+                                }
+
+                                Log?.Invoke($"Local terminal opened for client {client.ClientId}, session={sessionId}");
                             }
                             catch (Exception ex)
                             {
-                                Log?.Invoke($"Local terminal size lookup failed: {ex.Message}");
+                                Log?.Invoke($"Local terminal open failed: {ex.Message}");
+                                var error = new ErrorMessage
+                                {
+                                    Code = "terminal.open.failed",
+                                    Message = ex.Message
+                                };
+                                await SendAsync(client, MessageSerializer.Serialize(error));
                             }
                         }
-
-                        // Local device - reply with terminal.opened so mobile can proceed
-                        var opened = new TerminalOpenedMessage
+                        else
                         {
-                            DeviceId = open.DeviceId,
-                            SessionId = "local",
-                            Cols = cols,
-                            Rows = rows
-                        };
-                        await SendAsync(client, MessageSerializer.Serialize(opened));
-
-                        string? snapshot = null;
-                        if (LocalTerminalSnapshotProvider is not null)
-                        {
-                            try
+                            // Fallback: no handler registered
+                            var cols = 120;
+                            var rows = 30;
+                            if (LocalTerminalSizeProvider is not null)
                             {
-                                snapshot = await LocalTerminalSnapshotProvider();
+                                try
+                                {
+                                    var size = LocalTerminalSizeProvider("local");
+                                    if (size.Cols > 0) cols = size.Cols;
+                                    if (size.Rows > 0) rows = size.Rows;
+                                }
+                                catch (Exception ex)
+                                {
+                                    Log?.Invoke($"Local terminal size lookup failed: {ex.Message}");
+                                }
                             }
-                            catch (Exception ex)
-                            {
-                                Log?.Invoke($"Local terminal snapshot failed: {ex.Message}");
-                            }
-                        }
 
-                        if (!string.IsNullOrWhiteSpace(snapshot))
-                        {
-                            var initialOutput = new TerminalOutputMessage
+                            var opened = new TerminalOpenedMessage
                             {
                                 DeviceId = open.DeviceId,
-                                SessionId = opened.SessionId,
-                                Data = snapshot
+                                SessionId = "local",
+                                Cols = cols,
+                                Rows = rows
                             };
-                            await SendAsync(client, MessageSerializer.Serialize(initialOutput));
+                            await SendAsync(client, MessageSerializer.Serialize(opened));
+                            Log?.Invoke($"Local terminal opened (legacy) for client {client.ClientId}");
                         }
-
-                        Log?.Invoke($"Local terminal opened for client {client.ClientId}");
                     }
                     else if (openTarget.ClientId is not null &&
                              _clients.TryGetValue(openTarget.ClientId, out var openClient))
@@ -412,6 +481,9 @@ public sealed class RelayServer : IDisposable
             case TerminalResizeMessage resize:
                 if (_devices.TryGetValue(resize.DeviceId, out var resizeTarget))
                 {
+                    // Ensure the client is subscribed so it receives terminal output
+                    client.SubscribedDeviceId ??= resize.DeviceId;
+
                     if (resizeTarget.IsLocal)
                     {
                         InvokeLocalTerminalResize(client, resize);
@@ -438,7 +510,7 @@ public sealed class RelayServer : IDisposable
                         await SendAsync(client, MessageSerializer.Serialize(closed));
                         client.SubscribedDeviceId = null;
                         InvokeLocalTerminalSessionEnded(client, close);
-                        Log?.Invoke($"Local terminal closed for client {client.ClientId}");
+                        Log?.Invoke($"Local terminal closed for client {client.ClientId}, session={close.SessionId}");
                     }
                     else if (closeTarget.ClientId is not null &&
                              _clients.TryGetValue(closeTarget.ClientId, out var closeClient))
@@ -450,6 +522,7 @@ public sealed class RelayServer : IDisposable
 
             case TerminalOpenedMessage:
             case TerminalClosedMessage:
+            case SessionListMessage:
                 // Forward to subscribed clients
                 foreach (var c in _clients.Values)
                 {
@@ -569,7 +642,7 @@ public sealed class RelayServer : IDisposable
         {
             Log?.Invoke(
                 $"Local terminal session ended by {client.ClientId}: session={close.SessionId}");
-            LocalTerminalSessionEnded?.Invoke();
+            LocalTerminalSessionEnded?.Invoke(close.SessionId);
         }
         catch (Exception ex)
         {

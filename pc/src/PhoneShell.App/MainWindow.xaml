@@ -64,10 +64,8 @@
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                                 <Button Content="Refresh" Width="80" Margin="0,0,8,0"
                                         Command="{Binding RefreshShellsCommand}" />
-                                <Button Content="Restart Terminal" Width="110"
-                                        Command="{Binding RestartTerminalCommand}" />
                             </StackPanel>
-                            <TextBlock Text="Note: Changing shell requires restarting the terminal."
+                            <TextBlock Text="Select a shell type, then use [+] or the welcome screen to open sessions."
                                        FontSize="10" Foreground="#999" Margin="0,4,0,0" TextWrapping="Wrap" />
                         </StackPanel>
                     </Expander>
@@ -223,12 +221,191 @@
                 </DockPanel>
             </Border>
 
-            <!-- Terminal -->
-            <Border Grid.Column="2" Background="#F1F3F5" BorderBrush="#D9DEE5" BorderThickness="1" CornerRadius="10" Padding="0">
-                <wv2:WebView2 x:Name="TerminalWebView" />
+            <!-- Right Panel: Terminal Area with Tabs -->
+            <Border Grid.Column="2" Background="#F1F3F5" BorderBrush="#D9DEE5" BorderThickness="1" CornerRadius="10"
+                    ClipToBounds="True">
+                <Grid>
+                    <!-- Welcome Screen (shown when no tabs) -->
+                    <StackPanel x:Name="WelcomePanel" VerticalAlignment="Center" HorizontalAlignment="Center"
+                                Visibility="Visible">
+                        <TextBlock Text="Welcome to PhoneShell" FontSize="24" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" Foreground="#333" Margin="0,0,0,16" />
+                        <TextBlock Text="Select a shell type and create a new session to get started."
+                                   FontSize="14" Foreground="#666" HorizontalAlignment="Center" Margin="0,0,0,24"
+                                   TextWrapping="Wrap" TextAlignment="Center" MaxWidth="400" />
+
+                        <!-- Shell type cards -->
+                        <ItemsControl x:Name="ShellCardsPanel" ItemsSource="{Binding AvailableShells}"
+                                      HorizontalAlignment="Center" Margin="0,0,0,24">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel HorizontalAlignment="Center" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="White" CornerRadius="8" Padding="16,12" Margin="6"
+                                            BorderBrush="#E0E0E0" BorderThickness="1" Cursor="Hand"
+                                            MouseLeftButtonDown="ShellCard_Click">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Style.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="Background" Value="#E3F2FD" />
+                                                        <Setter Property="BorderBrush" Value="#42A5F5" />
+                                                    </Trigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" FontSize="14"
+                                                       HorizontalAlignment="Center" />
+                                            <TextBlock Text="{Binding Id}" FontSize="10" Foreground="#999"
+                                                       HorizontalAlignment="Center" Margin="0,2,0,0" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <Button Content="+ New Session" FontSize="14" Padding="20,10"
+                                HorizontalAlignment="Center"
+                                Background="#4CAF50" Foreground="White" FontWeight="SemiBold"
+                                Command="{Binding NewSessionCommand}">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}" CornerRadius="6"
+                                            Padding="{TemplateBinding Padding}" Cursor="Hand">
+                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Border>
+                                </ControlTemplate>
+                            </Button.Template>
+                        </Button>
+                    </StackPanel>
+
+                    <!-- Tab Container (shown when tabs exist) -->
+                    <DockPanel x:Name="TabContainer" Visibility="Collapsed">
+                        <!-- Tab Bar -->
+                        <Border DockPanel.Dock="Top" Background="#E8EAEd" Padding="4,4,4,0">
+                            <DockPanel>
+                                <!-- Add tab button -->
+                                <Button DockPanel.Dock="Right" Content="+" FontSize="16" FontWeight="Bold"
+                                        Width="32" Height="28" Margin="4,0,2,0"
+                                        Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                        Command="{Binding NewSessionCommand}"
+                                        ToolTip="New Session">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border Background="{TemplateBinding Background}" CornerRadius="4"
+                                                    Padding="0" Cursor="Hand">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Style.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter Property="Background" Value="#D0D3D8" />
+                                                            </Trigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Border>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+
+                                <!-- Tab items -->
+                                <ItemsControl x:Name="TabBar" ItemsSource="{Binding Tabs}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border x:Name="TabItemBorder" Padding="10,5,4,5" Margin="0,0,2,0"
+                                                    CornerRadius="6,6,0,0" Cursor="Hand"
+                                                    MouseLeftButtonDown="TabItem_Click"
+                                                    Background="#D0D3D8">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="{Binding Title}" FontSize="12"
+                                                               VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                    <Button Content="x" FontSize="10" Width="18" Height="18"
+                                                            Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                                            Click="TabCloseButton_Click" Tag="{Binding TabId}"
+                                                            VerticalAlignment="Center"
+                                                            ToolTip="Close Tab">
+                                                        <Button.Template>
+                                                            <ControlTemplate TargetType="Button">
+                                                                <Border Background="{TemplateBinding Background}"
+                                                                        CornerRadius="3" Cursor="Hand">
+                                                                    <Border.Style>
+                                                                        <Style TargetType="Border">
+                                                                            <Style.Triggers>
+                                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                                    <Setter Property="Background" Value="#C0C3C8" />
+                                                                                </Trigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </Border.Style>
+                                                                    <ContentPresenter HorizontalAlignment="Center"
+                                                                                      VerticalAlignment="Center" />
+                                                                </Border>
+                                                            </ControlTemplate>
+                                                        </Button.Template>
+                                                    </Button>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- Title Bar for active tab -->
+                        <Border DockPanel.Dock="Top" Background="#E0E2E6" Padding="8,4">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button x:Name="CompactModeButton" Content="Compact" FontSize="11"
+                                            Padding="8,3" Margin="4,0" Background="#42A5F5" Foreground="White"
+                                            Click="CompactModeButton_Click" ToolTip="Toggle compact (mobile) size"
+                                            Cursor="Hand">
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border Background="{TemplateBinding Background}" CornerRadius="4"
+                                                        Padding="{TemplateBinding Padding}" Cursor="Hand">
+                                                    <ContentPresenter HorizontalAlignment="Center"
+                                                                      VerticalAlignment="Center" />
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                    </Button>
+                                    <Button Content="Close" FontSize="11"
+                                            Padding="8,3" Margin="4,0" Background="#E53935" Foreground="White"
+                                            Click="TitleBarCloseButton_Click" ToolTip="Close this session"
+                                            Cursor="Hand">
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border Background="{TemplateBinding Background}" CornerRadius="4"
+                                                        Padding="{TemplateBinding Padding}" Cursor="Hand">
+                                                    <ContentPresenter HorizontalAlignment="Center"
+                                                                      VerticalAlignment="Center" />
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                    </Button>
+                                </StackPanel>
+                                <TextBlock x:Name="ActiveTabTitle" Text="" FontSize="13" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Foreground="#333" />
+                            </DockPanel>
+                        </Border>
+
+                        <!-- Terminal WebView -->
+                        <wv2:WebView2 x:Name="TerminalWebView" />
+                    </DockPanel>
+                </Grid>
             </Border>
         </Grid>
 
-        <TextBlock Grid.Row="2" Text="PhoneShell — PC client with relay server support" FontSize="12" Foreground="#666666" />
+        <TextBlock Grid.Row="2" Text="PhoneShell -- PC client with relay server support" FontSize="12" Foreground="#666666" />
     </Grid>
 </Window>

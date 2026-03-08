@@ -42,6 +42,28 @@ public sealed class DeviceInfo
     public List<string> AvailableShells { get; init; } = new();
 }
 
+// --- Session management ---
+
+public sealed class SessionListRequestMessage
+{
+    public string Type => "session.list.request";
+    public string DeviceId { get; init; } = string.Empty;
+}
+
+public sealed class SessionListMessage
+{
+    public string Type => "session.list";
+    public string DeviceId { get; init; } = string.Empty;
+    public List<SessionInfo> Sessions { get; init; } = new();
+}
+
+public sealed class SessionInfo
+{
+    public string SessionId { get; init; } = string.Empty;
+    public string ShellId { get; init; } = string.Empty;
+    public string Title { get; init; } = string.Empty;
+}
+
 // --- Terminal session management ---
 
 public sealed class TerminalOpenMessage

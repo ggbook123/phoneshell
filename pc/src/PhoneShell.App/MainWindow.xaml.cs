@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Specialized;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Microsoft.Web.WebView2.Core;
+using PhoneShell.Core.Terminals;
 using PhoneShell.ViewModels;
 
 namespace PhoneShell;
@@ -21,12 +23,12 @@ public partial class MainWindow : Window
         _viewModel = new MainViewModel();
         DataContext = _viewModel;
 
-        _viewModel.ExecuteTerminalCommand = cmd => _viewModel.TerminalManager.WriteInput(cmd);
         _viewModel.TerminalOutputForwarded += OnTerminalOutputForwarded;
-        _viewModel.TerminalRestarted += OnTerminalRestarted;
+        _viewModel.ActiveTabChanged += OnActiveTabChanged;
         _viewModel.TerminalViewportLockRequested += OnTerminalViewportLockRequested;
         _viewModel.TerminalViewportAutoFitRequested += OnTerminalViewportAutoFitRequested;
         _viewModel.ChatMessages.CollectionChanged += ChatMessages_CollectionChanged;
+        _viewModel.Tabs.CollectionChanged += Tabs_CollectionChanged;
 
         Loaded += MainWindow_Loaded;
     }
@@ -43,9 +45,11 @@ public partial class MainWindow : Window
         _webViewReady = true;
         _viewModel.SnapshotService.SetScriptExecutor(
             script => TerminalWebView.CoreWebView2.ExecuteScriptAsync(script));
-        _viewModel.SessionStatus = "Terminal ready";
+        _viewModel.SessionStatus = "Ready";
 
         ApiKeyBox.Password = _viewModel.AiApiKey;
+
+        UpdatePanelVisibility();
     }
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -61,8 +65,8 @@ public partial class MainWindow : Window
         {
             case "input":
                 var data = root.GetProperty("data").GetString();
-                if (data is not null)
-                    _viewModel.TerminalManager.WriteInput(data);
+                if (data is not null && _viewModel.ActiveTab is not null)
+                    _viewModel.ActiveTab.SessionManager.WriteInput(data);
                 break;
             case "resize":
                 var cols = root.GetProperty("cols").GetInt32();
@@ -70,6 +74,12 @@ public partial class MainWindow : Window
                 if (cols > 0 && rows > 0)
                 {
                     _viewModel.HandleLocalViewportResize(cols, rows);
+
+                    // If active tab exists but terminal not started yet, start it
+                    if (_viewModel.ActiveTab is not null && !_viewModel.ActiveTab.SessionManager.IsRunning)
+                    {
+                        _viewModel.StartActiveTabTerminal(cols, rows);
+                    }
                 }
                 break;
         }
@@ -81,6 +91,11 @@ public partial class MainWindow : Window
 
         Dispatcher.InvokeAsync(() =>
         {
+            if (_viewModel.ActiveTab is not null)
+            {
+                CompactModeButton.Content = _viewModel.ActiveTab.IsCompactMode ? "Expand" : "Compact";
+            }
+
             TerminalWebView.CoreWebView2.ExecuteScriptAsync(
                 $"window.setTerminalGeometry && window.setTerminalGeometry({cols}, {rows})");
         });
@@ -92,15 +107,16 @@ public partial class MainWindow : Window
 
         Dispatcher.InvokeAsync(() =>
         {
+            if (_viewModel.ActiveTab is not null)
+            {
+                CompactModeButton.Content = _viewModel.ActiveTab.IsCompactMode ? "Expand" : "Compact";
+            }
+
             TerminalWebView.CoreWebView2.ExecuteScriptAsync(
                 "window.fitTerminalToContainer && window.fitTerminalToContainer()");
         });
     }
 
-    /// <summary>
-    /// Called by ViewModel when terminal output has been processed (buffer, stabilizer, network).
-    /// We just need to push it to WebView2.
-    /// </summary>
     private void OnTerminalOutputForwarded(string text)
     {
         if (!_webViewReady) return;
@@ -111,24 +127,139 @@ public partial class MainWindow : Window
         });
     }
 
-    /// <summary>
-    /// Called by ViewModel when terminal is restarted (shell change). Reset xterm.js.
-    /// </summary>
-    private void OnTerminalRestarted()
+    private void OnActiveTabChanged(TerminalTab? tab)
     {
-        if (!_webViewReady) return;
         Dispatcher.InvokeAsync(() =>
         {
-            // Reset the xterm.js terminal
-            TerminalWebView.CoreWebView2.ExecuteScriptAsync("window.resetTerminal && window.resetTerminal()");
+            UpdatePanelVisibility();
 
-            // Re-wire the command delegate to the new TerminalManager
-            _viewModel.ExecuteTerminalCommand = cmd => _viewModel.TerminalManager.WriteInput(cmd);
+            if (tab is null)
+            {
+                ActiveTabTitle.Text = "";
+                return;
+            }
+
+            ActiveTabTitle.Text = tab.Title;
+
+            // Update compact mode button text
+            CompactModeButton.Content = tab.IsCompactMode ? "Expand" : "Compact";
+
+            // Reset xterm.js and replay the new tab's buffered output
+            if (_webViewReady)
+            {
+                TerminalWebView.CoreWebView2.ExecuteScriptAsync(
+                    "window.resetTerminal && window.resetTerminal()");
+
+                // Replay buffered output from VirtualScreen snapshot
+                var snapshot = tab.VirtualScreen.GetSnapshot();
+                if (!string.IsNullOrWhiteSpace(snapshot))
+                {
+                    // Build a bootstrap sequence from the virtual screen
+                    var lines = snapshot.Split('\n');
+                    var sb = new System.Text.StringBuilder();
+                    sb.Append("\x1b[0m\x1b[H\x1b[2J");
+                    for (var row = 0; row < lines.Length; row++)
+                    {
+                        if (lines[row].Length == 0) continue;
+                        sb.Append($"\x1b[{row + 1};1H");
+                        sb.Append(lines[row]);
+                    }
+                    sb.Append($"\x1b[{Math.Max(1, lines.Length)};1H");
+
+                    var escaped = JsonSerializer.Serialize(sb.ToString());
+                    TerminalWebView.CoreWebView2.ExecuteScriptAsync(
+                        $"window.writeTerminal({escaped})");
+                }
+
+                // Apply correct viewport mode
+                if (tab.IsCompactMode)
+                {
+                    var cols = tab.MobileCols > 0 ? tab.MobileCols : 80;
+                    var rows = tab.MobileRows > 0 ? tab.MobileRows : 24;
+                    TerminalWebView.CoreWebView2.ExecuteScriptAsync(
+                        $"window.setTerminalGeometry && window.setTerminalGeometry({cols}, {rows})");
+                }
+                else
+                {
+                    TerminalWebView.CoreWebView2.ExecuteScriptAsync(
+                        "window.fitTerminalToContainer && window.fitTerminalToContainer()");
+                }
+            }
 
             // Re-set the snapshot executor
             _viewModel.SnapshotService.SetScriptExecutor(
                 script => TerminalWebView.CoreWebView2.ExecuteScriptAsync(script));
+
+            // Update tab highlighting
+            UpdateTabHighlighting();
         });
+    }
+
+    private void UpdatePanelVisibility()
+    {
+        var hasTabs = _viewModel.Tabs.Count > 0;
+        WelcomePanel.Visibility = hasTabs ? Visibility.Collapsed : Visibility.Visible;
+        TabContainer.Visibility = hasTabs ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void UpdateTabHighlighting()
+    {
+        // Tab highlighting is handled via DataTemplate;
+        // we update active tab title text here
+        if (_viewModel.ActiveTab is not null)
+        {
+            ActiveTabTitle.Text = _viewModel.ActiveTab.Title;
+            CompactModeButton.Content = _viewModel.ActiveTab.IsCompactMode ? "Expand" : "Compact";
+        }
+    }
+
+    private void Tabs_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        Dispatcher.InvokeAsync(UpdatePanelVisibility);
+    }
+
+    // --- Tab UI Event Handlers ---
+
+    private void ShellCard_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is ShellInfo shell)
+        {
+            _viewModel.SelectedShell = shell;
+            _viewModel.CreateNewSession();
+        }
+    }
+
+    private void TabItem_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is TerminalTab tab)
+        {
+            _viewModel.SwitchTabCommand.Execute(tab.TabId);
+        }
+    }
+
+    private void TabCloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.Tag is string tabId)
+        {
+            _viewModel.CloseTabCommand.Execute(tabId);
+        }
+    }
+
+    private void CompactModeButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel.ActiveTab is not null)
+        {
+            _viewModel.ToggleCompactModeCommand.Execute(_viewModel.ActiveTab.TabId);
+            CompactModeButton.Content = _viewModel.ActiveTab.IsCompactMode ? "Expand" : "Compact";
+        }
+    }
+
+    private void TitleBarCloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel.ActiveTab is not null)
+        {
+            _viewModel.CloseTabCommand.Execute(_viewModel.ActiveTab.TabId);
+        }
     }
 
     private void ApiKeyBox_PasswordChanged(object sender, RoutedEventArgs e)
@@ -160,7 +291,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _viewModel.TerminalOutputForwarded -= OnTerminalOutputForwarded;
-        _viewModel.TerminalRestarted -= OnTerminalRestarted;
+        _viewModel.ActiveTabChanged -= OnActiveTabChanged;
         _viewModel.TerminalViewportLockRequested -= OnTerminalViewportLockRequested;
         _viewModel.TerminalViewportAutoFitRequested -= OnTerminalViewportAutoFitRequested;
         _viewModel.Dispose();

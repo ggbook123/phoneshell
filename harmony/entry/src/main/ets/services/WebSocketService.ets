@@ -12,6 +12,11 @@ class DeviceListRequestMsg {
   type: string = 'device.list.request';
 }
 
+class SessionListRequestMsg {
+  type: string = 'session.list.request';
+  deviceId: string = '';
+}
+
 class TerminalOpenMsg {
   type: string = 'terminal.open';
   deviceId: string = '';
@@ -380,6 +385,17 @@ class WebSocketServiceClass {
 
   requestDeviceList(): void {
     let msg: DeviceListRequestMsg = new DeviceListRequestMsg();
+    this.send(JSON.stringify(msg));
+  }
+
+  requestSessionList(deviceId: string): void {
+    const normalizedDeviceId: string = this.normalizeString(deviceId);
+    if (normalizedDeviceId.length === 0) {
+      return;
+    }
+    hilog.info(DOMAIN, NET_TAG, 'requestSessionList device=%{public}s', normalizedDeviceId);
+    let msg: SessionListRequestMsg = new SessionListRequestMsg();
+    msg.deviceId = normalizedDeviceId;
     this.send(JSON.stringify(msg));
   }
 

@@ -37,6 +37,25 @@ export interface DeviceInfo {
   availableShells: Array<string>;
 }
 
+// --- Session management ---
+
+export interface SessionListRequestMessage extends BaseMessage {
+  type: 'session.list.request';
+  deviceId: string;
+}
+
+export interface SessionListMessage extends BaseMessage {
+  type: 'session.list';
+  deviceId: string;
+  sessions: Array<SessionInfo>;
+}
+
+export interface SessionInfo {
+  sessionId: string;
+  shellId: string;
+  title: string;
+}
+
 // --- Terminal session management ---
 
 export interface TerminalOpenMessage extends BaseMessage {

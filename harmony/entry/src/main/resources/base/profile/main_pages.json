@@ -2,6 +2,7 @@
   "src": [
     "pages/Index",
     "pages/DeviceListPage",
+    "pages/SessionListPage",
     "pages/TerminalPage"
   ]
 }

@@ -15,6 +15,7 @@ class TerminalBridge {
   onReadyCallback: (cols: number, rows: number) => void = (_cols: number, _rows: number) => {};
   onResizeCallback: (cols: number, rows: number) => void = (_cols: number, _rows: number) => {};
   onInputCallback: (data: string) => void = (_data: string) => {};
+  onInteractionCallback: () => void = () => {};
 
   onTerminalReady(cols: number, rows: number): void {
     this.onReadyCallback(cols, rows);
@@ -26,6 +27,10 @@ class TerminalBridge {
 
   sendInput(data: string): void {
     this.onInputCallback(data);
+  }
+
+  onTerminalInteraction(): void {
+    this.onInteractionCallback();
   }
 
   logMessage(_message: string): void {
@@ -82,6 +87,11 @@ struct TerminalPage {
 
   aboutToAppear(): void {
     hilog.info(DOMAIN, PAGE_TAG, 'aboutToAppear');
+    // Reset state for fresh terminal view each time we enter
+    this.seededCachedOutput = false;
+    this.pendingTerminalOutput = '';
+    this.terminalReady = false;
+    this.terminalHint = '正在初始化终端...';
     this.activatePage();
   }
 
@@ -90,10 +100,9 @@ struct TerminalPage {
       this.sessionActive ? 'true' : 'false');
     this.deactivatePage();
 
-    if (this.sessionActive) {
-      hilog.warn(DOMAIN, PAGE_TAG, 'aboutToDisappear -> closeTerminal');
-      WebSocketService.closeTerminal();
-    }
+    // In multi-session mode, do NOT close the terminal when navigating away.
+    // The session stays alive on the PC side.
+    // Only close if session is already inactive (disconnected/error).
   }
 
   onPageShow(): void {
@@ -115,6 +124,10 @@ struct TerminalPage {
     };
     this.terminalBridge.onInputCallback = (data: string) => {
       WebSocketService.sendTerminalInput(data);
+    };
+    this.terminalBridge.onInteractionCallback = () => {
+      this.requestRemoteResize();
+      this.runTerminalScript('window.phoneShell && window.phoneShell.focus();');
     };
 
     this.connectionState = WebSocketService.getConnectionState();
@@ -256,9 +269,8 @@ struct TerminalPage {
   }
 
   private goBack(): void {
-    if (this.sessionActive) {
-      WebSocketService.closeTerminal();
-    }
+    // Don't close the terminal session — it stays alive on the PC.
+    // Just navigate back to the session list.
     this.getUIContext().getRouter().back();
   }
 
@@ -307,7 +319,7 @@ struct TerminalPage {
           .javaScriptProxy({
             object: this.terminalBridge,
             name: 'nativeApp',
-            methodList: ['onTerminalReady', 'onTerminalResize', 'sendInput', 'logMessage'],
+            methodList: ['onTerminalReady', 'onTerminalResize', 'sendInput', 'onTerminalInteraction', 'logMessage'],
             controller: this.terminalController
           })
 

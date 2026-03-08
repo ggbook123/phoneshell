@@ -51,6 +51,8 @@ public static class MessageSerializer
             "device.unregister" => Deserialize<DeviceUnregisterMessage>(json),
             "device.list.request" => Deserialize<DeviceListRequestMessage>(json),
             "device.list" => Deserialize<DeviceListMessage>(json),
+            "session.list.request" => Deserialize<SessionListRequestMessage>(json),
+            "session.list" => Deserialize<SessionListMessage>(json),
             "terminal.open" => Deserialize<TerminalOpenMessage>(json),
             "terminal.opened" => Deserialize<TerminalOpenedMessage>(json),
             "terminal.input" => Deserialize<TerminalInputMessage>(json),

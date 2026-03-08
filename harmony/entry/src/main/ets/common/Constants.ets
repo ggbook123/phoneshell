@@ -49,6 +49,9 @@ export class AppStrings {
   static readonly HISTORY_TITLE: string = '历史连接';
   static readonly SEND_BUTTON: string = '发送';
   static readonly TERMINAL_TITLE: string = '终端';
+  static readonly SESSION_LIST_TITLE: string = '会话列表';
+  static readonly EMPTY_SESSION_LIST: string = '暂无活动会话';
+  static readonly NEW_SESSION_BUTTON: string = '新建会话';
 }
 
 export enum ConnectionState {

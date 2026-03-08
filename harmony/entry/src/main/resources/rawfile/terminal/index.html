@@ -115,6 +115,11 @@
       callNative('sendInput', data);
     });
 
+    terminalElement.addEventListener('pointerdown', function() {
+      callNative('onTerminalInteraction');
+      term.focus();
+    }, { passive: true });
+
     window.phoneShell = {
       write: function(data) {
         safeWrite(data);

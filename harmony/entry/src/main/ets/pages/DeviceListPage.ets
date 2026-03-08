@@ -88,21 +88,6 @@ struct DeviceListPage {
         if (type === 'device.list') {
           this.devices = WebSocketService.getCachedDevices();
           this.isRefreshing = false;
-        } else if (type === 'terminal.opened') {
-          const sessionId: Object | undefined = data['sessionId'];
-          const deviceId: Object | undefined = data['deviceId'];
-          const resolvedSessionId: string =
-            (typeof sessionId === 'string' && sessionId.length > 0) ? sessionId as string : '';
-          const resolvedDeviceId: string =
-            (typeof deviceId === 'string' && deviceId.length > 0)
-              ? deviceId as string
-              : WebSocketService.getActiveDeviceId();
-          if (resolvedSessionId.length > 0) {
-            hilog.info(DOMAIN, PAGE_TAG, 'terminal.opened session=%{public}s device=%{public}s',
-              resolvedSessionId, resolvedDeviceId);
-            WebSocketService.setActiveSession(resolvedDeviceId, resolvedSessionId);
-            this.getUIContext().getRouter().pushUrl({ url: 'pages/TerminalPage' });
-          }
         } else if (type === 'error') {
           this.isRefreshing = false;
         }
@@ -140,14 +125,16 @@ struct DeviceListPage {
     if (deviceId.length === 0) {
       return;
     }
-    // Open first available shell by default
-    let shellId: string = '';
-    const availableShells: Array<string> = this.getAvailableShells(device);
-    if (availableShells.length > 0) {
-      shellId = availableShells[0];
-    }
-    hilog.info(DOMAIN, PAGE_TAG, 'openTerminal device=%{public}s shell=%{public}s', deviceId, shellId);
-    WebSocketService.openTerminal(deviceId, shellId);
+    // Navigate to session list page for this device
+    hilog.info(DOMAIN, PAGE_TAG, 'navigateToSessionList device=%{public}s', deviceId);
+    this.getUIContext().getRouter().pushUrl({
+      url: 'pages/SessionListPage',
+      params: {
+        deviceId: deviceId,
+        displayName: this.getDeviceDisplayName(device),
+        availableShells: this.getAvailableShells(device)
+      }
+    });
   }
 
   private getOsIcon(os: string): string {
