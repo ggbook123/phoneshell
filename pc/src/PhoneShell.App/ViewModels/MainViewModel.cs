@@ -475,7 +475,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayServer = new RelayServer();
                 _relayServer.Log += OnNetworkLog;
                 _relayServer.LocalTerminalInputReceived += OnRemoteTerminalInput;
+                _relayServer.LocalTerminalResizeReceived += OnRemoteTerminalResize;
                 _relayServer.LocalTerminalSnapshotProvider = CaptureCurrentTerminalViewAsync;
+                _relayServer.LocalTerminalSizeProvider = GetCurrentTerminalSize;
 
                 await _relayServer.StartAsync(ServerPort);
 
@@ -506,6 +508,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayClient.Log += OnNetworkLog;
                 _relayClient.ConnectionStateChanged += OnClientConnectionStateChanged;
                 _relayClient.TerminalInputReceived += OnRemoteTerminalInput;
+                _relayClient.TerminalResizeRequested += OnRemoteTerminalResize;
 
                 _ = _relayClient.ConnectAsync(url);
 
@@ -531,7 +534,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             _relayServer.Log -= OnNetworkLog;
             _relayServer.LocalTerminalInputReceived -= OnRemoteTerminalInput;
+            _relayServer.LocalTerminalResizeReceived -= OnRemoteTerminalResize;
             _relayServer.LocalTerminalSnapshotProvider = null;
+            _relayServer.LocalTerminalSizeProvider = null;
             _relayServer.Dispose();
             _relayServer = null;
         }
@@ -541,6 +546,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayClient.Log -= OnNetworkLog;
             _relayClient.ConnectionStateChanged -= OnClientConnectionStateChanged;
             _relayClient.TerminalInputReceived -= OnRemoteTerminalInput;
+            _relayClient.TerminalResizeRequested -= OnRemoteTerminalResize;
             _relayClient.Dispose();
             _relayClient = null;
         }
@@ -605,6 +611,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         // Write remote input into local terminal
         TerminalManager.WriteInput(data);
+    }
+
+    private void OnRemoteTerminalResize(string sessionId, int cols, int rows)
+    {
+        if (cols <= 0 || rows <= 0)
+            return;
+
+        _dispatcher.InvokeAsync(() =>
+        {
+            ApplyTerminalSize(cols, rows, startIfNeeded: true);
+            SessionStatus = $"Running ({cols}x{rows})";
+        });
+    }
+
+    private (int Cols, int Rows) GetCurrentTerminalSize()
+    {
+        if (_terminalCols > 0 && _terminalRows > 0)
+            return (_terminalCols, _terminalRows);
+
+        return (120, 30);
     }
 
     private async Task<string> CaptureCurrentTerminalViewAsync()
@@ -672,11 +698,33 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         _terminalCols = cols;
         _terminalRows = rows;
+        VirtualScreen.Resize(cols, rows);
 
         var shell = SelectedShell ?? _shellLocator.GetDefaultShell();
         var session = new ConPtySession();
         TerminalManager.OutputReceived += OnTerminalManagerOutput;
         TerminalManager.Start(session, shell, cols, rows);
+    }
+
+    public void ApplyTerminalSize(int cols, int rows, bool startIfNeeded)
+    {
+        if (cols <= 0 || rows <= 0)
+            return;
+
+        _terminalCols = cols;
+        _terminalRows = rows;
+
+        if (!TerminalManager.IsRunning)
+        {
+            if (!startIfNeeded)
+                return;
+
+            StartTerminal(cols, rows);
+            return;
+        }
+
+        TerminalManager.Resize(cols, rows);
+        VirtualScreen.Resize(cols, rows);
     }
 
     private void RequestTerminalRestart()

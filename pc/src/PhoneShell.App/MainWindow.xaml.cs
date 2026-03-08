@@ -65,16 +65,10 @@ public partial class MainWindow : Window
             case "resize":
                 var cols = root.GetProperty("cols").GetInt32();
                 var rows = root.GetProperty("rows").GetInt32();
-                if (!_viewModel.TerminalManager.IsRunning && cols > 0 && rows > 0)
+                if (cols > 0 && rows > 0)
                 {
-                    _viewModel.StartTerminal(cols, rows);
-                    _viewModel.VirtualScreen.Resize(cols, rows);
+                    _viewModel.ApplyTerminalSize(cols, rows, startIfNeeded: true);
                     _viewModel.SessionStatus = "Running";
-                }
-                else if (cols > 0 && rows > 0)
-                {
-                    _viewModel.TerminalManager.Resize(cols, rows);
-                    _viewModel.VirtualScreen.Resize(cols, rows);
                 }
                 break;
         }

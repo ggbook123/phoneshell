@@ -1,27 +1,52 @@
+import { webview } from '@kit.ArkWeb';
 import { AppColors, AppSizes, AppStrings, ConnectionState } from '../common/Constants';
 import { WebSocketService } from '../services/WebSocketService';
 
-// Shortcut key definition
 interface ShortcutKey {
   label: string;
   data: string;
 }
 
+class TerminalBridge {
+  onReadyCallback: (cols: number, rows: number) => void = (_cols: number, _rows: number) => {};
+  onResizeCallback: (cols: number, rows: number) => void = (_cols: number, _rows: number) => {};
+  onInputCallback: (data: string) => void = (_data: string) => {};
+
+  onTerminalReady(cols: number, rows: number): void {
+    this.onReadyCallback(cols, rows);
+  }
+
+  onTerminalResize(cols: number, rows: number): void {
+    this.onResizeCallback(cols, rows);
+  }
+
+  sendInput(data: string): void {
+    this.onInputCallback(data);
+  }
+
+  logMessage(_message: string): void {
+  }
+}
+
 @Entry
 @Component
 struct TerminalPage {
-  @State terminalOutput: string = '';
   @State inputText: string = '';
   @State sessionActive: boolean = true;
   @State connectionState: ConnectionState = ConnectionState.CONNECTED;
-  @State deviceName: string = '';
+  @State terminalReady: boolean = false;
+  @State terminalHint: string = '正在初始化终端...';
   private stateListenerId: number = -1;
   private messageListenerId: number = -1;
-
-  private outputScroller: Scroller = new Scroller();
+  private terminalController: webview.WebviewController = new webview.WebviewController();
+  private terminalBridge: TerminalBridge = new TerminalBridge();
+  private terminalPageUrl: string = 'resource://rawfile/terminal/index.html';
   private maxOutputLength: number = 50000;
+  private pendingTerminalOutput: string = '';
+  private seededCachedOutput: boolean = false;
+  private lastReportedCols: number = 0;
+  private lastReportedRows: number = 0;
 
-  // Shortcut keys for the toolbar
   private shortcutKeys: Array<ShortcutKey> = [
     { label: 'Ctrl+C', data: '\x03' } as ShortcutKey,
     { label: 'Ctrl+D', data: '\x04' } as ShortcutKey,
@@ -43,7 +68,6 @@ struct TerminalPage {
   aboutToDisappear(): void {
     this.deactivatePage();
 
-    // Close terminal session when leaving the page
     if (this.sessionActive) {
       WebSocketService.closeTerminal();
     }
@@ -58,11 +82,22 @@ struct TerminalPage {
   }
 
   private activatePage(): void {
+    this.terminalBridge.onReadyCallback = (cols: number, rows: number) => {
+      this.onTerminalReady(cols, rows);
+    };
+    this.terminalBridge.onResizeCallback = (cols: number, rows: number) => {
+      this.onTerminalResize(cols, rows);
+    };
+    this.terminalBridge.onInputCallback = (data: string) => {
+      WebSocketService.sendTerminalInput(data);
+    };
+
     this.connectionState = WebSocketService.getConnectionState();
     this.sessionActive = WebSocketService.getActiveSessionId().length > 0;
-    const cachedOutput: string = WebSocketService.getBufferedTerminalOutput();
-    if (this.terminalOutput.length === 0 && cachedOutput.length > 0) {
-      this.appendOutput(cachedOutput);
+
+    if (!this.seededCachedOutput) {
+      this.seededCachedOutput = true;
+      this.enqueueTerminalOutput(WebSocketService.getBufferedTerminalOutput());
     }
 
     if (this.stateListenerId === -1) {
@@ -70,6 +105,7 @@ struct TerminalPage {
         this.connectionState = state;
         if (state === ConnectionState.DISCONNECTED) {
           this.sessionActive = false;
+          this.terminalHint = '连接已断开';
         }
       });
     }
@@ -79,16 +115,22 @@ struct TerminalPage {
         if (type === 'terminal.output') {
           const outputData: Object | undefined = data['data'];
           if (outputData !== undefined && outputData !== null) {
-            this.appendOutput(outputData as string);
+            this.enqueueTerminalOutput(outputData as string);
           }
         } else if (type === 'terminal.closed') {
           this.sessionActive = false;
+          this.terminalHint = '终端已断开';
         } else if (type === 'error') {
           const msgValue: Object | undefined = data['message'];
           const errorMsg: string = (msgValue !== undefined && msgValue !== null) ? msgValue as string : 'Error';
-          this.appendOutput('\r\n[错误] ' + errorMsg + '\r\n');
+          this.enqueueTerminalOutput(`\r\n[错误] ${errorMsg}\r\n`);
         }
       });
+    }
+
+    if (this.terminalReady) {
+      this.flushPendingTerminalOutput();
+      this.requestRemoteResize();
     }
   }
 
@@ -104,62 +146,76 @@ struct TerminalPage {
     }
   }
 
-  private appendOutput(data: string): void {
-    // Strip ANSI escape sequences for plain-text rendering
-    const stripped: string = this.stripAnsi(data);
-    this.terminalOutput += stripped;
-
-    // Trim if too long
-    if (this.terminalOutput.length > this.maxOutputLength) {
-      this.terminalOutput = this.terminalOutput.substring(this.terminalOutput.length - this.maxOutputLength);
+  private enqueueTerminalOutput(data: string): void {
+    if (data.length === 0) {
+      return;
     }
 
-    // Auto-scroll to bottom
-    setTimeout(() => {
-      this.outputScroller.scrollEdge(Edge.Bottom);
-    }, 50);
+    this.pendingTerminalOutput += data;
+    if (this.pendingTerminalOutput.length > this.maxOutputLength) {
+      this.pendingTerminalOutput = this.pendingTerminalOutput.substring(
+        this.pendingTerminalOutput.length - this.maxOutputLength
+      );
+    }
+
+    this.flushPendingTerminalOutput();
   }
 
-  private stripAnsi(text: string): string {
-    // Remove common ANSI escape sequences
-    let result: string = '';
-    let i: number = 0;
-    while (i < text.length) {
-      if (text.charAt(i) === '\x1B' && i + 1 < text.length && text.charAt(i + 1) === '[') {
-        // Skip CSI sequence: ESC [ ... final_byte
-        i += 2;
-        while (i < text.length) {
-          const code: number = text.charCodeAt(i);
-          i++;
-          // Final byte is in range 0x40-0x7E
-          if (code >= 0x40 && code <= 0x7E) {
-            break;
-          }
-        }
-      } else if (text.charAt(i) === '\x1B') {
-        // Skip other ESC sequences (2 char)
-        i += 2;
-      } else if (text.charAt(i) === '\r') {
-        // Convert \r\n to \n, or standalone \r to \n
-        if (i + 1 < text.length && text.charAt(i + 1) === '\n') {
-          result += '\n';
-          i += 2;
-        } else {
-          result += '\n';
-          i++;
-        }
-      } else {
-        result += text.charAt(i);
-        i++;
-      }
+  private flushPendingTerminalOutput(): void {
+    if (!this.terminalReady || this.pendingTerminalOutput.length === 0) {
+      return;
     }
-    return result;
+
+    const payload: string = JSON.stringify(this.pendingTerminalOutput);
+    this.pendingTerminalOutput = '';
+    this.runTerminalScript(`window.phoneShell && window.phoneShell.write(${payload});`);
+  }
+
+  private runTerminalScript(script: string): void {
+    try {
+      this.terminalController.runJavaScript(script);
+    } catch (_err) {
+      // Ignore WebView script errors during page transitions.
+    }
+  }
+
+  private onTerminalReady(cols: number, rows: number): void {
+    this.terminalReady = true;
+    this.terminalHint = '等待终端输出...';
+    this.handleTerminalResize(cols, rows);
+    this.flushPendingTerminalOutput();
+    this.runTerminalScript('window.phoneShell && window.phoneShell.focus();');
+  }
+
+  private onTerminalResize(cols: number, rows: number): void {
+    this.handleTerminalResize(cols, rows);
+  }
+
+  private handleTerminalResize(cols: number, rows: number): void {
+    if (cols <= 0 || rows <= 0) {
+      return;
+    }
+
+    if (this.lastReportedCols === cols && this.lastReportedRows === rows) {
+      return;
+    }
+
+    this.lastReportedCols = cols;
+    this.lastReportedRows = rows;
+    this.requestRemoteResize();
+  }
+
+  private requestRemoteResize(): void {
+    if (!this.sessionActive || this.lastReportedCols <= 0 || this.lastReportedRows <= 0) {
+      return;
+    }
+
+    WebSocketService.resizeTerminal(this.lastReportedCols, this.lastReportedRows);
   }
 
   private sendInput(): void {
     const text: string = this.inputText;
     if (text.length === 0) {
-      // Send just Enter
       WebSocketService.sendTerminalInput('\r');
       return;
     }
@@ -169,6 +225,7 @@ struct TerminalPage {
 
   private sendShortcutKey(data: string): void {
     WebSocketService.sendTerminalInput(data);
+    this.runTerminalScript('window.phoneShell && window.phoneShell.focus();');
   }
 
   private goBack(): void {
@@ -180,9 +237,7 @@ struct TerminalPage {
 
   build() {
     Column() {
-      // Top status bar (semi-transparent)
       Row() {
-        // Back button
         Text('< 返回')
           .fontSize(AppSizes.FONT_SIZE_SMALL)
           .fontColor(AppColors.ACCENT)
@@ -191,14 +246,12 @@ struct TerminalPage {
           })
           .padding({ right: 16 })
 
-        // Device name + session status
         Text(AppStrings.TERMINAL_TITLE)
           .fontSize(AppSizes.FONT_SIZE_BODY)
           .fontColor(AppColors.TEXT_PRIMARY)
           .fontWeight(FontWeight.Medium)
           .layoutWeight(1)
 
-        // Session status indicator
         Row() {
           Circle()
             .width(AppSizes.STATUS_DOT_SIZE)
@@ -217,24 +270,36 @@ struct TerminalPage {
       .backgroundColor(AppColors.STATUS_BAR_BG)
       .alignItems(VerticalAlign.Center)
 
-      // Terminal output area
-      Scroll(this.outputScroller) {
-        Text(this.terminalOutput.length > 0 ? this.terminalOutput : '等待终端输出...')
-          .fontSize(AppSizes.FONT_SIZE_TERMINAL)
-          .fontColor(this.terminalOutput.length > 0 ? AppColors.TERMINAL_TEXT : AppColors.TEXT_SECONDARY)
-          .fontFamily('monospace')
+      Stack({ alignContent: Alignment.Center }) {
+        Web({ src: this.terminalPageUrl, controller: this.terminalController })
           .width('100%')
-          .padding(12)
-          .textAlign(TextAlign.Start)
-          .copyOption(CopyOptions.LocalDevice)
+          .height('100%')
+          .backgroundColor(AppColors.TERMINAL_BG)
+          .javaScriptAccess(true)
+          .domStorageAccess(true)
+          .javaScriptProxy({
+            object: this.terminalBridge,
+            name: 'nativeApp',
+            methodList: ['onTerminalReady', 'onTerminalResize', 'sendInput', 'logMessage'],
+            controller: this.terminalController
+          })
+
+        if (!this.terminalReady) {
+          Column() {
+            Text(this.terminalHint)
+              .fontSize(AppSizes.FONT_SIZE_BODY)
+              .fontColor(AppColors.TEXT_SECONDARY)
+          }
+          .width('100%')
+          .height('100%')
+          .backgroundColor(AppColors.TERMINAL_BG)
+          .justifyContent(FlexAlign.Center)
+        }
       }
       .width('100%')
       .layoutWeight(1)
       .backgroundColor(AppColors.TERMINAL_BG)
-      .scrollBar(BarState.Auto)
-      .edgeEffect(EdgeEffect.None)
 
-      // Shortcut key toolbar
       Scroll() {
         Row({ space: 8 }) {
           ForEach(this.shortcutKeys, (key: ShortcutKey) => {
@@ -259,7 +324,6 @@ struct TerminalPage {
       .backgroundColor(AppColors.TOOLBAR_BG)
       .align(Alignment.Center)
 
-      // Input bar
       Row() {
         TextInput({ text: $$this.inputText, placeholder: AppStrings.INPUT_PLACEHOLDER })
           .type(InputType.Normal)

@@ -24,6 +24,7 @@ public sealed class RelayServer : IDisposable
     public event Action<string>? Log;
     public event Action<List<DeviceInfo>>? DeviceListChanged;
     public Func<Task<string>>? LocalTerminalSnapshotProvider { get; set; }
+    public Func<(int Cols, int Rows)>? LocalTerminalSizeProvider { get; set; }
 
     public bool IsRunning => _httpListener?.IsListening == true;
     public IReadOnlyList<string> ListenPrefixes => _listenPrefixes;
@@ -122,6 +123,11 @@ public sealed class RelayServer : IDisposable
     /// Event raised when a remote client sends terminal input to the local device.
     /// </summary>
     public event Action<string, string>? LocalTerminalInputReceived; // sessionId, data
+
+    /// <summary>
+    /// Event raised when a remote client resizes the local device terminal.
+    /// </summary>
+    public event Action<string, int, int>? LocalTerminalResizeReceived; // sessionId, cols, rows
 
     public List<DeviceInfo> GetDeviceList()
     {
@@ -288,13 +294,31 @@ public sealed class RelayServer : IDisposable
                     client.SubscribedDeviceId = open.DeviceId;
                     if (openTarget.IsLocal)
                     {
+                        var cols = 120;
+                        var rows = 30;
+                        if (LocalTerminalSizeProvider is not null)
+                        {
+                            try
+                            {
+                                var size = LocalTerminalSizeProvider();
+                                if (size.Cols > 0)
+                                    cols = size.Cols;
+                                if (size.Rows > 0)
+                                    rows = size.Rows;
+                            }
+                            catch (Exception ex)
+                            {
+                                Log?.Invoke($"Local terminal size lookup failed: {ex.Message}");
+                            }
+                        }
+
                         // Local device — reply with terminal.opened so mobile can proceed
                         var opened = new TerminalOpenedMessage
                         {
                             DeviceId = open.DeviceId,
                             SessionId = "local",
-                            Cols = 120,
-                            Rows = 30
+                            Cols = cols,
+                            Rows = rows
                         };
                         await SendAsync(client.WebSocket, MessageSerializer.Serialize(opened));
 
@@ -337,7 +361,10 @@ public sealed class RelayServer : IDisposable
                 {
                     if (resizeTarget.IsLocal)
                     {
-                        // Local device resize — handled by MainViewModel through terminal manager
+                        LocalTerminalResizeReceived?.Invoke(
+                            resize.SessionId,
+                            resize.Cols,
+                            resize.Rows);
                     }
                     else if (resizeTarget.ClientId is not null &&
                              _clients.TryGetValue(resizeTarget.ClientId, out var resizeClient))
