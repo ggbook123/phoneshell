@@ -263,7 +263,7 @@ public sealed class RelayServer : IDisposable
                 {
                     if (targetDevice.IsLocal)
                     {
-                        // Local device â€” invoke direct handler
+                        // Local device â€?invoke direct handler
                         LocalTerminalInputReceived?.Invoke(input.SessionId, input.Data);
                     }
                     else if (targetDevice.ClientId is not null &&
@@ -312,7 +312,7 @@ public sealed class RelayServer : IDisposable
                             }
                         }
 
-                        // Local device â€” reply with terminal.opened so mobile can proceed
+                        // Local device â€?reply with terminal.opened so mobile can proceed
                         var opened = new TerminalOpenedMessage
                         {
                             DeviceId = open.DeviceId,
@@ -341,7 +341,7 @@ public sealed class RelayServer : IDisposable
                             {
                                 DeviceId = open.DeviceId,
                                 SessionId = opened.SessionId,
-                                Data = snapshot + Environment.NewLine
+                                Data = snapshot
                             };
                             await SendAsync(client.WebSocket, MessageSerializer.Serialize(initialOutput));
                         }
@@ -379,7 +379,7 @@ public sealed class RelayServer : IDisposable
                 {
                     if (closeTarget.IsLocal)
                     {
-                        // Local device â€” reply with terminal.closed
+                        // Local device â€?reply with terminal.closed
                         var closed = new TerminalClosedMessage
                         {
                             DeviceId = close.DeviceId,
@@ -503,3 +503,4 @@ public sealed class RelayServer : IDisposable
         public string? SubscribedDeviceId { get; set; }
     }
 }
+

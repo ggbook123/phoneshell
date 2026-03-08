@@ -21,7 +21,7 @@ namespace PhoneShell.ViewModels;
 
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
-    // Key token mapping: {TOKEN} â†’ VT sequence
+    // Key token mapping: {TOKEN} â†?VT sequence
     private static readonly Dictionary<string, string> KeyTokens = new(StringComparer.OrdinalIgnoreCase)
     {
         ["ENTER"] = "\r",
@@ -640,9 +640,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             var snapshot = await CaptureTerminalSnapshotOnUiThreadAsync();
             if (snapshot is not null)
             {
-                var currentScreen = snapshot.GetScreenText().TrimEnd();
-                if (!string.IsNullOrWhiteSpace(currentScreen))
-                    return currentScreen;
+                var bootstrap = BuildBootstrapSequence(snapshot);
+                if (!string.IsNullOrWhiteSpace(bootstrap))
+                    return bootstrap;
             }
         }
         catch (Exception ex)
@@ -652,9 +652,71 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         var virtualScreenSnapshot = VirtualScreen.GetSnapshot();
         if (!string.IsNullOrWhiteSpace(virtualScreenSnapshot))
-            return virtualScreenSnapshot;
+        {
+            var lines = virtualScreenSnapshot.Split('\n');
+            return BuildPlainTextBootstrapSequence(
+                lines,
+                isAlternateBuffer: false,
+                cursorX: 0,
+                cursorY: Math.Max(0, lines.Length - 1));
+        }
 
         return TerminalOutputBuffer.GetRecentRaw();
+    }
+
+    private static string BuildBootstrapSequence(TerminalSnapshot snapshot)
+    {
+        return BuildPlainTextBootstrapSequence(
+            snapshot.Lines,
+            snapshot.IsTuiActive,
+            snapshot.CursorX,
+            snapshot.CursorY);
+    }
+
+    private static string BuildPlainTextBootstrapSequence(
+        IReadOnlyList<string> lines,
+        bool isAlternateBuffer,
+        int cursorX,
+        int cursorY)
+    {
+        var sb = new StringBuilder();
+
+        if (isAlternateBuffer)
+            sb.Append("\x1b[?1049h");
+
+        sb.Append("\x1b[0m");
+        sb.Append("\x1b[H\x1b[2J");
+
+        for (var row = 0; row < lines.Count; row++)
+        {
+            var line = SanitizeSnapshotLine(lines[row]);
+            if (line.Length == 0)
+                continue;
+
+            sb.Append($"\x1b[{row + 1};1H");
+            sb.Append(line);
+        }
+
+        sb.Append($"\x1b[{Math.Max(1, cursorY + 1)};{Math.Max(1, cursorX + 1)}H");
+        sb.Append("\x1b[?25h");
+        return sb.ToString();
+    }
+
+    private static string SanitizeSnapshotLine(string line)
+    {
+        if (string.IsNullOrEmpty(line))
+            return string.Empty;
+
+        var sb = new StringBuilder(line.Length);
+        foreach (var ch in line)
+        {
+            if (ch == '\x1b' || char.IsControl(ch))
+                continue;
+
+            sb.Append(ch);
+        }
+
+        return sb.ToString();
     }
 
     // --- Terminal Output Forwarding ---
@@ -1071,3 +1133,4 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         return commands;
     }
 }
+
