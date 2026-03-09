@@ -547,6 +547,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HasTabs));
 
         SetActiveTab(tab);
+        NotifyLocalSessionListChanged();
 
         if (cols > 0 && rows > 0)
         {
@@ -597,10 +598,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (tab is null) return;
 
         var index = Tabs.IndexOf(tab);
+        NotifyLocalTerminalClosed(tab);
         tab.SessionManager.OutputReceived -= text => OnTabOutput(tab, text);
         tab.Dispose();
         Tabs.Remove(tab);
         OnPropertyChanged(nameof(HasTabs));
+        NotifyLocalSessionListChanged();
         UpdateMobileConnectionState();
 
         if (ActiveTab == tab)
@@ -1175,11 +1178,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             if (string.IsNullOrEmpty(sessionId))
             {
-                // Client disconnected entirely
-                foreach (var openTab in Tabs.ToList())
-                {
-                    ClearMobileViewport(openTab);
-                }
                 return;
             }
 
@@ -1262,6 +1260,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 Title = t.Title
             }).ToList()
         );
+    }
+
+    private void NotifyLocalSessionListChanged()
+    {
+        if (_relayServer is null || !_relayServer.IsRunning) return;
+
+        _ = _relayServer.BroadcastLocalSessionListChangedAsync(_identity.DeviceId);
+    }
+
+    private void NotifyLocalTerminalClosed(TerminalTab tab)
+    {
+        if (_relayServer is null || !_relayServer.IsRunning) return;
+
+        _ = _relayServer.BroadcastLocalTerminalClosedAsync(_identity.DeviceId, tab.TabId);
     }
 
     private async Task<string> CaptureTabTerminalViewAsync(string sessionId)

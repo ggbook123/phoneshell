@@ -286,32 +286,65 @@
                     <!-- Tab Container (shown when tabs exist) -->
                     <DockPanel x:Name="TabContainer" Visibility="Collapsed">
                         <!-- Tab Bar -->
-                        <Border DockPanel.Dock="Top" Background="#E8EAEd" Padding="4,4,4,0">
+                        <Border DockPanel.Dock="Top" Background="#E8EAEd" Padding="4">
                             <DockPanel>
-                                <!-- Add tab button -->
-                                <Button DockPanel.Dock="Right" Content="+" FontSize="16" FontWeight="Bold"
-                                        Width="32" Height="28" Margin="4,0,2,0"
-                                        Background="Transparent" BorderThickness="0" Cursor="Hand"
-                                        Command="{Binding NewSessionCommand}"
-                                        ToolTip="New Session">
-                                    <Button.Template>
-                                        <ControlTemplate TargetType="Button">
-                                            <Border Background="{TemplateBinding Background}" CornerRadius="4"
-                                                    Padding="0" Cursor="Hand">
-                                                <Border.Style>
-                                                    <Style TargetType="Border">
-                                                        <Style.Triggers>
-                                                            <Trigger Property="IsMouseOver" Value="True">
-                                                                <Setter Property="Background" Value="#D0D3D8" />
-                                                            </Trigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </Border.Style>
-                                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                            </Border>
-                                        </ControlTemplate>
-                                    </Button.Template>
-                                </Button>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock x:Name="ActiveTabTitle" Text="" FontSize="13" FontWeight="SemiBold"
+                                               VerticalAlignment="Center" Foreground="#333"
+                                               Margin="0,0,10,0" MaxWidth="220"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <Button Content="+" FontSize="16" FontWeight="Bold"
+                                            Width="32" Height="28" Margin="4,0,0,0"
+                                            Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                            Command="{Binding NewSessionCommand}"
+                                            ToolTip="New Session">
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border Background="{TemplateBinding Background}" CornerRadius="4"
+                                                        Padding="0" Cursor="Hand">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Style.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter Property="Background" Value="#D0D3D8" />
+                                                                </Trigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                    </Button>
+                                    <Button x:Name="CompactModeButton" Content="Compact" FontSize="11"
+                                            Padding="8,3" Margin="4,0,0,0" Background="#42A5F5" Foreground="White"
+                                            Click="CompactModeButton_Click" ToolTip="Toggle compact (mobile) size"
+                                            Cursor="Hand">
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border Background="{TemplateBinding Background}" CornerRadius="4"
+                                                        Padding="{TemplateBinding Padding}" Cursor="Hand">
+                                                    <ContentPresenter HorizontalAlignment="Center"
+                                                                      VerticalAlignment="Center" />
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                    </Button>
+                                    <Button Content="Close" FontSize="11"
+                                            Padding="8,3" Margin="4,0,0,0" Background="#E53935" Foreground="White"
+                                            Click="TitleBarCloseButton_Click" ToolTip="Close this session"
+                                            Cursor="Hand">
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border Background="{TemplateBinding Background}" CornerRadius="4"
+                                                        Padding="{TemplateBinding Padding}" Cursor="Hand">
+                                                    <ContentPresenter HorizontalAlignment="Center"
+                                                                      VerticalAlignment="Center" />
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                    </Button>
+                                </StackPanel>
 
                                 <!-- Tab items -->
                                 <ItemsControl x:Name="TabBar" ItemsSource="{Binding Tabs}">
@@ -358,44 +391,6 @@
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
-                            </DockPanel>
-                        </Border>
-
-                        <!-- Title Bar for active tab -->
-                        <Border DockPanel.Dock="Top" Background="#E0E2E6" Padding="8,4">
-                            <DockPanel>
-                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                                    <Button x:Name="CompactModeButton" Content="Compact" FontSize="11"
-                                            Padding="8,3" Margin="4,0" Background="#42A5F5" Foreground="White"
-                                            Click="CompactModeButton_Click" ToolTip="Toggle compact (mobile) size"
-                                            Cursor="Hand">
-                                        <Button.Template>
-                                            <ControlTemplate TargetType="Button">
-                                                <Border Background="{TemplateBinding Background}" CornerRadius="4"
-                                                        Padding="{TemplateBinding Padding}" Cursor="Hand">
-                                                    <ContentPresenter HorizontalAlignment="Center"
-                                                                      VerticalAlignment="Center" />
-                                                </Border>
-                                            </ControlTemplate>
-                                        </Button.Template>
-                                    </Button>
-                                    <Button Content="Close" FontSize="11"
-                                            Padding="8,3" Margin="4,0" Background="#E53935" Foreground="White"
-                                            Click="TitleBarCloseButton_Click" ToolTip="Close this session"
-                                            Cursor="Hand">
-                                        <Button.Template>
-                                            <ControlTemplate TargetType="Button">
-                                                <Border Background="{TemplateBinding Background}" CornerRadius="4"
-                                                        Padding="{TemplateBinding Padding}" Cursor="Hand">
-                                                    <ContentPresenter HorizontalAlignment="Center"
-                                                                      VerticalAlignment="Center" />
-                                                </Border>
-                                            </ControlTemplate>
-                                        </Button.Template>
-                                    </Button>
-                                </StackPanel>
-                                <TextBlock x:Name="ActiveTabTitle" Text="" FontSize="13" FontWeight="SemiBold"
-                                           VerticalAlignment="Center" Foreground="#333" />
                             </DockPanel>
                         </Border>
 

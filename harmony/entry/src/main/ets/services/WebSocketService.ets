@@ -482,8 +482,11 @@ class WebSocketServiceClass {
         const devices: Object | undefined = parsed['devices'];
         this.cachedDevices = this.normalizeDeviceList(devices);
       } else if (msgType === 'terminal.output') {
+        const outputSessionId: string = this.normalizeString(parsed['sessionId']);
         const outputData: string = this.normalizeString(parsed['data']);
-        if (outputData.length > 0) {
+        if (outputData.length > 0 &&
+          outputSessionId.length > 0 &&
+          outputSessionId === this.activeSessionId) {
           this.bufferedTerminalOutput += outputData;
           if (this.bufferedTerminalOutput.length > this.maxBufferedTerminalOutput) {
             this.bufferedTerminalOutput =
@@ -499,8 +502,11 @@ class WebSocketServiceClass {
         }
         this.activeDeviceId = this.normalizeString(parsed['deviceId'], this.activeDeviceId);
       } else if (msgType === 'terminal.closed') {
-        this.activeSessionId = '';
-        this.bufferedTerminalOutput = '';
+        const closedSessionId: string = this.normalizeString(parsed['sessionId']);
+        if (closedSessionId.length === 0 || closedSessionId === this.activeSessionId) {
+          this.activeSessionId = '';
+          this.bufferedTerminalOutput = '';
+        }
       }
 
       this.emitMessage(msgType, parsed);

@@ -92,7 +92,6 @@ struct SessionListPage {
       this.messageListenerId = WebSocketService.addOnMessage((type: string, data: Record<string, Object>) => {
         if (type === 'session.list') {
           this.handleSessionList(data);
-          this.isRefreshing = false;
         } else if (type === 'terminal.opened') {
           const sessionId: Object | undefined = data['sessionId'];
           const deviceIdValue: Object | undefined = data['deviceId'];
@@ -105,8 +104,10 @@ struct SessionListPage {
           if (resolvedSessionId.length > 0) {
             hilog.info(DOMAIN, PAGE_TAG, 'terminal.opened session=%{public}s device=%{public}s',
               resolvedSessionId, resolvedDeviceId);
-            WebSocketService.setActiveSession(resolvedDeviceId, resolvedSessionId);
-            this.getUIContext().getRouter().pushUrl({ url: 'pages/TerminalPage' });
+            if (resolvedDeviceId === this.deviceId) {
+              WebSocketService.setActiveSession(resolvedDeviceId, resolvedSessionId);
+              this.getUIContext().getRouter().pushUrl({ url: 'pages/TerminalPage' });
+            }
           }
         } else if (type === 'error') {
           this.isRefreshing = false;
@@ -134,6 +135,11 @@ struct SessionListPage {
   }
 
   private handleSessionList(data: Record<string, Object>): void {
+    const deviceId: string = this.normalizeString(data['deviceId'] as string | undefined);
+    if (deviceId.length > 0 && deviceId !== this.deviceId) {
+      return;
+    }
+
     const sessionsRaw: Object | undefined = data['sessions'];
     let result: Array<SessionItem> = [];
     if (Array.isArray(sessionsRaw)) {
@@ -153,10 +159,15 @@ struct SessionListPage {
       }
     }
     this.sessions = result;
+    this.isRefreshing = false;
     hilog.info(DOMAIN, PAGE_TAG, 'session list updated count=%{public}d', result.length);
   }
 
   private refreshSessions(): void {
+    if (this.deviceId.length === 0 || this.connectionState !== ConnectionState.CONNECTED) {
+      this.isRefreshing = false;
+      return;
+    }
     this.isRefreshing = true;
     WebSocketService.requestSessionList(this.deviceId);
   }
@@ -223,39 +234,45 @@ struct SessionListPage {
         .width('100%')
 
       // Session list
-      if (this.sessions.length === 0 && !this.isRefreshing) {
-        Column() {
-          Text(AppStrings.EMPTY_SESSION_LIST)
-            .fontSize(AppSizes.FONT_SIZE_BODY)
-            .fontColor(AppColors.TEXT_SECONDARY)
-            .margin({ bottom: 24 })
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
-      } else {
-        Refresh({ refreshing: $$this.isRefreshing }) {
-          List({ space: 12 }) {
+      Refresh({ refreshing: $$this.isRefreshing }) {
+        List({ space: 12 }) {
+          if (this.sessions.length === 0) {
+            ListItem() {
+              Column() {
+                Text(AppStrings.EMPTY_SESSION_LIST)
+                  .fontSize(AppSizes.FONT_SIZE_BODY)
+                  .fontColor(AppColors.TEXT_SECONDARY)
+                  .margin({ bottom: 10 })
+
+                Text('下拉可刷新')
+                  .fontSize(12)
+                  .fontColor(AppColors.TEXT_SECONDARY)
+              }
+              .width('100%')
+              .height(260)
+              .justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
+            }
+          } else {
             ForEach(this.sessions, (session: SessionItem) => {
               ListItem() {
                 this.SessionCard(session)
               }
             }, (session: SessionItem, index: number) => `${session.sessionId}_${index}`)
           }
-          .width('100%')
-          .padding({
-            left: AppSizes.PADDING_PAGE,
-            right: AppSizes.PADDING_PAGE,
-            top: 12,
-            bottom: 12
-          })
         }
-        .onRefreshing(() => {
-          this.refreshSessions();
+        .width('100%')
+        .padding({
+          left: AppSizes.PADDING_PAGE,
+          right: AppSizes.PADDING_PAGE,
+          top: 12,
+          bottom: 12
         })
-        .layoutWeight(1)
       }
+      .onRefreshing(() => {
+        this.refreshSessions();
+      })
+      .layoutWeight(1)
 
       // New Session section at bottom
       Divider()

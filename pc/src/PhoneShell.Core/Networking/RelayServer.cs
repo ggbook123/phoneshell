@@ -112,6 +112,55 @@ public sealed class RelayServer : IDisposable
 
         foreach (var client in _clients.Values)
         {
+            if (client.SubscribedDeviceId == deviceId &&
+                string.Equals(client.SubscribedSessionId, sessionId, StringComparison.Ordinal))
+            {
+                await SendAsync(client, msg);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Notify subscribed clients that a local terminal session was closed by the PC.
+    /// </summary>
+    public async Task BroadcastLocalTerminalClosedAsync(string deviceId, string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(sessionId))
+            return;
+
+        var msg = MessageSerializer.Serialize(new TerminalClosedMessage
+        {
+            DeviceId = deviceId,
+            SessionId = sessionId
+        });
+
+        foreach (var client in _clients.Values)
+        {
+            if (client.SubscribedDeviceId == deviceId &&
+                string.Equals(client.SubscribedSessionId, sessionId, StringComparison.Ordinal))
+            {
+                client.SubscribedSessionId = null;
+                await SendAsync(client, msg);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Push the latest local session list to clients that are viewing this device.
+    /// </summary>
+    public async Task BroadcastLocalSessionListChangedAsync(string deviceId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+            return;
+
+        var msg = MessageSerializer.Serialize(new SessionListMessage
+        {
+            DeviceId = deviceId,
+            Sessions = LocalSessionListProvider?.Invoke() ?? new List<Protocol.SessionInfo>()
+        });
+
+        foreach (var client in _clients.Values)
+        {
             if (client.SubscribedDeviceId == deviceId)
             {
                 await SendAsync(client, msg);
@@ -259,12 +308,13 @@ public sealed class RelayServer : IDisposable
             pingCts.Cancel();
             try { await pingTask; } catch { }
             if (client.SubscribedDeviceId is not null &&
+                client.SubscribedSessionId is not null &&
                 _devices.TryGetValue(client.SubscribedDeviceId, out var subscribedDevice) &&
                 subscribedDevice.IsLocal)
             {
                 try
                 {
-                    LocalTerminalSessionEnded?.Invoke(string.Empty);
+                    LocalTerminalSessionEnded?.Invoke(client.SubscribedSessionId);
                 }
                 catch (Exception ex)
                 {
@@ -323,6 +373,9 @@ public sealed class RelayServer : IDisposable
             case SessionListRequestMessage sessionReq:
                 if (_devices.TryGetValue(sessionReq.DeviceId, out var sessionDevice))
                 {
+                    client.SubscribedDeviceId = sessionReq.DeviceId;
+                    client.SubscribedSessionId = null;
+
                     List<Protocol.SessionInfo> sessions;
                     if (sessionDevice.IsLocal)
                     {
@@ -351,8 +404,8 @@ public sealed class RelayServer : IDisposable
                 // Route to the target device
                 if (_devices.TryGetValue(input.DeviceId, out var targetDevice))
                 {
-                    // Ensure the client is subscribed so it receives terminal output
-                    client.SubscribedDeviceId ??= input.DeviceId;
+                    client.SubscribedDeviceId = input.DeviceId;
+                    client.SubscribedSessionId = input.SessionId;
 
                     if (targetDevice.IsLocal)
                     {
@@ -373,7 +426,9 @@ public sealed class RelayServer : IDisposable
                 client.SubscribedDeviceId ??= output.DeviceId;
                 foreach (var c in _clients.Values)
                 {
-                    if (c.ClientId != client.ClientId && c.SubscribedDeviceId == output.DeviceId)
+                    if (c.ClientId != client.ClientId &&
+                        c.SubscribedDeviceId == output.DeviceId &&
+                        string.Equals(c.SubscribedSessionId, output.SessionId, StringComparison.Ordinal))
                     {
                         await SendAsync(c, json);
                     }
@@ -385,6 +440,7 @@ public sealed class RelayServer : IDisposable
                 if (_devices.TryGetValue(open.DeviceId, out var openTarget))
                 {
                     client.SubscribedDeviceId = open.DeviceId;
+                    client.SubscribedSessionId = null;
                     if (openTarget.IsLocal)
                     {
                         if (LocalTerminalOpenRequested is not null)
@@ -393,6 +449,7 @@ public sealed class RelayServer : IDisposable
                             {
                                 var (sessionId, openCols, openRows) =
                                     await LocalTerminalOpenRequested.Invoke(open.DeviceId, open.ShellId);
+                                client.SubscribedSessionId = sessionId;
 
                                 var opened = new TerminalOpenedMessage
                                 {
@@ -481,8 +538,8 @@ public sealed class RelayServer : IDisposable
             case TerminalResizeMessage resize:
                 if (_devices.TryGetValue(resize.DeviceId, out var resizeTarget))
                 {
-                    // Ensure the client is subscribed so it receives terminal output
-                    client.SubscribedDeviceId ??= resize.DeviceId;
+                    client.SubscribedDeviceId = resize.DeviceId;
+                    client.SubscribedSessionId = resize.SessionId;
 
                     if (resizeTarget.IsLocal)
                     {
@@ -499,6 +556,9 @@ public sealed class RelayServer : IDisposable
             case TerminalCloseMessage close:
                 if (_devices.TryGetValue(close.DeviceId, out var closeTarget))
                 {
+                    client.SubscribedDeviceId = close.DeviceId;
+                    client.SubscribedSessionId = close.SessionId;
+
                     if (closeTarget.IsLocal)
                     {
                         // Local device - reply with terminal.closed
@@ -508,7 +568,7 @@ public sealed class RelayServer : IDisposable
                             SessionId = close.SessionId
                         };
                         await SendAsync(client, MessageSerializer.Serialize(closed));
-                        client.SubscribedDeviceId = null;
+                        client.SubscribedSessionId = null;
                         InvokeLocalTerminalSessionEnded(client, close);
                         Log?.Invoke($"Local terminal closed for client {client.ClientId}, session={close.SessionId}");
                     }
@@ -713,6 +773,7 @@ public sealed class RelayServer : IDisposable
         public WebSocket WebSocket { get; init; } = null!;
         public string? RegisteredDeviceId { get; set; }
         public string? SubscribedDeviceId { get; set; }
+        public string? SubscribedSessionId { get; set; }
         public SemaphoreSlim SendLock { get; } = new(1, 1);
     }
 }

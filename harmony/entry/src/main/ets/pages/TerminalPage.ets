@@ -45,6 +45,7 @@ struct TerminalPage {
   @State connectionState: ConnectionState = ConnectionState.CONNECTED;
   @State terminalReady: boolean = false;
   @State terminalHint: string = '正在初始化终端...';
+  @State showSessionClosedDialog: boolean = false;
   private stateListenerId: number = -1;
   private messageListenerId: number = -1;
   private terminalController: webview.WebviewController = new webview.WebviewController();
@@ -55,6 +56,7 @@ struct TerminalPage {
   private seededCachedOutput: boolean = false;
   private lastReportedCols: number = 0;
   private lastReportedRows: number = 0;
+  private viewedSessionId: string = '';
 
   private normalizeString(value: string | undefined | null, fallback: string = ''): string {
     if (typeof value === 'string') {
@@ -92,6 +94,8 @@ struct TerminalPage {
     this.pendingTerminalOutput = '';
     this.terminalReady = false;
     this.terminalHint = '正在初始化终端...';
+    this.showSessionClosedDialog = false;
+    this.viewedSessionId = this.normalizeString(WebSocketService.getActiveSessionId());
     this.activatePage();
   }
 
@@ -131,9 +135,10 @@ struct TerminalPage {
     };
 
     this.connectionState = WebSocketService.getConnectionState();
-    this.sessionActive = WebSocketService.getActiveSessionId().length > 0;
+    this.viewedSessionId = this.normalizeString(WebSocketService.getActiveSessionId(), this.viewedSessionId);
+    this.sessionActive = this.viewedSessionId.length > 0;
     hilog.info(DOMAIN, PAGE_TAG, 'activatePage connected=%{public}d sessionActive=%{public}s session=%{public}s',
-      this.connectionState, this.sessionActive ? 'true' : 'false', WebSocketService.getActiveSessionId());
+      this.connectionState, this.sessionActive ? 'true' : 'false', this.viewedSessionId);
 
     if (!this.seededCachedOutput) {
       this.seededCachedOutput = true;
@@ -155,10 +160,15 @@ struct TerminalPage {
       this.messageListenerId = WebSocketService.addOnMessage((type: string, data: Record<string, Object>) => {
         hilog.info(DOMAIN, PAGE_TAG, 'message listener %{public}s', type);
         if (type === 'terminal.output') {
-          this.enqueueTerminalOutput(this.getMessageString(data, 'data'));
+          if (this.isCurrentSessionMessage(data)) {
+            this.enqueueTerminalOutput(this.getMessageString(data, 'data'));
+          }
         } else if (type === 'terminal.closed') {
-          this.sessionActive = false;
-          this.terminalHint = '终端已断开';
+          if (this.isCurrentSessionMessage(data)) {
+            this.sessionActive = false;
+            this.terminalHint = 'PC 端已关闭当前会话';
+            this.showSessionClosedDialog = true;
+          }
         } else if (type === 'error') {
           const errorMsg: string = this.getMessageString(data, 'message', 'Error');
           this.enqueueTerminalOutput(`\r\n[错误] ${errorMsg}\r\n`);
@@ -252,6 +262,11 @@ struct TerminalPage {
     WebSocketService.resizeTerminal(this.lastReportedCols, this.lastReportedRows);
   }
 
+  private isCurrentSessionMessage(data: Record<string, Object>): boolean {
+    const sessionId: string = this.getMessageString(data, 'sessionId');
+    return sessionId.length > 0 && sessionId === this.viewedSessionId;
+  }
+
   private sendInput(): void {
     const text: string = this.inputText;
     hilog.info(DOMAIN, PAGE_TAG, 'sendInput textLen=%{public}d', text.length);
@@ -275,128 +290,175 @@ struct TerminalPage {
   }
 
   build() {
-    Column() {
-      Row() {
-        Text('< 返回')
-          .fontSize(AppSizes.FONT_SIZE_SMALL)
-          .fontColor(AppColors.ACCENT)
-          .onClick(() => {
-            this.goBack();
-          })
-          .padding({ right: 16 })
+    Stack({ alignContent: Alignment.Center }) {
+      Column() {
+        Row() {
+          Text('< 返回')
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor(AppColors.ACCENT)
+            .onClick(() => {
+              this.goBack();
+            })
+            .padding({ right: 16 })
 
-        Text(AppStrings.TERMINAL_TITLE)
-          .fontSize(AppSizes.FONT_SIZE_BODY)
-          .fontColor(AppColors.TEXT_PRIMARY)
-          .fontWeight(FontWeight.Medium)
-          .layoutWeight(1)
+          Text(AppStrings.TERMINAL_TITLE)
+            .fontSize(AppSizes.FONT_SIZE_BODY)
+            .fontColor(AppColors.TEXT_PRIMARY)
+            .fontWeight(FontWeight.Medium)
+            .layoutWeight(1)
+
+          Row() {
+            Circle()
+              .width(AppSizes.STATUS_DOT_SIZE)
+              .height(AppSizes.STATUS_DOT_SIZE)
+              .fill(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
+              .margin({ right: 6 })
+
+            Text(this.sessionActive ? '活动' : '已断开')
+              .fontSize(12)
+              .fontColor(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
+          }
+        }
+        .width('100%')
+        .height(48)
+        .padding({ left: 16, right: 16 })
+        .backgroundColor(AppColors.STATUS_BAR_BG)
+        .alignItems(VerticalAlign.Center)
+
+        Stack({ alignContent: Alignment.Center }) {
+          Web({ src: this.terminalPageUrl, controller: this.terminalController })
+            .width('100%')
+            .height('100%')
+            .backgroundColor(AppColors.TERMINAL_BG)
+            .javaScriptAccess(true)
+            .domStorageAccess(true)
+            .javaScriptProxy({
+              object: this.terminalBridge,
+              name: 'nativeApp',
+              methodList: ['onTerminalReady', 'onTerminalResize', 'sendInput', 'onTerminalInteraction', 'logMessage'],
+              controller: this.terminalController
+            })
+
+          if (!this.terminalReady) {
+            Column() {
+              Text(this.terminalHint)
+                .fontSize(AppSizes.FONT_SIZE_BODY)
+                .fontColor(AppColors.TEXT_SECONDARY)
+            }
+            .width('100%')
+            .height('100%')
+            .backgroundColor(AppColors.TERMINAL_BG)
+            .justifyContent(FlexAlign.Center)
+          }
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .backgroundColor(AppColors.TERMINAL_BG)
+
+        Scroll() {
+          Row({ space: 8 }) {
+            ForEach(this.shortcutKeys, (key: ShortcutKey) => {
+              Button(key.label)
+                .height(AppSizes.SHORTCUT_KEY_HEIGHT)
+                .fontSize(12)
+                .fontColor(AppColors.TEXT_PRIMARY)
+                .backgroundColor(AppColors.INPUT_BG)
+                .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+                .padding({ left: 10, right: 10 })
+                .onClick(() => {
+                  this.sendShortcutKey(key.data);
+                })
+            }, (key: ShortcutKey, index: number) => `${key.label}_${index}`)
+          }
+          .padding({ left: 12, right: 12 })
+        }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
+        .width('100%')
+        .height(52)
+        .backgroundColor(AppColors.TOOLBAR_BG)
+        .align(Alignment.Center)
 
         Row() {
-          Circle()
-            .width(AppSizes.STATUS_DOT_SIZE)
-            .height(AppSizes.STATUS_DOT_SIZE)
-            .fill(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
-            .margin({ right: 6 })
+          TextInput({ text: $$this.inputText, placeholder: AppStrings.INPUT_PLACEHOLDER })
+            .type(InputType.Normal)
+            .layoutWeight(1)
+            .height(40)
+            .fontSize(AppSizes.FONT_SIZE_BODY)
+            .fontColor(AppColors.TERMINAL_TEXT)
+            .placeholderColor(AppColors.TEXT_SECONDARY)
+            .backgroundColor(AppColors.TERMINAL_BG)
+            .borderRadius(AppSizes.BORDER_RADIUS_INPUT)
+            .padding({ left: 12, right: 12 })
+            .fontFamily('monospace')
+            .enabled(this.sessionActive && !this.showSessionClosedDialog)
+            .onSubmit(() => {
+              this.sendInput();
+            })
 
-          Text(this.sessionActive ? '活动' : '已断开')
-            .fontSize(12)
-            .fontColor(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
+          Button(AppStrings.SEND_BUTTON)
+            .height(40)
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor('#FFFFFF')
+            .backgroundColor(AppColors.ACCENT)
+            .borderRadius(AppSizes.BORDER_RADIUS_INPUT)
+            .margin({ left: 8 })
+            .enabled(this.sessionActive && !this.showSessionClosedDialog)
+            .onClick(() => {
+              this.sendInput();
+            })
         }
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .backgroundColor(AppColors.TOOLBAR_BG)
       }
       .width('100%')
-      .height(48)
-      .padding({ left: 16, right: 16 })
-      .backgroundColor(AppColors.STATUS_BAR_BG)
-      .alignItems(VerticalAlign.Center)
-
-      Stack({ alignContent: Alignment.Center }) {
-        Web({ src: this.terminalPageUrl, controller: this.terminalController })
-          .width('100%')
-          .height('100%')
-          .backgroundColor(AppColors.TERMINAL_BG)
-          .javaScriptAccess(true)
-          .domStorageAccess(true)
-          .javaScriptProxy({
-            object: this.terminalBridge,
-            name: 'nativeApp',
-            methodList: ['onTerminalReady', 'onTerminalResize', 'sendInput', 'onTerminalInteraction', 'logMessage'],
-            controller: this.terminalController
-          })
-
-        if (!this.terminalReady) {
-          Column() {
-            Text(this.terminalHint)
-              .fontSize(AppSizes.FONT_SIZE_BODY)
-              .fontColor(AppColors.TEXT_SECONDARY)
-          }
-          .width('100%')
-          .height('100%')
-          .backgroundColor(AppColors.TERMINAL_BG)
-          .justifyContent(FlexAlign.Center)
-        }
-      }
-      .width('100%')
-      .layoutWeight(1)
+      .height('100%')
       .backgroundColor(AppColors.TERMINAL_BG)
 
-      Scroll() {
-        Row({ space: 8 }) {
-          ForEach(this.shortcutKeys, (key: ShortcutKey) => {
-            Button(key.label)
-              .height(AppSizes.SHORTCUT_KEY_HEIGHT)
-              .fontSize(12)
+      if (this.showSessionClosedDialog) {
+        Column() {
+          Column() {
+            Text('PC 端已关闭当前会话')
+              .fontSize(18)
               .fontColor(AppColors.TEXT_PRIMARY)
-              .backgroundColor(AppColors.INPUT_BG)
-              .borderRadius(AppSizes.BORDER_RADIUS_TAG)
-              .padding({ left: 10, right: 10 })
-              .onClick(() => {
-                this.sendShortcutKey(key.data);
-              })
-          }, (key: ShortcutKey, index: number) => `${key.label}_${index}`)
+              .fontWeight(FontWeight.Medium)
+              .margin({ bottom: 10 })
+
+            Text('点击下方按钮返回会话列表。')
+              .fontSize(13)
+              .fontColor(AppColors.TEXT_SECONDARY)
+              .margin({ bottom: 18 })
+
+            Row() {
+              Button('返回会话列表')
+                .width(180)
+                .height(42)
+                .fontSize(AppSizes.FONT_SIZE_BODY)
+                .fontColor('#FFFFFF')
+                .backgroundColor(AppColors.ACCENT)
+                .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+                .onClick(() => {
+                  this.goBack();
+                })
+            }
+            .width('100%')
+            .justifyContent(FlexAlign.Center)
+          }
+          .width('100%')
+          .padding(24)
+          .backgroundColor(AppColors.CARD_BACKGROUND)
+          .borderRadius(16)
+          .alignItems(HorizontalAlign.Center)
         }
-        .padding({ left: 12, right: 12 })
+        .width('100%')
+        .height('100%')
+        .padding({ left: 24, right: 24 })
+        .backgroundColor('#90000000')
+        .justifyContent(FlexAlign.Center)
       }
-      .scrollable(ScrollDirection.Horizontal)
-      .scrollBar(BarState.Off)
-      .width('100%')
-      .height(52)
-      .backgroundColor(AppColors.TOOLBAR_BG)
-      .align(Alignment.Center)
-
-      Row() {
-        TextInput({ text: $$this.inputText, placeholder: AppStrings.INPUT_PLACEHOLDER })
-          .type(InputType.Normal)
-          .layoutWeight(1)
-          .height(40)
-          .fontSize(AppSizes.FONT_SIZE_BODY)
-          .fontColor(AppColors.TERMINAL_TEXT)
-          .placeholderColor(AppColors.TEXT_SECONDARY)
-          .backgroundColor(AppColors.TERMINAL_BG)
-          .borderRadius(AppSizes.BORDER_RADIUS_INPUT)
-          .padding({ left: 12, right: 12 })
-          .fontFamily('monospace')
-          .onSubmit(() => {
-            this.sendInput();
-          })
-
-        Button(AppStrings.SEND_BUTTON)
-          .height(40)
-          .fontSize(AppSizes.FONT_SIZE_SMALL)
-          .fontColor('#FFFFFF')
-          .backgroundColor(AppColors.ACCENT)
-          .borderRadius(AppSizes.BORDER_RADIUS_INPUT)
-          .margin({ left: 8 })
-          .enabled(this.sessionActive)
-          .onClick(() => {
-            this.sendInput();
-          })
-      }
-      .width('100%')
-      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-      .backgroundColor(AppColors.TOOLBAR_BG)
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(AppColors.TERMINAL_BG)
   }
 }
