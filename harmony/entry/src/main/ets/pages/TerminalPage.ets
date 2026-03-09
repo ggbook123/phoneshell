@@ -40,7 +40,6 @@ class TerminalBridge {
 @Entry
 @Component
 struct TerminalPage {
-  @State inputText: string = '';
   @State sessionActive: boolean = true;
   @State connectionState: ConnectionState = ConnectionState.CONNECTED;
   @State terminalReady: boolean = false;
@@ -267,17 +266,6 @@ struct TerminalPage {
     return sessionId.length > 0 && sessionId === this.viewedSessionId;
   }
 
-  private sendInput(): void {
-    const text: string = this.inputText;
-    hilog.info(DOMAIN, PAGE_TAG, 'sendInput textLen=%{public}d', text.length);
-    if (text.length === 0) {
-      WebSocketService.sendTerminalInput('\r');
-      return;
-    }
-    WebSocketService.sendTerminalInput(text + '\r');
-    this.inputText = '';
-  }
-
   private sendShortcutKey(data: string): void {
     WebSocketService.sendTerminalInput(data);
     this.runTerminalScript('window.phoneShell && window.phoneShell.focus();');
@@ -378,39 +366,6 @@ struct TerminalPage {
         .height(52)
         .backgroundColor(AppColors.TOOLBAR_BG)
         .align(Alignment.Center)
-
-        Row() {
-          TextInput({ text: $$this.inputText, placeholder: AppStrings.INPUT_PLACEHOLDER })
-            .type(InputType.Normal)
-            .layoutWeight(1)
-            .height(40)
-            .fontSize(AppSizes.FONT_SIZE_BODY)
-            .fontColor(AppColors.TERMINAL_TEXT)
-            .placeholderColor(AppColors.TEXT_SECONDARY)
-            .backgroundColor(AppColors.TERMINAL_BG)
-            .borderRadius(AppSizes.BORDER_RADIUS_INPUT)
-            .padding({ left: 12, right: 12 })
-            .fontFamily('monospace')
-            .enabled(this.sessionActive && !this.showSessionClosedDialog)
-            .onSubmit(() => {
-              this.sendInput();
-            })
-
-          Button(AppStrings.SEND_BUTTON)
-            .height(40)
-            .fontSize(AppSizes.FONT_SIZE_SMALL)
-            .fontColor('#FFFFFF')
-            .backgroundColor(AppColors.ACCENT)
-            .borderRadius(AppSizes.BORDER_RADIUS_INPUT)
-            .margin({ left: 8 })
-            .enabled(this.sessionActive && !this.showSessionClosedDialog)
-            .onClick(() => {
-              this.sendInput();
-            })
-        }
-        .width('100%')
-        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-        .backgroundColor(AppColors.TOOLBAR_BG)
       }
       .width('100%')
       .height('100%')
