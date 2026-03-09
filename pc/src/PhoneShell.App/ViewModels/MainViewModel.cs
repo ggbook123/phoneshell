@@ -37,6 +37,7 @@ public sealed class TerminalTab : ObservableObject, IDisposable
     private bool _hasMobileSession;
     private bool _isMobileControlPaused;
     private bool _isMobileViewportLocked;
+    private bool _isActive;
     private int _tabNumber;
 
     public TerminalTab(string tabId, ShellInfo shell, int tabNumber)
@@ -122,6 +123,12 @@ public sealed class TerminalTab : ObservableObject, IDisposable
     {
         get => _isMobileViewportLocked;
         set => SetProperty(ref _isMobileViewportLocked, value);
+    }
+
+    public bool IsActive
+    {
+        get => _isActive;
+        set => SetProperty(ref _isActive, value);
     }
 
     public void Dispose()
@@ -578,6 +585,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void SetActiveTab(TerminalTab? tab)
     {
+        foreach (var t in Tabs)
+            t.IsActive = t == tab;
+
         ActiveTab = tab;
         UpdateMobileConnectionState();
         ActiveTabChanged?.Invoke(tab);

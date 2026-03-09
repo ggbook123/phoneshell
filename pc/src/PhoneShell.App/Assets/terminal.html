@@ -4,9 +4,15 @@
 <meta charset="utf-8" />
 <style>
   :root {
-    --app-surface: #f1f3f5;
-    --terminal-bg: #0e1116;
-    --terminal-shadow: rgba(15, 23, 42, 0.14);
+    --surface-0: #0A0E14;
+    --surface-1: #0F1319;
+    --terminal-bg: #0A0E14;
+    --accent: #00D4AA;
+    --accent-subtle: rgba(0, 212, 170, 0.06);
+    --border: #1E2530;
+    --glow: rgba(0, 212, 170, 0.08);
+    --shadow-1: rgba(0, 0, 0, 0.3);
+    --shadow-2: rgba(0, 0, 0, 0.15);
   }
 
   html, body {
@@ -14,7 +20,7 @@
     padding: 0;
     height: 100%;
     overflow: hidden;
-    background: var(--app-surface);
+    background: var(--surface-1);
   }
 
   #terminalHost {
@@ -25,8 +31,8 @@
     justify-content: stretch;
     overflow: hidden;
     box-sizing: border-box;
-    padding: 16px;
-    background: var(--app-surface);
+    padding: 8px;
+    background: var(--surface-1);
   }
 
   #terminalHost.geometry-locked {
@@ -42,8 +48,35 @@
     box-sizing: border-box;
     overflow: hidden;
     background: var(--terminal-bg);
-    border-radius: 10px;
-    box-shadow: 0 10px 24px var(--terminal-shadow);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    box-shadow:
+      0 0 0 1px var(--border),
+      0 8px 32px var(--shadow-1),
+      0 2px 8px var(--shadow-2),
+      inset 0 1px 0 rgba(255, 255, 255, 0.02);
+    position: relative;
+  }
+
+  /* Subtle accent glow on the top edge */
+  #terminal::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 20%;
+    right: 20%;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      var(--accent-subtle),
+      var(--glow),
+      var(--accent-subtle),
+      transparent
+    );
+    z-index: 1;
+    pointer-events: none;
+    border-radius: 0 0 50% 50%;
   }
 
   #terminalHost.geometry-locked #terminal {
@@ -54,9 +87,36 @@
     flex: 1 1 auto;
   }
 
+  /* xterm overrides for seamless look */
+  .xterm {
+    padding: 12px 4px 8px 12px;
+  }
+
   .xterm,
   .xterm .xterm-viewport {
     background-color: var(--terminal-bg) !important;
+  }
+
+  .xterm .xterm-viewport::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .xterm .xterm-viewport::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 3px;
+  }
+
+  .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
+  }
+
+  /* Selection color matching accent */
+  .xterm .xterm-selection div {
+    background: rgba(0, 212, 170, 0.2) !important;
   }
 </style>
 <link rel="stylesheet" href="xterm.min.css" />
@@ -73,10 +133,40 @@
   var defaultScrollback = 2000;
   var term = new Terminal({
     cursorBlink: true,
+    cursorStyle: 'bar',
+    cursorWidth: 2,
     fontSize: 14,
-    fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
+    fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace",
+    fontWeight: '400',
+    fontWeightBold: '600',
+    letterSpacing: 0.3,
+    lineHeight: 1.25,
     scrollback: defaultScrollback,
-    theme: { background: '#0e1116', foreground: '#e6e6e6', cursor: '#e6e6e6' }
+    theme: {
+      background: '#0A0E14',
+      foreground: '#CBD3E0',
+      cursor: '#00D4AA',
+      cursorAccent: '#0A0E14',
+      selectionBackground: 'rgba(0, 212, 170, 0.2)',
+      selectionForeground: '#FFFFFF',
+      /* ANSI colors - refined dark palette */
+      black: '#1A2029',
+      red: '#FF4757',
+      green: '#00D4AA',
+      yellow: '#FFBE0B',
+      blue: '#4DA6FF',
+      magenta: '#C084FC',
+      cyan: '#22D3EE',
+      white: '#CBD3E0',
+      brightBlack: '#3A4452',
+      brightRed: '#FF6B7A',
+      brightGreen: '#3DFFCF',
+      brightYellow: '#FFD060',
+      brightBlue: '#7CC4FF',
+      brightMagenta: '#D8A9FF',
+      brightCyan: '#5EE8F7',
+      brightWhite: '#F0F4F8'
+    }
   });
 
   var fitAddon = new FitAddon.FitAddon();

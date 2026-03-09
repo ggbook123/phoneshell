@@ -52,6 +52,51 @@ public partial class MainWindow : Window
         UpdatePanelVisibility();
     }
 
+    // --- Custom Title Bar ---
+
+    private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount == 2)
+        {
+            ToggleMaximize();
+        }
+        else
+        {
+            DragMove();
+        }
+    }
+
+    private void MinimizeButton_Click(object sender, RoutedEventArgs e)
+    {
+        WindowState = WindowState.Minimized;
+    }
+
+    private void MaximizeButton_Click(object sender, RoutedEventArgs e)
+    {
+        ToggleMaximize();
+    }
+
+    private void CloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        Close();
+    }
+
+    private void ToggleMaximize()
+    {
+        if (WindowState == WindowState.Maximized)
+        {
+            WindowState = WindowState.Normal;
+            MaximizeBtn.Content = "\u25A1"; // restore icon
+        }
+        else
+        {
+            WindowState = WindowState.Maximized;
+            MaximizeBtn.Content = "\u29C9"; // overlapping squares
+        }
+    }
+
+    // --- WebView2 ---
+
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         var json = e.TryGetWebMessageAsString();
@@ -135,11 +180,8 @@ public partial class MainWindow : Window
 
             if (tab is null)
             {
-                ActiveTabTitle.Text = "";
                 return;
             }
-
-            ActiveTabTitle.Text = tab.Title;
 
             // Update compact mode button text
             CompactModeButton.Content = tab.IsCompactMode ? "Expand" : "Compact";
@@ -204,11 +246,8 @@ public partial class MainWindow : Window
 
     private void UpdateTabHighlighting()
     {
-        // Tab highlighting is handled via DataTemplate;
-        // we update active tab title text here
         if (_viewModel.ActiveTab is not null)
         {
-            ActiveTabTitle.Text = _viewModel.ActiveTab.Title;
             CompactModeButton.Content = _viewModel.ActiveTab.IsCompactMode ? "Expand" : "Compact";
         }
     }
