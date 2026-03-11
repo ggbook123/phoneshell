@@ -13,7 +13,7 @@ namespace PhoneShell.Headless;
 /// │ [terminal]      — PTY session management (core)         │
 /// │ [relay-server]  — WebSocket relay hub mode              │
 /// │ [relay-client]  — Connect to existing relay server      │
-/// │ [web-panel]     — Web management UI (future)            │
+/// │ [web-panel]     — Web management UI                     │
 /// │ [ai-chat]       — AI assistant integration (future)     │
 /// │                                                         │
 /// │ Modules are toggled via config.json "modules" section   │
@@ -24,6 +24,13 @@ public sealed class HeadlessConfig
 {
     /// <summary>Device display name shown in relay device list.</summary>
     public string DisplayName { get; set; } = Environment.MachineName;
+
+    /// <summary>
+    /// Public hostname or IP for this server, used when behind NAT.
+    /// When set, replaces auto-detected internal IPs in advertised URLs and QR codes.
+    /// Example: "43.140.37.188" or "relay.example.com"
+    /// </summary>
+    public string PublicHost { get; set; } = string.Empty;
 
     /// <summary>Relay server listen port (only used when relay-server module is enabled).</summary>
     public int Port { get; set; } = 9090;
@@ -82,9 +89,8 @@ public sealed class HeadlessConfig
         /// [MODULE: web-panel]
         /// Serve a web management UI on the relay server HTTP port.
         /// Only effective when relay-server is also enabled.
-        /// TODO: Implement in future version.
         /// </summary>
-        public bool WebPanel { get; set; } = false;
+        public bool WebPanel { get; set; } = true;
 
         /// <summary>
         /// [MODULE: ai-chat]
@@ -158,6 +164,9 @@ public sealed class HeadlessConfig
                 case "--group-secret" when i + 1 < args.Length:
                     GroupSecret = args[++i];
                     break;
+                case "--public-host" when i + 1 < args.Length:
+                    PublicHost = args[++i];
+                    break;
                 case "--mode" when i + 1 < args.Length:
                     var mode = args[++i].ToLowerInvariant();
                     if (mode == "server" || mode == "relay-server")
@@ -229,6 +238,10 @@ public sealed class HeadlessConfig
         if (groupSecret is not null)
             GroupSecret = groupSecret;
 
+        var publicHost = GetTrimmedEnvironmentVariable("PHONESHELL_PUBLIC_HOST");
+        if (publicHost is not null)
+            PublicHost = publicHost;
+
         var portValue = GetTrimmedEnvironmentVariable("PHONESHELL_PORT");
         if (portValue is not null && int.TryParse(portValue, out var port) && port is >= 1 and <= 65535)
             Port = port;
@@ -263,5 +276,6 @@ public sealed class HeadlessConfig
         RelayAuthToken = RelayAuthToken.Trim();
         GroupSecret = GroupSecret.Trim();
         DisplayName = DisplayName.Trim();
+        PublicHost = PublicHost.Trim();
     }
 }

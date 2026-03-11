@@ -79,6 +79,24 @@ public sealed class RelayClient : IDisposable
 
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
+    /// <summary>
+    /// Send a server migration prepare response (from the new server back to the old server).
+    /// </summary>
+    public async Task SendServerChangePrepareAsync(string groupId, string groupSecret, string newServerUrl)
+    {
+        if (string.IsNullOrWhiteSpace(groupId) || string.IsNullOrWhiteSpace(groupSecret) ||
+            string.IsNullOrWhiteSpace(newServerUrl))
+            return;
+
+        var msg = MessageSerializer.Serialize(new GroupServerChangePrepareMessage
+        {
+            GroupId = groupId,
+            GroupSecret = groupSecret,
+            NewServerUrl = newServerUrl
+        });
+        await SendAsync(msg);
+    }
+
     public async Task ConnectAsync(string serverUrl, CancellationToken ct = default)
     {
         _serverUrl = serverUrl;

@@ -1,5 +1,6 @@
 {
   "displayName": "prod-linux-node-01",
+  "publicHost": "",
   "port": 9090,
   "relayUrl": "",
   "relayAuthToken": "replace-with-a-long-random-secret",
@@ -9,7 +10,7 @@
     "terminal": true,
     "relayServer": true,
     "relayClient": false,
-    "webPanel": false,
+    "webPanel": true,
     "aiChat": false
   }
 }

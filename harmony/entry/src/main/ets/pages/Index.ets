@@ -13,6 +13,7 @@ struct Index {
   private stateListenerId: number = -1;
   private messageListenerId: number = -1;
   private hasAutoNavigated: boolean = false;
+  private hasAutoConnect: boolean = false;
 
   aboutToAppear(): void {
     this.refreshPreferencesAndMaybeNavigate();
@@ -51,6 +52,7 @@ struct Index {
   private refreshPreferencesAndMaybeNavigate(): void {
     this.initPreferences().then(() => {
       this.connectionState = WebSocketService.getConnectionState();
+      this.autoConnectIfPossible();
       this.maybeNavigateOnConnected();
     });
   }
@@ -245,6 +247,33 @@ struct Index {
       return AppColors.ONLINE_GREEN;
     }
     return AppColors.OFFLINE_GRAY;
+  }
+
+  private autoConnectIfPossible(): void {
+    if (this.hasAutoConnect) {
+      return;
+    }
+
+    if (this.connectionState !== ConnectionState.DISCONNECTED) {
+      return;
+    }
+
+    const normalizedUrl: string = this.normalizeServerUrl(this.serverUrl);
+    if (normalizedUrl.length === 0) {
+      return;
+    }
+
+    const validationMessage: string = this.validateServerUrl(normalizedUrl);
+    if (validationMessage.length > 0) {
+      this.errorMessage = validationMessage;
+      return;
+    }
+
+    this.hasAutoConnect = true;
+    this.serverUrl = normalizedUrl;
+    this.errorMessage = '';
+    const connectUrl: string = this.buildConnectUrlWithToken(normalizedUrl, this.groupSecret);
+    WebSocketService.connect(connectUrl);
   }
 
   build() {

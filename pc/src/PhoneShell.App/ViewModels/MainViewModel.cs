@@ -223,6 +223,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly AiSettingsStore _aiSettingsStore;
     private readonly AiChatService _aiChatService;
     private readonly ServerSettingsStore _serverSettingsStore;
+    private readonly GroupStore _groupStore;
     private readonly Dispatcher _dispatcher;
 
     private DeviceIdentity _identity = new();
@@ -252,6 +253,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     // Server/Client fields
     private ServerSettings _serverSettings;
+    private bool _isAutoMode;
     private bool _isRelayServer;
     private int _serverPort = 9090;
     private string _relayServerAddress = string.Empty;
@@ -285,6 +287,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _aiSettingsStore = new AiSettingsStore(AppContext.BaseDirectory);
         _aiChatService = new AiChatService();
         _serverSettingsStore = new ServerSettingsStore(AppContext.BaseDirectory);
+        _groupStore = new GroupStore(AppContext.BaseDirectory);
         _shellLocator = new WindowsShellLocator();
         _dispatcher = Application.Current.Dispatcher;
 
@@ -294,6 +297,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _aiModelName = _aiSettings.ModelName;
 
         _serverSettings = _serverSettingsStore.Load();
+        _isAutoMode = _serverSettings.AutoMode;
         _isRelayServer = _serverSettings.IsRelayServer;
         _serverPort = _serverSettings.Port;
         _relayServerAddress = _serverSettings.RelayServerAddress ?? string.Empty;
@@ -452,6 +456,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     // Server properties
+    public bool IsAutoMode
+    {
+        get => _isAutoMode;
+        set
+        {
+            if (SetProperty(ref _isAutoMode, value))
+            {
+                if (_isAutoMode)
+                    ApplyAutoRelayMode();
+                UpdateRelayAddressPreview();
+            }
+        }
+    }
+
     public bool IsRelayServer
     {
         get => _isRelayServer;
@@ -1020,6 +1038,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _identity = _identityStore.LoadOrCreate();
         DeviceId = _identity.DeviceId;
+        ApplyAutoRelayMode();
         RefreshQr();
         RefreshShells();
         UpdateRelayAddressPreview();
@@ -1035,7 +1054,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (IsRelayServer && _relayServer?.Group is not null && !string.IsNullOrEmpty(PrimaryRelayAddress))
         {
             var group = _relayServer.Group;
-            QrPayload = _payloadBuilder.BuildGroupBind(PrimaryRelayAddress, group.GroupId, group.GroupSecret);
+            var serverDeviceId = !string.IsNullOrWhiteSpace(group.ServerDeviceId)
+                ? group.ServerDeviceId
+                : _identity.DeviceId;
+            QrPayload = _payloadBuilder.BuildGroupBind(
+                PrimaryRelayAddress, group.GroupId, group.GroupSecret, serverDeviceId);
         }
         else
         {
@@ -1075,6 +1098,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
         }
 
+        _serverSettings.AutoMode = IsAutoMode;
         _serverSettings.IsRelayServer = IsRelayServer;
         _serverSettings.Port = ServerPort;
         _serverSettings.RelayServerAddress = string.IsNullOrWhiteSpace(RelayServerAddress) ? null : RelayServerAddress;
@@ -1087,16 +1111,37 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         if (!IsRelayServer || !string.IsNullOrWhiteSpace(GroupSecret))
             return;
+        ClearServerGroupFiles();
+    }
 
+    private void SaveGroupMembership(string groupId, string groupSecret)
+    {
         try
         {
-            var groupFile = Path.Combine(AppContext.BaseDirectory, "data", "group.json");
-            if (File.Exists(groupFile))
-                File.Delete(groupFile);
+            if (string.IsNullOrWhiteSpace(groupId) || string.IsNullOrWhiteSpace(groupSecret))
+                return;
+
+            _groupStore.SaveMembership(new GroupMembership
+            {
+                GroupId = groupId,
+                GroupSecret = groupSecret
+            });
         }
         catch (Exception ex)
         {
-            ServerStatus = $"Failed to clear group: {ex.Message}";
+            OnNetworkLog($"Save membership failed: {ex.Message}");
+        }
+    }
+
+    private void ClearServerGroupFiles()
+    {
+        try
+        {
+            _groupStore.ClearGroup();
+        }
+        catch (Exception ex)
+        {
+            OnNetworkLog($"Clear group failed: {ex.Message}");
         }
     }
 
@@ -1122,10 +1167,49 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             SelectedShell = shells[0];
     }
 
+    private void ApplyAutoRelayMode()
+    {
+        if (!IsAutoMode || IsServerRunning)
+            return;
+
+        var existingGroup = _groupStore.LoadGroup();
+        var membership = _groupStore.LoadMembership();
+
+        if (existingGroup is not null)
+        {
+            IsRelayServer = true;
+            RelayServerAddress = string.Empty;
+            if (string.IsNullOrWhiteSpace(GroupSecret))
+                GroupSecret = existingGroup.GroupSecret;
+            return;
+        }
+
+        if (membership is not null)
+        {
+            IsRelayServer = false;
+            if (string.IsNullOrWhiteSpace(GroupSecret))
+                GroupSecret = membership.GroupSecret;
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(RelayServerAddress))
+        {
+            IsRelayServer = false;
+            return;
+        }
+
+        // First run default: act as relay server so QR is available
+        IsRelayServer = true;
+        RelayServerAddress = string.Empty;
+    }
+
     // --- Network Start/Stop ---
 
     private async Task StartNetworkAsync()
     {
+        if (IsAutoMode)
+            ApplyAutoRelayMode();
+
         if (!IsRelayServer && !string.IsNullOrWhiteSpace(RelayServerAddress))
         {
             try
@@ -1159,6 +1243,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayServer.RemoteTerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
                 _relayServer.RemoteTerminalOutputReceived += OnRemoteTerminalOutputReceived;
                 _relayServer.RemoteTerminalClosedReceived += OnRemoteTerminalClosedReceived;
+                _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
 
                 // Use GroupSecret as AuthToken if provided
                 if (!string.IsNullOrWhiteSpace(GroupSecret))
@@ -1191,6 +1276,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     _serverSettings.GroupSecret = GroupSecret;
                     _serverSettingsStore.Save(_serverSettings);
                 }
+
+                // Server role clears any client membership
+                _groupStore.ClearMembership();
 
                 IsServerRunning = true;
                 var reachableUrls = _relayServer.ReachableWebSocketUrls;
@@ -1225,6 +1313,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayClient.GroupJoined += OnGroupJoined;
                 _relayClient.GroupJoinRejected += OnGroupJoinRejected;
                 _relayClient.GroupMemberChanged += OnGroupMemberListChanged;
+                _relayClient.ServerChanged += OnServerChanged;
+                _relayClient.ServerChangeRequested += OnServerChangeRequested;
+                _relayClient.GroupSecretRotated += OnGroupSecretRotated;
                 _relayClient.TerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
                 _relayClient.TerminalOutputReceived += OnRemoteTerminalOutputReceived;
                 _relayClient.TerminalClosedReceived += OnRemoteTerminalClosedReceived;
@@ -1263,6 +1354,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayServer.RemoteTerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
             _relayServer.RemoteTerminalOutputReceived -= OnRemoteTerminalOutputReceived;
             _relayServer.RemoteTerminalClosedReceived -= OnRemoteTerminalClosedReceived;
+            _relayServer.ServerMigrationCommitted -= OnServerMigrationCommitted;
             _relayServer.Dispose();
             _relayServer = null;
         }
@@ -1277,6 +1369,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayClient.GroupJoined -= OnGroupJoined;
             _relayClient.GroupJoinRejected -= OnGroupJoinRejected;
             _relayClient.GroupMemberChanged -= OnGroupMemberListChanged;
+            _relayClient.ServerChanged -= OnServerChanged;
+            _relayClient.ServerChangeRequested -= OnServerChangeRequested;
+            _relayClient.GroupSecretRotated -= OnGroupSecretRotated;
             _relayClient.TerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
             _relayClient.TerminalOutputReceived -= OnRemoteTerminalOutputReceived;
             _relayClient.TerminalClosedReceived -= OnRemoteTerminalClosedReceived;
@@ -1333,6 +1428,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             GroupMembers.Clear();
             foreach (var m in accepted.Members)
                 GroupMembers.Add(m);
+
+            SaveGroupMembership(accepted.GroupId, GroupSecret);
         });
     }
 
@@ -1354,6 +1451,59 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             foreach (var m in members)
                 GroupMembers.Add(m);
             GroupStatus = $"Group: {members.Count} member(s)";
+        });
+    }
+
+    private void OnGroupSecretRotated(string newSecret)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            GroupSecret = newSecret;
+            _serverSettings.GroupSecret = newSecret;
+            _serverSettingsStore.Save(_serverSettings);
+        });
+    }
+
+    private void OnServerChanged(string newUrl, string newSecret)
+    {
+        _dispatcher.InvokeAsync(async () =>
+        {
+            // If this device is already running as the new server, just drop the client connection.
+            if (_relayServer is not null && _relayServer.IsRunning)
+            {
+                _relayClient?.Disconnect();
+                _relayClient?.Dispose();
+                _relayClient = null;
+                RelayServerAddress = string.Empty;
+                GroupSecret = newSecret;
+                SaveServerSettings();
+                return;
+            }
+
+            await SwitchToClientAsync(newUrl, newSecret, _relayClient?.GroupId);
+        });
+    }
+
+    private void OnServerChangeRequested(string groupId, string groupSecret)
+    {
+        _dispatcher.InvokeAsync(async () =>
+        {
+            try
+            {
+                await StartRelayServerForMigrationAsync(groupId, groupSecret);
+            }
+            catch (Exception ex)
+            {
+                OnNetworkLog($"Server migration (prepare) failed: {ex.Message}");
+            }
+        });
+    }
+
+    private void OnServerMigrationCommitted(string newUrl, string newSecret)
+    {
+        _dispatcher.InvokeAsync(async () =>
+        {
+            await SwitchToClientAsync(newUrl, newSecret, _relayServer?.Group?.GroupId);
         });
     }
 
@@ -1419,6 +1569,58 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         if (!IsServerRunning)
             ServerStatus = $"Ready to start. Mobile can connect to {PrimaryRelayAddress}";
+    }
+
+    private async Task StartRelayServerForMigrationAsync(string groupId, string groupSecret)
+    {
+        if (string.IsNullOrWhiteSpace(groupId) || string.IsNullOrWhiteSpace(groupSecret))
+            return;
+
+        // Persist group info so the new server keeps the existing group ID/secret.
+        _groupStore.SaveGroup(new GroupInfo
+        {
+            GroupId = groupId,
+            GroupSecret = groupSecret,
+            ServerDeviceId = _identity.DeviceId,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+
+        IsRelayServer = true;
+        GroupSecret = groupSecret;
+        RelayServerAddress = string.Empty;
+        SaveServerSettings();
+        _groupStore.ClearMembership();
+
+        if (_relayServer is null || !_relayServer.IsRunning)
+        {
+            await StartNetworkAsync();
+        }
+
+        var newServerUrl = PrimaryRelayAddress;
+        if (_relayClient is not null && !string.IsNullOrWhiteSpace(newServerUrl))
+        {
+            await _relayClient.SendServerChangePrepareAsync(groupId, groupSecret, newServerUrl);
+            OnNetworkLog($"Server migration: prepare sent ({newServerUrl})");
+        }
+    }
+
+    private async Task SwitchToClientAsync(string newUrl, string newSecret, string? groupId)
+    {
+        if (string.IsNullOrWhiteSpace(newUrl) || string.IsNullOrWhiteSpace(newSecret))
+            return;
+
+        StopNetwork();
+
+        ClearServerGroupFiles();
+        IsRelayServer = false;
+        RelayServerAddress = newUrl;
+        GroupSecret = newSecret;
+        SaveServerSettings();
+
+        if (!string.IsNullOrWhiteSpace(groupId))
+            SaveGroupMembership(groupId, newSecret);
+
+        await StartNetworkAsync();
     }
 
     private void OnRemoteTerminalInput(string sessionId, string data)

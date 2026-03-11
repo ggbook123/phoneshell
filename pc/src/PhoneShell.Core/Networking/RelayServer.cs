@@ -1595,7 +1595,11 @@ public sealed class RelayServer : IDisposable
             return null;
 
         var builder = new QrPayloadBuilder();
-        return builder.BuildGroupBind(serverUrl, _group.GroupId, _group.GroupSecret);
+        return builder.BuildGroupBind(
+            serverUrl,
+            _group.GroupId,
+            _group.GroupSecret,
+            _group.ServerDeviceId);
     }
 
     private async Task<object> StartPanelLoginAsync(HttpListenerRequest request)

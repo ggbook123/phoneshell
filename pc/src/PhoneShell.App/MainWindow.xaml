@@ -166,8 +166,13 @@
                         <Expander DockPanel.Dock="Top" Header="Server Settings"
                                   Style="{StaticResource SidebarExpander}" IsExpanded="False">
                             <StackPanel>
+                                <CheckBox Content="Auto Mode (choose server/client)"
+                                          IsChecked="{Binding IsAutoMode}"
+                                          Style="{StaticResource DarkCheckBox}" Margin="0,0,0,8" />
+
                                 <CheckBox Content="Enable Relay Server (this PC as hub)"
                                           IsChecked="{Binding IsRelayServer}"
+                                          IsEnabled="{Binding IsAutoMode, Converter={StaticResource InvertBoolConverter}}"
                                           Style="{StaticResource DarkCheckBox}" Margin="0,0,0,10" />
 
                                 <TextBlock Text="PORT" Style="{StaticResource SectionLabel}" />

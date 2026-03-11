@@ -86,6 +86,13 @@ public sealed class GroupStore
             File.Delete(_membershipFilePath);
     }
 
+    /// <summary>Delete the server-side group file (revoke server role).</summary>
+    public void ClearGroup()
+    {
+        if (File.Exists(_groupFilePath))
+            File.Delete(_groupFilePath);
+    }
+
     // --- Helpers ---
 
     private static string GenerateGroupSecret()

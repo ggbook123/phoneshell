@@ -1,3 +1,5 @@
+using PhoneShell.Core.Services;
+
 namespace PhoneShell.Headless;
 
 /// <summary>
@@ -23,7 +25,7 @@ namespace PhoneShell.Headless;
 ///   --disable-relay-server     Disable relay server module
 ///   --enable-relay-client      Enable relay client module
 ///   --disable-relay-client     Disable relay client module
-///   --enable-web-panel         Enable web management panel (future)
+///   --enable-web-panel         Enable web management panel
 ///   --disable-web-panel        Disable web management panel
 ///   --enable-ai-chat           Enable AI chat module (future)
 ///   --disable-ai-chat          Disable AI chat module
@@ -72,6 +74,9 @@ public static class Program
             return;
         }
 
+        var baseDirectory = GetDataDirectory(configPath);
+        ApplyAutoMode(config, baseDirectory);
+
         // Validate
         if (!config.Modules.RelayServer && !config.Modules.RelayClient)
         {
@@ -89,7 +94,6 @@ public static class Program
         }
 
         // Run
-        var baseDirectory = GetDataDirectory(configPath);
         using var host = new HeadlessHost(config, baseDirectory);
         using var cts = new CancellationTokenSource();
 
@@ -174,6 +178,11 @@ public static class Program
             if (!string.IsNullOrEmpty(portInput) && int.TryParse(portInput, out var port))
                 config.Port = port;
 
+            Console.Write("Public host (for NAT/reverse proxy, e.g. 1.2.3.4:9090) [auto-detect]: ");
+            var publicHostInput = Console.ReadLine()?.Trim();
+            if (!string.IsNullOrWhiteSpace(publicHostInput))
+                config.PublicHost = publicHostInput;
+
             Console.Write("Group secret [auto-generate]: ");
             var groupSecretInput = Console.ReadLine()?.Trim();
             config.GroupSecret = string.IsNullOrWhiteSpace(groupSecretInput)
@@ -223,6 +232,31 @@ public static class Program
         Console.WriteLine("Run 'phoneshell' to start the service.");
     }
 
+    private static void ApplyAutoMode(HeadlessConfig config, string baseDirectory)
+    {
+        var groupStore = new GroupStore(baseDirectory);
+        var hasGroup = groupStore.LoadGroup() is not null;
+        var hasRelayUrl = !string.IsNullOrWhiteSpace(config.RelayUrl);
+        var hasGroupSecret = !string.IsNullOrWhiteSpace(config.GroupSecret);
+
+        // If a server group exists locally, prefer relay-server.
+        if (hasGroup)
+        {
+            config.Modules.RelayServer = true;
+            config.Modules.RelayClient = false;
+            config.Modules.WebPanel = true;
+            return;
+        }
+
+        // First run: no relay URL and no group secret -> auto server (so QR is available).
+        if (config.Modules.RelayClient && !hasRelayUrl && !hasGroupSecret)
+        {
+            config.Modules.RelayServer = true;
+            config.Modules.RelayClient = false;
+            config.Modules.WebPanel = true;
+        }
+    }
+
     private static void PrintUsage()
     {
         Console.WriteLine("PhoneShell Headless — Cross-platform terminal service");
@@ -236,6 +270,7 @@ public static class Program
         Console.WriteLine("  --relay <url>             Relay server URL to connect to");
         Console.WriteLine("  --relay-token <token>     Shared relay bearer token (legacy)");
         Console.WriteLine("  --group-secret <key>      Group secret for group-based auth");
+        Console.WriteLine("  --public-host <host:port> Public address for NAT/reverse proxy");
         Console.WriteLine("  --mode <server|client>    Quick mode switch");
         Console.WriteLine("  --setup                   Interactive first-time setup");
         Console.WriteLine("  --help, -h                Show this help");
@@ -255,7 +290,7 @@ public static class Program
         Console.WriteLine("Environment overrides:");
         Console.WriteLine("  PHONESHELL_MODE, PHONESHELL_NAME, PHONESHELL_PORT,");
         Console.WriteLine("  PHONESHELL_RELAY_URL, PHONESHELL_RELAY_TOKEN,");
-        Console.WriteLine("  PHONESHELL_GROUP_SECRET");
+        Console.WriteLine("  PHONESHELL_GROUP_SECRET, PHONESHELL_PUBLIC_HOST");
     }
 
     private static string GenerateRelayAuthToken()

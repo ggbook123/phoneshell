@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text;
 using PhoneShell.Core.Networking;
+using PhoneShell.Core.Models;
 using PhoneShell.Core.Protocol;
 using PhoneShell.Core.Services;
 using PhoneShell.Core.Terminals;
@@ -18,6 +19,7 @@ public sealed class HeadlessHost : IDisposable
     private readonly string _baseDirectory;
     private readonly IShellLocator _shellLocator;
     private readonly DeviceIdentityStore _identityStore;
+    private readonly GroupStore _groupStore;
 
     // Networking — conditionally initialized based on modules
     private RelayServer? _relayServer;
@@ -47,6 +49,7 @@ public sealed class HeadlessHost : IDisposable
         _baseDirectory = baseDirectory;
         _shellLocator = TerminalPlatformFactory.CreateShellLocator();
         _identityStore = new DeviceIdentityStore(baseDirectory);
+        _groupStore = new GroupStore(baseDirectory);
     }
 
     public async Task StartAsync(CancellationToken ct = default)
@@ -98,6 +101,7 @@ public sealed class HeadlessHost : IDisposable
             _relayServer.LocalTerminalSessionEnded += OnLocalTerminalSessionEnded;
             _relayServer.LocalTerminalOpenRequested += OnLocalTerminalOpenRequested;
             _relayServer.LocalSessionListProvider += GetSessionList;
+            _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
 
             if (_config.Modules.Terminal)
             {
@@ -134,6 +138,20 @@ public sealed class HeadlessHost : IDisposable
                 catch (Exception ex)
                 {
                     Log($"[web-panel] Warning: failed to patch HTTP prefixes: {ex.Message}");
+                }
+            }
+
+            // Patch: override ReachableWebSocketUrls with public host when behind NAT
+            if (!string.IsNullOrWhiteSpace(_config.PublicHost))
+            {
+                try
+                {
+                    PatchReachableUrls(_relayServer, _config.PublicHost, _config.Port);
+                    Log($"[relay-server] Public host override: {_config.PublicHost}");
+                }
+                catch (Exception ex)
+                {
+                    Log($"[relay-server] Warning: failed to patch public host: {ex.Message}");
                 }
             }
 
@@ -190,36 +208,51 @@ public sealed class HeadlessHost : IDisposable
                 Log($"[relay-client] Server migration: this device selected as new server");
                 try
                 {
-                    // Disconnect client
-                    _relayClient?.Disconnect();
-
-                    // Start relay server
-                    _relayServer = new RelayServer
+                    // Persist group info so the new server keeps existing group ID/secret.
+                    _groupStore.SaveGroup(new GroupInfo
                     {
-                        AuthToken = groupSecret,
-                        WebPanelEnabled = _config.Modules.WebPanel
-                    };
-                    _relayServer.Log += msg => Log($"[relay-server] {msg}");
-                    _relayServer.LocalTerminalInputReceived += OnLocalTerminalInput;
-                    _relayServer.LocalTerminalResizeReceived += OnLocalTerminalResize;
-                    _relayServer.LocalTerminalSessionEnded += OnLocalTerminalSessionEnded;
-                    _relayServer.LocalTerminalOpenRequested += OnLocalTerminalOpenRequested;
-                    _relayServer.LocalSessionListProvider += GetSessionList;
+                        GroupId = groupId,
+                        GroupSecret = groupSecret,
+                        ServerDeviceId = DeviceId,
+                        CreatedAt = DateTimeOffset.UtcNow
+                    });
 
-                    var allShells = _config.Modules.Terminal
-                        ? _shellLocator.GetAvailableShells().Select(s => s.DisplayName).ToList()
-                        : new List<string>();
-                    var identity = _identityStore.LoadOrCreate();
-                    _relayServer.RegisterLocalDevice(DeviceId,
-                        string.IsNullOrWhiteSpace(_config.DisplayName) ? identity.DisplayName : _config.DisplayName,
-                        TerminalPlatformFactory.GetOsIdentifier(), allShells);
+                    // Start relay server (keep client connected until commit)
+                    if (_relayServer is null || !_relayServer.IsRunning)
+                    {
+                        _relayServer = new RelayServer
+                        {
+                            AuthToken = groupSecret,
+                            WebPanelEnabled = _config.Modules.WebPanel
+                        };
+                        _relayServer.Log += msg => Log($"[relay-server] {msg}");
+                        _relayServer.LocalTerminalInputReceived += OnLocalTerminalInput;
+                        _relayServer.LocalTerminalResizeReceived += OnLocalTerminalResize;
+                        _relayServer.LocalTerminalSessionEnded += OnLocalTerminalSessionEnded;
+                        _relayServer.LocalTerminalOpenRequested += OnLocalTerminalOpenRequested;
+                        _relayServer.LocalSessionListProvider += GetSessionList;
+                        _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
 
-                    await _relayServer.StartAsync(_config.Port, _baseDirectory, _cts?.Token ?? CancellationToken.None);
-                    Log($"[relay-server] Server role activated on port {_config.Port}");
+                        var allShells = _config.Modules.Terminal
+                            ? _shellLocator.GetAvailableShells().Select(s => s.DisplayName).ToList()
+                            : new List<string>();
+                        var identity = _identityStore.LoadOrCreate();
+                        _relayServer.RegisterLocalDevice(DeviceId,
+                            string.IsNullOrWhiteSpace(_config.DisplayName) ? identity.DisplayName : _config.DisplayName,
+                            TerminalPlatformFactory.GetOsIdentifier(), allShells);
 
-                    // Send prepare response back via relay (the old server will forward commit)
-                    var newServerUrl = _relayServer.ReachableWebSocketUrls.FirstOrDefault() ?? $"ws://localhost:{_config.Port}/ws/";
-                    // Note: the old server receives the prepare message and broadcasts commit
+                        await _relayServer.StartAsync(_config.Port, _baseDirectory, _cts?.Token ?? CancellationToken.None);
+                        Log($"[relay-server] Server role activated on port {_config.Port}");
+                    }
+
+                    _config.Modules.RelayServer = true;
+                    _config.Modules.RelayClient = false;
+                    _config.GroupSecret = groupSecret;
+
+                    var newServerUrl = _relayServer.ReachableWebSocketUrls.FirstOrDefault() ??
+                                       $"ws://localhost:{_config.Port}/ws/";
+                    await _relayClient.SendServerChangePrepareAsync(groupId, groupSecret, newServerUrl);
+                    Log($"[relay-client] Server migration prepare sent: {newServerUrl}");
                 }
                 catch (Exception ex)
                 {
@@ -233,6 +266,18 @@ public sealed class HeadlessHost : IDisposable
                 Log($"[relay-client] Server changed, reconnecting to {newUrl}");
                 _ = Task.Run(async () =>
                 {
+                    // If we are the new server, drop client connection.
+                    if (_relayServer is not null && _relayServer.IsRunning)
+                    {
+                        _relayClient?.Disconnect();
+                        _relayClient?.Dispose();
+                        _relayClient = null;
+                        _config.Modules.RelayServer = true;
+                        _config.Modules.RelayClient = false;
+                        _config.GroupSecret = newSecret;
+                        return;
+                    }
+
                     _relayClient?.Disconnect();
                     _relayClient!.GroupSecret = newSecret;
                     await _relayClient.ConnectAsync(newUrl, _cts?.Token ?? CancellationToken.None);
@@ -295,7 +340,11 @@ public sealed class HeadlessHost : IDisposable
         _relayClient?.Dispose();
         _relayClient = null;
 
-        _relayServer?.Dispose();
+        if (_relayServer is not null)
+        {
+            _relayServer.ServerMigrationCommitted -= OnServerMigrationCommitted;
+            _relayServer.Dispose();
+        }
         _relayServer = null;
 
         Log("PhoneShell Headless stopped.");
@@ -457,6 +506,139 @@ public sealed class HeadlessHost : IDisposable
         }
     }
 
+    private void OnServerMigrationCommitted(string newUrl, string newSecret)
+    {
+        Log($"[relay-server] Server migration committed. Switching to client: {newUrl}");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (_relayServer is not null)
+                {
+                    _relayServer.ServerMigrationCommitted -= OnServerMigrationCommitted;
+                    _relayServer.Dispose();
+                    _relayServer = null;
+                }
+
+                _groupStore.ClearGroup();
+
+                _config.Modules.RelayServer = false;
+                _config.Modules.RelayClient = true;
+                _config.RelayUrl = newUrl;
+                _config.GroupSecret = newSecret;
+
+                var shells = _config.Modules.Terminal
+                    ? _shellLocator.GetAvailableShells().Select(s => s.DisplayName).ToList()
+                    : new List<string>();
+
+                _relayClient?.Dispose();
+                _relayClient = new RelayClient
+                {
+                    DeviceId = DeviceId,
+                    DisplayName = string.IsNullOrWhiteSpace(_config.DisplayName)
+                        ? _identityStore.LoadOrCreate().DisplayName
+                        : _config.DisplayName,
+                    Os = TerminalPlatformFactory.GetOsIdentifier(),
+                    AvailableShells = shells,
+                    GroupSecret = newSecret
+                };
+                _relayClient.Log += msg => Log($"[relay-client] {msg}");
+                _relayClient.TerminalInputReceived += OnRelayClientTerminalInput;
+                _relayClient.TerminalOpenRequested += OnRelayClientTerminalOpen;
+                _relayClient.TerminalResizeRequested += OnRelayClientTerminalResize;
+                _relayClient.TerminalCloseRequested += OnRelayClientTerminalClose;
+                _relayClient.GroupJoined += accepted =>
+                    Log($"[relay-client] Joined group {accepted.GroupId} ({accepted.Members.Count} members)");
+                _relayClient.GroupJoinRejected += reason =>
+                    Log($"[relay-client] Group join rejected: {reason}");
+                _relayClient.GroupSecretRotated += secret =>
+                {
+                    _config.GroupSecret = secret;
+                    Log($"[relay-client] Group secret updated to {secret[..Math.Min(8, secret.Length)]}...");
+                };
+
+                _relayClient.ServerChangeRequested += async (groupId, groupSecret) =>
+                {
+                    Log($"[relay-client] Server migration: this device selected as new server");
+                    try
+                    {
+                        _groupStore.SaveGroup(new GroupInfo
+                        {
+                            GroupId = groupId,
+                            GroupSecret = groupSecret,
+                            ServerDeviceId = DeviceId,
+                            CreatedAt = DateTimeOffset.UtcNow
+                        });
+
+                        if (_relayServer is null || !_relayServer.IsRunning)
+                        {
+                            _relayServer = new RelayServer
+                            {
+                                AuthToken = groupSecret,
+                                WebPanelEnabled = _config.Modules.WebPanel
+                            };
+                            _relayServer.Log += msg => Log($"[relay-server] {msg}");
+                            _relayServer.LocalTerminalInputReceived += OnLocalTerminalInput;
+                            _relayServer.LocalTerminalResizeReceived += OnLocalTerminalResize;
+                            _relayServer.LocalTerminalSessionEnded += OnLocalTerminalSessionEnded;
+                            _relayServer.LocalTerminalOpenRequested += OnLocalTerminalOpenRequested;
+                            _relayServer.LocalSessionListProvider += GetSessionList;
+                            _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
+
+                            var allShells = _config.Modules.Terminal
+                                ? _shellLocator.GetAvailableShells().Select(s => s.DisplayName).ToList()
+                                : new List<string>();
+                            var identity = _identityStore.LoadOrCreate();
+                            _relayServer.RegisterLocalDevice(DeviceId,
+                                string.IsNullOrWhiteSpace(_config.DisplayName) ? identity.DisplayName : _config.DisplayName,
+                                TerminalPlatformFactory.GetOsIdentifier(), allShells);
+
+                            await _relayServer.StartAsync(_config.Port, _baseDirectory, _cts?.Token ?? CancellationToken.None);
+                            Log($"[relay-server] Server role activated on port {_config.Port}");
+                        }
+
+                        var newServerUrl = _relayServer.ReachableWebSocketUrls.FirstOrDefault() ??
+                                           $"ws://localhost:{_config.Port}/ws/";
+                        await _relayClient.SendServerChangePrepareAsync(groupId, groupSecret, newServerUrl);
+                        Log($"[relay-client] Server migration prepare sent: {newServerUrl}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[relay-client] Server migration failed: {ex.Message}");
+                    }
+                };
+
+                _relayClient.ServerChanged += (url, secret) =>
+                {
+                    Log($"[relay-client] Server changed, reconnecting to {url}");
+                    _ = Task.Run(async () =>
+                    {
+                        if (_relayServer is not null && _relayServer.IsRunning)
+                        {
+                            _relayClient?.Disconnect();
+                            _relayClient?.Dispose();
+                            _relayClient = null;
+                            _config.Modules.RelayServer = true;
+                            _config.Modules.RelayClient = false;
+                            _config.GroupSecret = secret;
+                            return;
+                        }
+
+                        _relayClient?.Disconnect();
+                        _relayClient!.GroupSecret = secret;
+                        await _relayClient.ConnectAsync(url, _cts?.Token ?? CancellationToken.None);
+                    });
+                };
+
+                await _relayClient.ConnectAsync(newUrl, _cts?.Token ?? CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                Log($"[relay-server] Migration switch failed: {ex.Message}");
+            }
+        });
+    }
+
     // --- Logging ---
 
     private string GetEnabledModulesString()
@@ -496,5 +678,58 @@ public sealed class HeadlessHost : IDisposable
             Path = "/panel"
         };
         return builder.Uri.AbsoluteUri;
+    }
+
+    /// <summary>
+    /// Use reflection to replace auto-detected internal URLs with public host address.
+    /// This fixes QR codes and advertised URLs when running behind NAT.
+    /// </summary>
+    private static void PatchReachableUrls(RelayServer server, string publicHost, int port)
+    {
+        // Support "host:port" format for reverse proxy scenarios (e.g. "43.140.37.188:9090")
+        string publicUrl;
+        if (publicHost.Contains(':'))
+            publicUrl = $"ws://{publicHost}/ws/";
+        else
+            publicUrl = $"ws://{publicHost}:{port}/ws/";
+
+        // Try to find and replace the backing list/field for ReachableWebSocketUrls
+        var serverType = typeof(RelayServer);
+        var prop = serverType.GetProperty("ReachableWebSocketUrls");
+        if (prop is null) return;
+
+        var currentUrls = prop.GetValue(server);
+        if (currentUrls is IList<string> urlList)
+        {
+            urlList.Clear();
+            urlList.Add(publicUrl);
+            return;
+        }
+
+        // Fallback: try to find and replace the backing field directly
+        var fields = serverType.GetFields(
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        foreach (var field in fields)
+        {
+            if (!field.Name.Contains("reachableWebSocketUrl", StringComparison.OrdinalIgnoreCase) &&
+                !field.Name.Contains("ReachableWebSocketUrl", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var val = field.GetValue(server);
+            if (val is IList<string> list)
+            {
+                list.Clear();
+                list.Add(publicUrl);
+                return;
+            }
+
+            if (field.FieldType == typeof(IReadOnlyList<string>) ||
+                field.FieldType == typeof(IEnumerable<string>) ||
+                field.FieldType == typeof(List<string>))
+            {
+                field.SetValue(server, new List<string> { publicUrl });
+                return;
+            }
+        }
     }
 }

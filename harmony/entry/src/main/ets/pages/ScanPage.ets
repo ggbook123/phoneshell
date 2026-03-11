@@ -3,6 +3,7 @@ import { scanBarcode } from '@kit.ScanKit';
 import { AppColors, AppSizes, AppStrings, ConnectionState } from '../common/Constants';
 import { WebSocketService } from '../services/WebSocketService';
 import { PreferencesUtil } from '../services/PreferencesUtil';
+import { GroupMemberInfo } from '../models/MessageTypes';
 
 const DOMAIN = 0x0000;
 const PAGE_TAG = 'ScanPage';
@@ -14,6 +15,9 @@ struct ScanPage {
   @State scanStatus: string = '';
   @State isScanning: boolean = false;
   @State parseError: string = '';
+  @State showMigrationDialog: boolean = false;
+  @State migrationHint: string = '';
+  private pendingServerDeviceId: string = '';
 
   aboutToAppear(): void {
     hilog.info(DOMAIN, PAGE_TAG, 'ScanPage aboutToAppear');
@@ -47,7 +51,7 @@ struct ScanPage {
   }
 
   private handleScanResult(payload: string): void {
-    // Expected format: phoneshell://bind?server=ws%3A%2F%2Fhost%3Aport%2Fws%2F&groupId=xxx&groupSecret=xxx
+    // Expected format: phoneshell://bind?server=...&groupId=...&groupSecret=...&serverDeviceId=...
     if (!payload.startsWith('phoneshell://')) {
       this.parseError = '无效的二维码格式';
       return;
@@ -57,6 +61,7 @@ struct ScanPage {
     const server: string = params.get('server') ?? '';
     const groupId: string = params.get('groupId') ?? '';
     const groupSecret: string = params.get('groupSecret') ?? '';
+    const serverDeviceId: string = params.get('serverDeviceId') ?? '';
 
     // Debug: show parsed params
     hilog.info(DOMAIN, PAGE_TAG, 'parsed params: server=%{public}s groupId=%{public}s groupSecret=%{public}s',
@@ -67,6 +72,31 @@ struct ScanPage {
 
     if (server.length === 0 || groupSecret.length === 0) {
       this.parseError = `二维码缺少必要参数 (server=${server.length > 0 ? '有' : '无'}, secret=${groupSecret.length > 0 ? '有' : '无'})`;
+      return;
+    }
+
+    const alreadyJoined: boolean = WebSocketService.getIsGroupJoined();
+    const currentGroupId: string = WebSocketService.getGroupId();
+    const isSameGroup: boolean = alreadyJoined && currentGroupId.length > 0 && currentGroupId === groupId;
+
+    if (isSameGroup && serverDeviceId.length > 0) {
+      const members: Array<GroupMemberInfo> = WebSocketService.getCachedGroupMembers();
+      let currentServerId: string = '';
+      for (let i: number = 0; i < members.length; i++) {
+        const member: GroupMemberInfo = members[i];
+        if (member.role === 'Server') {
+          currentServerId = member.deviceId;
+          break;
+        }
+      }
+      if (currentServerId.length > 0 && currentServerId === serverDeviceId) {
+        this.scanStatus = '当前已使用该服务器，无需迁移';
+        return;
+      }
+
+      this.pendingServerDeviceId = serverDeviceId;
+      this.migrationHint = '检测到已加入该群组。继续将导致出现两个 relay-server。\n是否将此设备指定为新的 relay-server？';
+      this.showMigrationDialog = true;
       return;
     }
 
@@ -150,6 +180,31 @@ struct ScanPage {
     }
   }
 
+  private confirmMigration(): void {
+    this.showMigrationDialog = false;
+
+    if (this.pendingServerDeviceId.length === 0) {
+      this.parseError = '缺少服务器设备 ID，无法迁移';
+      return;
+    }
+
+    if (WebSocketService.getConnectionState() !== ConnectionState.CONNECTED) {
+      this.parseError = '请先连接当前服务器后再发起迁移';
+      return;
+    }
+
+    this.parseError = '';
+    this.scanStatus = '已发起服务器迁移请求，请在当前服务器确认...';
+    WebSocketService.sendServerChangeRequest(this.pendingServerDeviceId);
+    this.pendingServerDeviceId = '';
+  }
+
+  private cancelMigration(): void {
+    this.showMigrationDialog = false;
+    this.pendingServerDeviceId = '';
+    this.scanStatus = '已取消服务器迁移';
+  }
+
   private buildConnectUrlWithToken(baseUrl: string, groupSecret: string): string {
     const trimmedSecret: string = groupSecret.trim();
     if (trimmedSecret.length === 0) {
@@ -188,104 +243,165 @@ struct ScanPage {
   }
 
   build() {
-    Column() {
-      // Header
-      Row() {
-        Button('< 返回')
-          .height(32)
-          .fontSize(AppSizes.FONT_SIZE_SMALL)
-          .fontColor(AppColors.TEXT_SECONDARY)
-          .backgroundColor(Color.Transparent)
-          .onClick(() => {
-            this.getUIContext().getRouter().back();
-          })
-
-        Blank()
-
-        Text('扫码连接')
-          .fontSize(AppSizes.FONT_SIZE_SUBTITLE)
-          .fontColor(AppColors.TEXT_PRIMARY)
-          .fontWeight(FontWeight.Bold)
-
-        Blank()
-        Text('').width(60)
-      }
-      .width('100%')
-      .height(56)
-      .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE })
-      .alignItems(VerticalAlign.Center)
-
-      Divider().color(AppColors.DIVIDER).width('100%')
-
-      // Content
+    Stack() {
       Column() {
-        Text('扫描服务器二维码')
-          .fontSize(AppSizes.FONT_SIZE_BODY)
-          .fontColor(AppColors.TEXT_PRIMARY)
-          .margin({ bottom: 8 })
-
-        Text('使用 PC 端生成的 QR 码进行扫码连接，自动加入群组并绑定手机。')
-          .fontSize(AppSizes.FONT_SIZE_SMALL)
-          .fontColor(AppColors.TEXT_SECONDARY)
-          .textAlign(TextAlign.Center)
-          .margin({ bottom: 24 })
-          .padding({ left: 20, right: 20 })
-
-        Button(this.isScanning ? '扫码中...' : '开始扫码')
-          .width(200)
-          .height(44)
-          .fontSize(AppSizes.FONT_SIZE_BODY)
-          .fontColor(AppColors.BACKGROUND)
-          .backgroundColor(AppColors.ACCENT)
-          .borderRadius(AppSizes.BORDER_RADIUS_CARD)
-          .enabled(!this.isScanning)
-          .onClick(() => {
-            this.startScan();
-          })
-          .margin({ bottom: 20 })
-
-        if (this.scanStatus.length > 0) {
-          Text(this.scanStatus)
+        // Header
+        Row() {
+          Button('< 返回')
+            .height(32)
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.TEXT_SECONDARY)
-            .margin({ bottom: 8 })
-        }
+            .backgroundColor(Color.Transparent)
+            .onClick(() => {
+              this.getUIContext().getRouter().back();
+            })
 
-        if (this.parseError.length > 0) {
-          Text(this.parseError)
+          Blank()
+
+          Text('扫码连接')
+            .fontSize(AppSizes.FONT_SIZE_SUBTITLE)
+            .fontColor(AppColors.TEXT_PRIMARY)
+            .fontWeight(FontWeight.Bold)
+
+          Blank()
+          Text('').width(60)
+        }
+        .width('100%')
+        .height(56)
+        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE })
+        .alignItems(VerticalAlign.Center)
+
+        Divider().color(AppColors.DIVIDER).width('100%')
+
+        // Content
+        Column() {
+          Text('扫描服务器二维码')
+            .fontSize(AppSizes.FONT_SIZE_BODY)
+            .fontColor(AppColors.TEXT_PRIMARY)
+            .margin({ bottom: 8 })
+
+          Text('使用 PC 端生成的 QR 码进行扫码连接，自动加入群组并绑定手机。')
             .fontSize(AppSizes.FONT_SIZE_SMALL)
-            .fontColor(AppColors.ERROR_RED)
-            .margin({ bottom: 8 })
-        }
+            .fontColor(AppColors.TEXT_SECONDARY)
+            .textAlign(TextAlign.Center)
+            .margin({ bottom: 24 })
+            .padding({ left: 20, right: 20 })
 
-        if (this.scanResult.length > 0) {
-          Column() {
-            Text('扫码结果')
+          Button(this.isScanning ? '扫码中...' : '开始扫码')
+            .width(200)
+            .height(44)
+            .fontSize(AppSizes.FONT_SIZE_BODY)
+            .fontColor(AppColors.BACKGROUND)
+            .backgroundColor(AppColors.ACCENT)
+            .borderRadius(AppSizes.BORDER_RADIUS_CARD)
+            .enabled(!this.isScanning)
+            .onClick(() => {
+              this.startScan();
+            })
+            .margin({ bottom: 20 })
+
+          if (this.scanStatus.length > 0) {
+            Text(this.scanStatus)
               .fontSize(AppSizes.FONT_SIZE_SMALL)
               .fontColor(AppColors.TEXT_SECONDARY)
-              .margin({ bottom: 4 })
-            Text(this.scanResult)
-              .fontSize(12)
-              .fontColor(AppColors.TEXT_PRIMARY)
-              .fontFamily('monospace')
-              .maxLines(3)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .margin({ bottom: 8 })
           }
-          .width('100%')
-          .padding(AppSizes.PADDING_CARD)
-          .backgroundColor(AppColors.CARD_BACKGROUND)
-          .borderRadius(AppSizes.BORDER_RADIUS_CARD)
-          .alignItems(HorizontalAlign.Start)
+
+          if (this.parseError.length > 0) {
+            Text(this.parseError)
+              .fontSize(AppSizes.FONT_SIZE_SMALL)
+              .fontColor(AppColors.ERROR_RED)
+              .margin({ bottom: 8 })
+          }
+
+          if (this.scanResult.length > 0) {
+            Column() {
+              Text('扫码结果')
+                .fontSize(AppSizes.FONT_SIZE_SMALL)
+                .fontColor(AppColors.TEXT_SECONDARY)
+                .margin({ bottom: 4 })
+              Text(this.scanResult)
+                .fontSize(12)
+                .fontColor(AppColors.TEXT_PRIMARY)
+                .fontFamily('monospace')
+                .copyOption(CopyOptions.InApp)
+                .maxLines(3)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+            .width('100%')
+            .padding(AppSizes.PADDING_CARD)
+            .backgroundColor(AppColors.CARD_BACKGROUND)
+            .borderRadius(AppSizes.BORDER_RADIUS_CARD)
+            .alignItems(HorizontalAlign.Start)
+          }
         }
+        .width('100%')
+        .layoutWeight(1)
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE })
       }
       .width('100%')
-      .layoutWeight(1)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-      .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE })
+      .height('100%')
+      .backgroundColor(AppColors.BACKGROUND)
+
+      if (this.showMigrationDialog) {
+        Column() {
+          Column() {
+            Text('服务器迁移确认')
+              .fontSize(18)
+              .fontColor(AppColors.TEXT_PRIMARY)
+              .fontWeight(FontWeight.Medium)
+              .margin({ bottom: 10 })
+
+            Text(this.migrationHint)
+              .fontSize(13)
+              .fontColor(AppColors.TEXT_SECONDARY)
+              .textAlign(TextAlign.Center)
+              .margin({ bottom: 18 })
+
+            Row({ space: 12 }) {
+              Button('取消')
+                .width(120)
+                .height(40)
+                .fontSize(AppSizes.FONT_SIZE_SMALL)
+                .fontColor(AppColors.TEXT_PRIMARY)
+                .backgroundColor(Color.Transparent)
+                .borderWidth(1)
+                .borderColor(AppColors.TEXT_SECONDARY)
+                .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+                .onClick(() => {
+                  this.cancelMigration();
+                })
+
+              Button('设为服务器')
+                .width(140)
+                .height(40)
+                .fontSize(AppSizes.FONT_SIZE_SMALL)
+                .fontColor('#FFFFFF')
+                .backgroundColor(AppColors.ACCENT)
+                .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+                .onClick(() => {
+                  this.confirmMigration();
+                })
+            }
+            .width('100%')
+            .justifyContent(FlexAlign.Center)
+          }
+          .width('100%')
+          .padding(24)
+          .backgroundColor(AppColors.CARD_BACKGROUND)
+          .borderRadius(16)
+          .alignItems(HorizontalAlign.Center)
+        }
+        .width('100%')
+        .height('100%')
+        .padding({ left: 24, right: 24 })
+        .backgroundColor('#90000000')
+        .justifyContent(FlexAlign.Center)
+      }
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(AppColors.BACKGROUND)
   }
 }
