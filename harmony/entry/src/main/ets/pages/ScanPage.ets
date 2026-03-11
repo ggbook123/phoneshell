@@ -1,6 +1,6 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { scanBarcode } from '@kit.ScanKit';
-import { AppColors, AppSizes, AppStrings, ConnectionState } from '../common/Constants';
+import { AppColors, AppSizes, AppStrings, ConnectionState, StorageKeys } from '../common/Constants';
 import { WebSocketService } from '../services/WebSocketService';
 import { PreferencesUtil } from '../services/PreferencesUtil';
 import { GroupMemberInfo } from '../models/MessageTypes';
@@ -51,18 +51,39 @@ struct ScanPage {
   }
 
   private handleScanResult(payload: string): void {
-    // Expected format: phoneshell://bind?server=...&groupId=...&groupSecret=...&serverDeviceId=...
+    // Expected formats:
+    //   phoneshell://bind?server=...&groupId=...&groupSecret=...&serverDeviceId=...
+    //   phoneshell://login?server=...&groupId=...&requestId=...
     if (!payload.startsWith('phoneshell://')) {
       this.parseError = '无效的二维码格式';
       return;
     }
+
+    // Detect scheme: bind or login
+    const isLogin: boolean = payload.startsWith('phoneshell://login');
 
     const params: Map<string, string> = this.parseQrParams(payload);
     const server: string = params.get('server') ?? '';
     const groupId: string = params.get('groupId') ?? '';
     const groupSecret: string = params.get('groupSecret') ?? '';
     const serverDeviceId: string = params.get('serverDeviceId') ?? '';
+    const requestId: string = params.get('requestId') ?? '';
 
+    if (isLogin) {
+      hilog.info(DOMAIN, PAGE_TAG, 'login QR: server=%{public}s groupId=%{public}s requestId=%{public}s',
+        server, groupId, requestId);
+      this.scanStatus = `登录码: server=${server.length > 0 ? server.substring(0, 30) : '(空)'}, requestId=${requestId.length > 0 ? requestId.substring(0, 8) : '(空)'}`;
+
+      if (server.length === 0 || requestId.length === 0) {
+        this.parseError = `登录码缺少必要参数 (server=${server.length > 0 ? '有' : '无'}, requestId=${requestId.length > 0 ? '有' : '无'})`;
+        return;
+      }
+
+      this.handleLoginQr(server, groupId, requestId);
+      return;
+    }
+
+    // --- Bind QR flow (existing logic) ---
     // Debug: show parsed params
     hilog.info(DOMAIN, PAGE_TAG, 'parsed params: server=%{public}s groupId=%{public}s groupSecret=%{public}s',
       server, groupId, groupSecret.length > 0 ? groupSecret.substring(0, 8) + '...' : '(empty)');
@@ -203,6 +224,95 @@ struct ScanPage {
     this.showMigrationDialog = false;
     this.pendingServerDeviceId = '';
     this.scanStatus = '已取消服务器迁移';
+  }
+
+  /**
+   * Handle login QR: connect to server using saved groupSecret, join group, then send panel.login.scan.
+   * Server will verify this is the bound mobile and send an auth request for the user to confirm.
+   */
+  private async handleLoginQr(server: string, groupId: string, requestId: string): Promise<void> {
+    // Get saved groupSecret from preferences
+    const savedSecret: string = await PreferencesUtil.getString(StorageKeys.GROUP_SECRET);
+    if (savedSecret.length === 0) {
+      this.parseError = '本机未保存群组密钥，请先使用绑定码绑定';
+      return;
+    }
+
+    hilog.info(DOMAIN, PAGE_TAG, 'login QR: connecting with saved secret');
+    this.scanStatus = `正在连接 ${server.substring(0, 40)}...`;
+
+    // Connect to server
+    const connectUrl: string = this.buildConnectUrlWithToken(server, savedSecret);
+    WebSocketService.connect(connectUrl);
+
+    let didHandleConnected: boolean = false;
+    let stateListenerId: number = -1;
+    let msgListenerId: number = -1;
+    const connectTimeoutMs: number = 8000;
+    const timeoutId: number = setTimeout(() => {
+      if (!didHandleConnected) {
+        this.scanStatus = '连接失败，请检查网络或服务器地址';
+        this.parseError = '无法连接到服务器';
+        if (stateListenerId !== -1) {
+          WebSocketService.removeOnStateChange(stateListenerId);
+        }
+      }
+    }, connectTimeoutMs);
+
+    const mobileDeviceId: string = PreferencesUtil.getMobileDeviceId(getContext(this));
+    const displayName: string = 'HarmonyOS Device';
+
+    const handleConnected = () => {
+      if (didHandleConnected) {
+        return;
+      }
+      didHandleConnected = true;
+      clearTimeout(timeoutId);
+      if (stateListenerId !== -1) {
+        WebSocketService.removeOnStateChange(stateListenerId);
+      }
+
+      this.scanStatus = '已连接，正在加入群组...';
+
+      // Join group first
+      WebSocketService.joinGroup(savedSecret, mobileDeviceId, displayName);
+
+      // Listen for group join acceptance then send panel.login.scan
+      msgListenerId = WebSocketService.addOnMessage((type: string, _data: Record<string, Object>) => {
+        if (type === 'group.join.accepted') {
+          WebSocketService.removeOnMessage(msgListenerId);
+          this.scanStatus = '已加入群组，正在发送登录扫码确认...';
+          hilog.info(DOMAIN, PAGE_TAG, 'group joined for login, sending panel.login.scan');
+
+          // Send panel.login.scan to notify server
+          WebSocketService.sendPanelLoginScan(requestId, mobileDeviceId);
+          this.scanStatus = '已发送登录请求，请在手机端确认授权...';
+
+          // Navigate back — auth request will appear via AuthorizationPage
+          this.getUIContext().getRouter().back();
+        } else if (type === 'group.join.rejected') {
+          WebSocketService.removeOnMessage(msgListenerId);
+          this.parseError = '加入群组被拒绝，密钥可能已变更';
+          this.scanStatus = '加入群组失败';
+        } else if (type === 'error') {
+          const errMsg: Object | undefined = _data['message'];
+          this.parseError = `错误: ${typeof errMsg === 'string' ? errMsg : '未知'}`;
+        }
+      });
+    };
+
+    stateListenerId = WebSocketService.addOnStateChange((state: ConnectionState) => {
+      if (state === ConnectionState.CONNECTED) {
+        handleConnected();
+      } else if (state === ConnectionState.DISCONNECTED && !didHandleConnected) {
+        this.scanStatus = '连接断开，正在重试...';
+      }
+    });
+
+    // Handle race where connection is already established
+    if (WebSocketService.getConnectionState() === ConnectionState.CONNECTED) {
+      handleConnected();
+    }
   }
 
   private buildConnectUrlWithToken(baseUrl: string, groupSecret: string): string {

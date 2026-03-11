@@ -82,6 +82,12 @@ class GroupSecretRotateRequestMsg {
   requesterId: string = '';
 }
 
+class PanelLoginScanMsg {
+  type: string = 'panel.login.scan';
+  requestId: string = '';
+  mobileDeviceId: string = '';
+}
+
 // Session state for multi-session management
 export class SessionState {
   sessionId: string = '';
@@ -629,6 +635,14 @@ class WebSocketServiceClass {
     hilog.info(DOMAIN, NET_TAG, 'sendSecretRotateRequest');
     let msg: GroupSecretRotateRequestMsg = new GroupSecretRotateRequestMsg();
     msg.requesterId = this.normalizeString(this.mobileDeviceId);
+    this.send(JSON.stringify(msg));
+  }
+
+  sendPanelLoginScan(requestId: string, mobileDeviceId: string): void {
+    hilog.info(DOMAIN, NET_TAG, 'sendPanelLoginScan requestId=%{public}s', requestId);
+    let msg: PanelLoginScanMsg = new PanelLoginScanMsg();
+    msg.requestId = this.normalizeString(requestId);
+    msg.mobileDeviceId = this.normalizeString(mobileDeviceId);
     this.send(JSON.stringify(msg));
   }
 

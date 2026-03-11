@@ -103,12 +103,12 @@ public sealed class HeadlessHost : IDisposable
             _relayServer.LocalSessionListProvider += GetSessionList;
             _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
 
+            await _relayServer.StartAsync(_config.Port, _baseDirectory, _cts.Token);
+
             if (_config.Modules.Terminal)
             {
                 _relayServer.RegisterLocalDevice(DeviceId, displayName, os, shells);
             }
-
-            await _relayServer.StartAsync(_config.Port, _baseDirectory, _cts.Token);
 
             // Patch: add /panel/ and /api/ prefixes to HttpListener
             // The core DLL only registers /ws/ prefix, so /panel and /api paths

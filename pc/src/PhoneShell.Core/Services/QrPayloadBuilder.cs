@@ -29,4 +29,17 @@ public sealed class QrPayloadBuilder
         }
         return $"phoneshell://bind?server={server}&groupId={gid}&groupSecret={secret}&nonce={nonce}";
     }
+
+    /// <summary>
+    /// Build a QR payload for panel login (already-bound mobile scans to authenticate).
+    /// Does NOT include groupSecret — safe even if leaked.
+    /// </summary>
+    public string BuildPanelLogin(string serverWsUrl, string groupId, string requestId)
+    {
+        var server = Uri.EscapeDataString(serverWsUrl);
+        var gid = Uri.EscapeDataString(groupId);
+        var rid = Uri.EscapeDataString(requestId);
+        var nonce = Guid.NewGuid().ToString("N");
+        return $"phoneshell://login?server={server}&groupId={gid}&requestId={rid}&nonce={nonce}";
+    }
 }

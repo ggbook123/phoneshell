@@ -598,13 +598,12 @@ html, body {
     <div class=""pairing-card"">
       <div class=""pairing-logo"">❯</div>
       <div class=""pairing-title"">PhoneShell</div>
-      <div class=""pairing-subtitle"">请使用手机客户端扫码加入群组</div>
+      <div id=""pairingSubtitle"" class=""pairing-subtitle"">请使用手机客户端扫码</div>
       <div class=""pairing-qr"">
         <img id=""pairingQr"" alt=""QR Code"" />
       </div>
       <div id=""pairingMeta"" class=""pairing-meta""></div>
       <div id=""pairingStatus"" class=""pairing-status""></div>
-      <button id=""pairingBtn"" class=""pairing-btn"" onclick=""startPanelLogin()"">确认登录</button>
       <div id=""pairingError"" class=""pairing-error""></div>
     </div>
   </div>
@@ -763,6 +762,7 @@ html, body {
   var panelLoginRequestId = '';
   var panelLoginTimer = null;
   var pairingPollTimer = null;
+  var loginQrPayload = '';
   var groupMembers = [];
   var groupInfo = null;
   var ws = null;
@@ -780,37 +780,14 @@ html, body {
   var serverStatus = null;
 
   // --- Pairing / Login ---
-  window.startPanelLogin = function() {
-    if (panelLoginRequestId) return;
-    setPairingError('');
-    setPairingStatus('正在发起登录请求…');
-    fetch('/api/panel/login/start')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        panelLoginRequestId = data.requestId || '';
-        applyLoginStatus(data);
-        startPanelLoginPolling();
-      })
-      .catch(function() {
-        setPairingError('登录请求失败，请稍后重试。');
-      });
-  };
 
   function showPairing(info) {
     var el = document.getElementById('pairingOverlay');
     el.classList.remove('view-hidden');
-    var btn = document.getElementById('pairingBtn');
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = '确认登录';
-    }
     setPairingError('');
     if (info) {
       pairingInfo = info;
       updatePairingMeta(info);
-      updatePairingStatusFromInfo(info);
-      var qr = document.getElementById('pairingQr');
-      qr.src = '/api/panel/qr.png?ts=' + Date.now();
     } else {
       document.getElementById('pairingMeta').textContent = '';
     }
@@ -827,22 +804,6 @@ html, body {
     document.getElementById('pairingMeta').textContent = meta.join(' · ');
   }
 
-  function updatePairingStatusFromInfo(info) {
-    if (!info.hasGroup) {
-      setPairingStatus('服务器未初始化群组');
-      return;
-    }
-    if (!info.hasBoundMobile) {
-      setPairingStatus('等待手机扫码加入群组');
-      return;
-    }
-    if (!info.boundMobileOnline) {
-      setPairingStatus('手机已绑定但离线，请扫码重新连接');
-      return;
-    }
-    setPairingStatus('手机已连接，请点击确认登录，并在手机端确认');
-  }
-
   function setPairingStatus(text) {
     document.getElementById('pairingStatus').textContent = text || '';
   }
@@ -851,17 +812,51 @@ html, body {
     document.getElementById('pairingError').textContent = text || '';
   }
 
+  function setPairingSubtitle(text) {
+    var el = document.getElementById('pairingSubtitle');
+    if (el) el.textContent = text || '';
+  }
+
+  function showBindQr(info) {
+    setPairingSubtitle('请使用手机客户端扫码绑定');
+    setPairingStatus('等待手机扫码加入群组');
+    var qr = document.getElementById('pairingQr');
+    qr.src = '/api/panel/qr.png?ts=' + Date.now();
+  }
+
+  function showLoginQr(payload) {
+    setPairingSubtitle('请使用绑定的手机扫描二维码');
+    setPairingStatus('等待手机扫码登录');
+    var qr = document.getElementById('pairingQr');
+    qr.src = '/api/panel/login/qr.png?payload=' + encodeURIComponent(payload) + '&ts=' + Date.now();
+  }
+
+  // Fetch pairing info, then decide which QR to show
   function refreshPairingInfo() {
     return fetch('/api/panel/pairing')
       .then(function(r) { return r.json(); })
       .then(function(info) {
         if (!info.requiresAuth) {
+          // No auth required — skip pairing
           hidePairing();
           stopPairingPolling();
           init();
           return;
         }
         showPairing(info);
+        if (!info.hasGroup) {
+          setPairingStatus('服务器未初始化群组');
+          return;
+        }
+        if (!info.hasBoundMobile) {
+          // Show bind QR + poll for binding
+          showBindQr(info);
+          startPairingPolling();
+        } else {
+          // Already bound — auto-start login flow
+          stopPairingPolling();
+          startLoginFlow();
+        }
       })
       .catch(function() {
         showPairing(null);
@@ -870,9 +865,48 @@ html, body {
       });
   }
 
+  // Start the login flow: create a login session, show login QR
+  function startLoginFlow() {
+    if (panelLoginRequestId) return;
+    setPairingError('');
+    setPairingStatus('正在创建登录会话…');
+    fetch('/api/panel/login/start')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        panelLoginRequestId = data.requestId || '';
+        loginQrPayload = data.loginQrPayload || '';
+        if (loginQrPayload) {
+          showLoginQr(loginQrPayload);
+        }
+        applyLoginStatus(data);
+        startPanelLoginPolling();
+      })
+      .catch(function() {
+        setPairingError('登录请求失败，请稍后重试。');
+      });
+  }
+
   function startPairingPolling() {
     if (pairingPollTimer) return;
-    pairingPollTimer = setInterval(refreshPairingInfo, 4000);
+    pairingPollTimer = setInterval(function() {
+      fetch('/api/panel/pairing')
+        .then(function(r) { return r.json(); })
+        .then(function(info) {
+          if (!info.requiresAuth) {
+            hidePairing();
+            stopPairingPolling();
+            init();
+            return;
+          }
+          pairingInfo = info;
+          if (info.hasBoundMobile) {
+            // Mobile just bound — switch to login flow
+            stopPairingPolling();
+            startLoginFlow();
+          }
+        })
+        .catch(function() {});
+    }, 4000);
   }
 
   function stopPairingPolling() {
@@ -909,6 +943,7 @@ html, body {
     if (data.status === 'approved') {
       authToken = data.token || '';
       panelLoginRequestId = '';
+      loginQrPayload = '';
       stopPanelLoginPolling();
       stopPairingPolling();
       hidePairing();
@@ -917,32 +952,40 @@ html, body {
     }
     if (data.status === 'rejected') {
       panelLoginRequestId = '';
+      loginQrPayload = '';
       stopPanelLoginPolling();
       setPairingError('手机端已拒绝登录请求');
+      // Auto-restart login flow after a brief delay
+      setTimeout(startLoginFlow, 3000);
       return;
     }
     if (data.status === 'expired') {
       panelLoginRequestId = '';
+      loginQrPayload = '';
       stopPanelLoginPolling();
-      setPairingError('登录请求已过期，请重新确认');
+      setPairingError('登录会话已过期，正在刷新…');
+      // Auto-restart with a new login session
+      setTimeout(startLoginFlow, 1000);
       return;
     }
-    if (data.status === 'awaiting_mobile') {
+    if (data.status === 'awaiting_scan') {
+      setPairingStatus('请使用绑定的手机扫描二维码');
+      // Update QR if payload is available
+      if (data.loginQrPayload && data.loginQrPayload !== loginQrPayload) {
+        loginQrPayload = data.loginQrPayload;
+        showLoginQr(loginQrPayload);
+      }
+    } else if (data.status === 'awaiting_mobile') {
       setPairingStatus('等待手机扫码加入群组');
     } else if (data.status === 'awaiting_approval') {
-      setPairingStatus('等待手机端确认登录');
-    }
-    var btn = document.getElementById('pairingBtn');
-    if (btn) {
-      var waiting = data.status === 'awaiting_mobile' || data.status === 'awaiting_approval';
-      btn.disabled = waiting;
-      btn.textContent = waiting ? '等待确认' : '确认登录';
+      setPairingStatus('请在手机端确认登录');
     }
   }
 
   function resetToPairing(message) {
     authToken = '';
     panelLoginRequestId = '';
+    loginQrPayload = '';
     stopPanelLoginPolling();
     stopPairingPolling();
     disconnectWs();
@@ -957,7 +1000,6 @@ html, body {
     showPairing(pairingInfo);
     if (message) setPairingError(message);
     refreshPairingInfo();
-    startPairingPolling();
   }
 
   // --- API ---
@@ -1560,14 +1602,23 @@ html, body {
     groupPollTimer = setInterval(pollGroup, 5000);
   }
 
-  // Boot: show pairing QR if auth is required
+  // Boot: always require fresh scan (no localStorage persistence)
   function boot() {
-    refreshPairingInfo().then(function() {
-      startPairingPolling();
-    });
+    // Clean up any residual token from old code version that used localStorage
+    try { localStorage.removeItem('phoneshell_panel_token'); } catch(e) {}
+    // Token only lives in JS variable — every page load starts fresh
+    authToken = '';
+    refreshPairingInfo();
   }
 
   boot();
+
+  // Handle browser back-forward cache (bfcache) — force re-auth when page is restored
+  window.addEventListener('pageshow', function(event) {
+    if (event.persisted) {
+      resetToPairing('');
+    }
+  });
 })();
 </script>
 </body>

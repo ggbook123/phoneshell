@@ -1,4 +1,7 @@
 using PhoneShell.Core.Services;
+using PhoneShell.Core.Models;
+using System.Diagnostics;
+using System.Text.Json;
 
 namespace PhoneShell.Headless;
 
@@ -17,6 +20,7 @@ namespace PhoneShell.Headless;
 ///   --relay-token &lt;token&gt;     Shared relay bearer token
 ///   --mode &lt;server|client&gt;    Quick mode switch
 ///   --setup                    Interactive first-time setup
+///   --admin                    Admin management console
 ///
 /// Module toggles:
 ///   --enable-terminal          Enable PTY terminal module
@@ -48,6 +52,13 @@ public static class Program
         if (args.Contains("--setup"))
         {
             RunInteractiveSetup(GetConfigPath(args));
+            return;
+        }
+
+        // Handle --admin
+        if (args.Contains("--admin"))
+        {
+            RunAdminConsole(GetConfigPath(args));
             return;
         }
 
@@ -273,6 +284,7 @@ public static class Program
         Console.WriteLine("  --public-host <host:port> Public address for NAT/reverse proxy");
         Console.WriteLine("  --mode <server|client>    Quick mode switch");
         Console.WriteLine("  --setup                   Interactive first-time setup");
+        Console.WriteLine("  --admin                   Admin management console");
         Console.WriteLine("  --help, -h                Show this help");
         Console.WriteLine();
         Console.WriteLine("Module toggles:");
@@ -291,6 +303,319 @@ public static class Program
         Console.WriteLine("  PHONESHELL_MODE, PHONESHELL_NAME, PHONESHELL_PORT,");
         Console.WriteLine("  PHONESHELL_RELAY_URL, PHONESHELL_RELAY_TOKEN,");
         Console.WriteLine("  PHONESHELL_GROUP_SECRET, PHONESHELL_PUBLIC_HOST");
+    }
+
+    private static void RunAdminConsole(string configPath)
+    {
+        var baseDirectory = GetDataDirectory(configPath);
+        var groupStore = new GroupStore(baseDirectory);
+        var config = HeadlessConfig.Load(configPath);
+
+        Console.WriteLine("PhoneShell Admin Console");
+        Console.WriteLine(new string('=', 40));
+        Console.WriteLine();
+
+        // Try to detect running service
+        var pidInfo = GetServicePid();
+        if (pidInfo is not null)
+            Console.WriteLine($"Server Status: Running (PID: {pidInfo})");
+        else
+            Console.WriteLine("Server Status: Not detected");
+
+        Console.WriteLine($"Config: {configPath}");
+        Console.WriteLine($"Data:   {Path.Combine(baseDirectory, "data")}");
+        Console.WriteLine();
+
+        while (true)
+        {
+            Console.WriteLine("[1] View service status");
+            Console.WriteLine("[2] Change server port");
+            Console.WriteLine("[3] Change public host");
+            Console.WriteLine("[4] Change device name");
+            Console.WriteLine("[5] View group info");
+            Console.WriteLine("[6] Unbind mobile");
+            Console.WriteLine("[7] Reset group secret");
+            Console.WriteLine("[8] View config file");
+            Console.WriteLine("[9] Restart service");
+            Console.WriteLine("[0] Exit");
+            Console.Write("\nSelect option: ");
+
+            var input = Console.ReadLine()?.Trim();
+            Console.WriteLine();
+
+            switch (input)
+            {
+                case "1":
+                    AdminViewStatus(config, configPath, baseDirectory, groupStore);
+                    break;
+                case "2":
+                    AdminChangePort(config, configPath);
+                    break;
+                case "3":
+                    AdminChangePublicHost(config, configPath);
+                    break;
+                case "4":
+                    AdminChangeDeviceName(config, configPath);
+                    break;
+                case "5":
+                    AdminViewGroup(groupStore);
+                    break;
+                case "6":
+                    AdminUnbindMobile(groupStore);
+                    break;
+                case "7":
+                    AdminResetGroupSecret(config, configPath, groupStore);
+                    break;
+                case "8":
+                    AdminViewConfig(configPath);
+                    break;
+                case "9":
+                    AdminRestartService();
+                    break;
+                case "0":
+                    return;
+                default:
+                    Console.WriteLine("Invalid option.");
+                    break;
+            }
+
+            Console.WriteLine();
+        }
+    }
+
+    private static void AdminViewStatus(HeadlessConfig config, string configPath, string baseDirectory, GroupStore groupStore)
+    {
+        var group = groupStore.LoadGroup();
+        var pidInfo = GetServicePid();
+
+        Console.WriteLine("--- Service Status ---");
+        Console.WriteLine($"Status:       {(pidInfo is not null ? $"Running (PID: {pidInfo})" : "Not detected")}");
+        Console.WriteLine($"Config:       {configPath}");
+        Console.WriteLine($"Display Name: {config.DisplayName}");
+        Console.WriteLine($"Port:         {config.Port}");
+        Console.WriteLine($"Public Host:  {(string.IsNullOrWhiteSpace(config.PublicHost) ? "(auto-detect)" : config.PublicHost)}");
+        Console.WriteLine($"Mode:         {(config.Modules.RelayServer ? "Server" : "Client")}");
+        Console.WriteLine($"Web Panel:    {(config.Modules.WebPanel ? "Enabled" : "Disabled")}");
+
+        if (group is not null)
+        {
+            Console.WriteLine($"Group ID:     {group.GroupId}");
+            Console.WriteLine($"Members:      {group.Members.Count}");
+            Console.WriteLine($"Bound Mobile: {group.BoundMobileId ?? "(none)"}");
+        }
+        else
+        {
+            Console.WriteLine("Group:        Not initialized");
+        }
+    }
+
+    private static void AdminChangePort(HeadlessConfig config, string configPath)
+    {
+        Console.Write($"Current port: {config.Port}\nNew port [1-65535]: ");
+        var input = Console.ReadLine()?.Trim();
+        if (string.IsNullOrEmpty(input)) return;
+        if (!int.TryParse(input, out var port) || port < 1 || port > 65535)
+        {
+            Console.WriteLine("Invalid port number.");
+            return;
+        }
+        config.Port = port;
+        config.Save(configPath);
+        Console.WriteLine($"Port changed to {port}. Restart the service to apply.");
+    }
+
+    private static void AdminChangePublicHost(HeadlessConfig config, string configPath)
+    {
+        Console.Write($"Current public host: {(string.IsNullOrWhiteSpace(config.PublicHost) ? "(auto-detect)" : config.PublicHost)}\n");
+        Console.Write("New public host (e.g. 1.2.3.4:9090, empty to clear): ");
+        var input = Console.ReadLine()?.Trim();
+        config.PublicHost = input ?? string.Empty;
+        config.Save(configPath);
+        Console.WriteLine(string.IsNullOrWhiteSpace(config.PublicHost)
+            ? "Public host cleared (will auto-detect). Restart the service to apply."
+            : $"Public host changed to {config.PublicHost}. Restart the service to apply.");
+    }
+
+    private static void AdminChangeDeviceName(HeadlessConfig config, string configPath)
+    {
+        Console.Write($"Current name: {config.DisplayName}\nNew name: ");
+        var input = Console.ReadLine()?.Trim();
+        if (string.IsNullOrEmpty(input))
+        {
+            Console.WriteLine("Name cannot be empty.");
+            return;
+        }
+        config.DisplayName = input;
+        config.Save(configPath);
+        Console.WriteLine($"Device name changed to \"{input}\". Restart the service to apply.");
+    }
+
+    private static void AdminViewGroup(GroupStore groupStore)
+    {
+        var group = groupStore.LoadGroup();
+        if (group is null)
+        {
+            Console.WriteLine("No group initialized.");
+            return;
+        }
+
+        Console.WriteLine("--- Group Info ---");
+        Console.WriteLine($"Group ID:      {group.GroupId}");
+        Console.WriteLine($"Group Secret:  {group.GroupSecret}");
+        Console.WriteLine($"Server Device: {group.ServerDeviceId}");
+        Console.WriteLine($"Bound Mobile:  {group.BoundMobileId ?? "(none)"}");
+        Console.WriteLine($"Created At:    {group.CreatedAt:u}");
+        Console.WriteLine($"Members ({group.Members.Count}):");
+
+        foreach (var member in group.Members)
+        {
+            Console.WriteLine($"  - {member.DisplayName} ({member.DeviceId})");
+            Console.WriteLine($"    Role: {member.Role}, OS: {member.Os}, Joined: {member.JoinedAt:u}");
+        }
+    }
+
+    private static void AdminUnbindMobile(GroupStore groupStore)
+    {
+        var group = groupStore.LoadGroup();
+        if (group is null)
+        {
+            Console.WriteLine("No group initialized.");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(group.BoundMobileId))
+        {
+            Console.WriteLine("No mobile is currently bound.");
+            return;
+        }
+
+        var mobileMember = group.Members.FirstOrDefault(m => m.DeviceId == group.BoundMobileId);
+        var mobileName = mobileMember?.DisplayName ?? group.BoundMobileId;
+
+        Console.Write($"Unbind mobile \"{mobileName}\" ({group.BoundMobileId})? [y/N]: ");
+        var confirm = Console.ReadLine()?.Trim().ToLowerInvariant();
+        if (confirm != "y" && confirm != "yes")
+        {
+            Console.WriteLine("Cancelled.");
+            return;
+        }
+
+        // Remove mobile member from the group
+        group.Members.RemoveAll(m => m.DeviceId == group.BoundMobileId);
+        group.BoundMobileId = null;
+        groupStore.SaveGroup(group);
+        Console.WriteLine("Mobile unbound successfully. Restart the service to apply.");
+    }
+
+    private static void AdminResetGroupSecret(HeadlessConfig config, string configPath, GroupStore groupStore)
+    {
+        var group = groupStore.LoadGroup();
+        if (group is null)
+        {
+            Console.WriteLine("No group initialized.");
+            return;
+        }
+
+        Console.Write("Reset group secret? All existing clients will need the new secret to reconnect. [y/N]: ");
+        var confirm = Console.ReadLine()?.Trim().ToLowerInvariant();
+        if (confirm != "y" && confirm != "yes")
+        {
+            Console.WriteLine("Cancelled.");
+            return;
+        }
+
+        var newSecret = GenerateRelayAuthToken() + GenerateRelayAuthToken(); // 64-char secret
+        group.GroupSecret = newSecret;
+        groupStore.SaveGroup(group);
+
+        // Also update config if it had an explicit group secret
+        if (!string.IsNullOrWhiteSpace(config.GroupSecret))
+        {
+            config.GroupSecret = newSecret;
+            config.Save(configPath);
+        }
+
+        Console.WriteLine($"New group secret: {newSecret}");
+        Console.WriteLine("Restart the service to apply. Share this secret with authorized clients.");
+    }
+
+    private static void AdminViewConfig(string configPath)
+    {
+        if (!File.Exists(configPath))
+        {
+            Console.WriteLine($"Config file not found: {configPath}");
+            return;
+        }
+
+        Console.WriteLine($"--- {configPath} ---");
+        Console.WriteLine(File.ReadAllText(configPath));
+    }
+
+    private static void AdminRestartService()
+    {
+        Console.Write("Restart phoneshell service? [y/N]: ");
+        var confirm = Console.ReadLine()?.Trim().ToLowerInvariant();
+        if (confirm != "y" && confirm != "yes")
+        {
+            Console.WriteLine("Cancelled.");
+            return;
+        }
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "systemctl",
+                Arguments = "restart phoneshell",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            var proc = Process.Start(psi);
+            if (proc is not null)
+            {
+                proc.WaitForExit(10000);
+                var stdout = proc.StandardOutput.ReadToEnd();
+                var stderr = proc.StandardError.ReadToEnd();
+                if (proc.ExitCode == 0)
+                    Console.WriteLine("Service restarted successfully.");
+                else
+                    Console.WriteLine($"Restart failed (exit {proc.ExitCode}): {stderr.Trim()}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to restart service: {ex.Message}");
+            Console.WriteLine("You may need to restart manually: systemctl restart phoneshell");
+        }
+    }
+
+    private static string? GetServicePid()
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "systemctl",
+                Arguments = "show phoneshell --property=MainPID --value",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            var proc = Process.Start(psi);
+            if (proc is not null)
+            {
+                proc.WaitForExit(5000);
+                var pid = proc.StandardOutput.ReadToEnd().Trim();
+                if (proc.ExitCode == 0 && pid != "0" && !string.IsNullOrEmpty(pid))
+                    return pid;
+            }
+        }
+        catch
+        {
+            // systemctl not available or service not registered
+        }
+        return null;
     }
 
     private static string GenerateRelayAuthToken()

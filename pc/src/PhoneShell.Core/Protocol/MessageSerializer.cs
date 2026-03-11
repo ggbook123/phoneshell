@@ -81,6 +81,7 @@ public static class MessageSerializer
             "group.server.change.commit" => Deserialize<GroupServerChangeCommitMessage>(json),
             "group.secret.rotate.request" => Deserialize<GroupSecretRotateRequestMessage>(json),
             "group.secret.rotate.done" => Deserialize<GroupSecretRotateDoneMessage>(json),
+            "panel.login.scan" => Deserialize<PanelLoginScanMessage>(json),
             "error" => Deserialize<ErrorMessage>(json),
             _ => null
         };

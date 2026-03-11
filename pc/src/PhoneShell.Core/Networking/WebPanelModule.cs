@@ -83,12 +83,13 @@ internal sealed class WebPanelModule
                 return true;
         }
 
-        // Panel bootstrap endpoints (no auth)
+        // Panel bootstrap endpoints (no auth, except verify)
         if (path.StartsWith("/api/panel/", StringComparison.Ordinal))
         {
             return await HandlePanelApiAsync(
                 context,
                 path,
+                isAuthorized,
                 getPanelPairingPayload,
                 getPanelQrPayload,
                 startPanelLogin,
@@ -215,11 +216,20 @@ internal sealed class WebPanelModule
     private async Task<bool> HandlePanelApiAsync(
         HttpListenerContext context,
         string path,
+        Func<bool> isAuthorized,
         Func<object> getPanelPairingPayload,
         Func<string?> getPanelQrPayload,
         Func<HttpListenerRequest, Task<object>> startPanelLogin,
         Func<string, object?> getPanelLoginStatus)
     {
+        if (path == "/api/panel/verify")
+        {
+            // Always return false — every page load must go through scan flow.
+            // This also handles old cached HTML that calls verify with a stale localStorage token.
+            await WriteJsonAsync(context.Response, HttpStatusCode.OK, new { valid = false });
+            return true;
+        }
+
         if (path == "/api/panel/pairing")
         {
             await WriteJsonAsync(context.Response, HttpStatusCode.OK, getPanelPairingPayload());
@@ -279,6 +289,26 @@ internal sealed class WebPanelModule
             }
 
             await WriteJsonAsync(context.Response, HttpStatusCode.OK, statusPayload);
+            return true;
+        }
+
+        // Login QR PNG endpoint: /api/panel/login/qr.png?payload=<uri-encoded>
+        if (path == "/api/panel/login/qr.png")
+        {
+            var payload = context.Request.QueryString["payload"];
+            if (string.IsNullOrWhiteSpace(payload))
+            {
+                await WriteJsonAsync(context.Response, HttpStatusCode.BadRequest, new
+                {
+                    type = "error",
+                    code = "bad_request",
+                    message = "Payload query parameter is required."
+                });
+                return true;
+            }
+
+            var png = GetQrPngBytes(payload);
+            await ServePngAsync(context.Response, png);
             return true;
         }
 

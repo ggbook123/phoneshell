@@ -25,7 +25,7 @@ public sealed class RelayServer : IDisposable
     private readonly ConcurrentDictionary<string, PanelLoginSession> _panelLoginSessions = new();
     private readonly ConcurrentDictionary<string, PanelAccessToken> _panelAccessTokens = new();
     private readonly TimeSpan _panelLoginTtl = TimeSpan.FromMinutes(10);
-    private readonly TimeSpan _panelTokenTtl = TimeSpan.FromHours(8);
+    private readonly TimeSpan _panelTokenTtl = TimeSpan.FromDays(365);
     private readonly List<string> _listenPrefixes = new();
     private readonly List<string> _reachableWebSocketUrls = new();
     private int _clientIdCounter;
@@ -526,6 +526,14 @@ public sealed class RelayServer : IDisposable
                 NotifyDeviceListChanged();
                 Log?.Invoke($"Device unregistered: {client.RegisteredDeviceId}");
 
+                // If the disconnecting client is the bound mobile, invalidate all panel tokens
+                if (_group is not null && client.RegisteredDeviceId == _group.BoundMobileId)
+                {
+                    _panelAccessTokens.Clear();
+                    _panelLoginSessions.Clear();
+                    Log?.Invoke("Bound mobile disconnected — all panel tokens invalidated");
+                }
+
                 // Broadcast group member left (device goes offline, stays in persistent list)
                 if (_group is not null)
                 {
@@ -574,6 +582,10 @@ public sealed class RelayServer : IDisposable
 
             case AuthResponseMessage authResp:
                 HandleAuthResponse(client, authResp);
+                break;
+
+            case PanelLoginScanMessage loginScan:
+                await HandlePanelLoginScan(client, loginScan);
                 break;
 
             case DeviceRegisterMessage reg:
@@ -1563,15 +1575,22 @@ public sealed class RelayServer : IDisposable
 
     private object BuildPanelPairingPayload()
     {
+        // Every fresh page load calls this — invalidate all previous panel tokens
+        // to enforce "scan every time" requirement
+        _panelAccessTokens.Clear();
+
         var group = _group;
         var serverUrl = _reachableWebSocketUrls.FirstOrDefault() ?? string.Empty;
-        var qrPayload = GetPanelQrPayload() ?? string.Empty;
         var boundMobileId = group?.BoundMobileId;
+        var hasBoundMobile = !string.IsNullOrWhiteSpace(boundMobileId);
         var boundMobileOnline = false;
-        if (!string.IsNullOrWhiteSpace(boundMobileId))
+        if (hasBoundMobile)
         {
             boundMobileOnline = _clients.Values.Any(c => c.RegisteredDeviceId == boundMobileId);
         }
+
+        // Only return bind QR when no mobile is bound yet
+        var qrPayload = hasBoundMobile ? string.Empty : (GetPanelQrPayload() ?? string.Empty);
 
         return new
         {
@@ -1580,7 +1599,7 @@ public sealed class RelayServer : IDisposable
             groupId = group?.GroupId ?? string.Empty,
             serverUrl,
             qrPayload,
-            hasBoundMobile = !string.IsNullOrWhiteSpace(boundMobileId),
+            hasBoundMobile,
             boundMobileOnline
         };
     }
@@ -1602,35 +1621,54 @@ public sealed class RelayServer : IDisposable
             _group.ServerDeviceId);
     }
 
-    private async Task<object> StartPanelLoginAsync(HttpListenerRequest request)
+    private Task<object> StartPanelLoginAsync(HttpListenerRequest request)
     {
         CleanupExpiredPanelAuth();
+
+        // Invalidate ALL existing panel access tokens — every page load must re-scan
+        _panelAccessTokens.Clear();
 
         var requestId = Guid.NewGuid().ToString("N");
         var token = GeneratePanelToken();
         var requesterAddress = request.RemoteEndPoint?.Address?.ToString();
 
+        var hasBoundMobile = !string.IsNullOrWhiteSpace(_group?.BoundMobileId);
+
         var session = new PanelLoginSession
         {
             RequestId = requestId,
             Token = token,
-            Status = PanelLoginState.AwaitingMobile,
+            Status = hasBoundMobile ? PanelLoginState.AwaitingScan : PanelLoginState.AwaitingMobile,
             CreatedAtUtc = DateTimeOffset.UtcNow,
             ExpiresAtUtc = DateTimeOffset.UtcNow.Add(_panelLoginTtl),
             RequesterAddress = requesterAddress,
-            Message = "Waiting for mobile scan."
+            Message = hasBoundMobile ? "Waiting for mobile scan." : "Waiting for mobile binding."
         };
         _panelLoginSessions[requestId] = session;
 
-        await TryDispatchPanelLoginSessionAsync(session);
+        // Build login QR payload for already-bound case
+        string? loginQrPayload = null;
+        if (hasBoundMobile && _group is not null)
+        {
+            var serverUrl = _reachableWebSocketUrls.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(serverUrl))
+            {
+                var builder = new QrPayloadBuilder();
+                loginQrPayload = builder.BuildPanelLogin(serverUrl, _group.GroupId, requestId);
+            }
+        }
 
-        return new
+        // For unbound case, don't dispatch immediately — wait for bind flow
+        // For bound case, don't dispatch immediately — wait for mobile to scan the login QR
+
+        return Task.FromResult<object>(new
         {
             requestId,
             status = PanelLoginStateToString(session.Status),
             message = session.Message ?? string.Empty,
-            expiresAtUtc = session.ExpiresAtUtc
-        };
+            expiresAtUtc = session.ExpiresAtUtc,
+            loginQrPayload = loginQrPayload ?? string.Empty
+        });
     }
 
     private object? GetPanelLoginStatusPayload(string requestId)
@@ -1647,13 +1685,26 @@ public sealed class RelayServer : IDisposable
             session.Message ??= "Request expired.";
         }
 
+        // Include loginQrPayload for AwaitingScan state so frontend can display the QR
+        string? loginQrPayload = null;
+        if (session.Status == PanelLoginState.AwaitingScan && _group is not null)
+        {
+            var serverUrl = _reachableWebSocketUrls.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(serverUrl))
+            {
+                var builder = new QrPayloadBuilder();
+                loginQrPayload = builder.BuildPanelLogin(serverUrl, _group.GroupId, session.RequestId);
+            }
+        }
+
         return new
         {
             requestId = session.RequestId,
             status = PanelLoginStateToString(session.Status),
             message = session.Message ?? string.Empty,
             token = session.Status == PanelLoginState.Approved ? session.Token : null,
-            expiresAtUtc = session.ExpiresAtUtc
+            expiresAtUtc = session.ExpiresAtUtc,
+            loginQrPayload = loginQrPayload ?? string.Empty
         };
     }
 
@@ -1662,18 +1713,23 @@ public sealed class RelayServer : IDisposable
         if (session.Status is PanelLoginState.Approved or PanelLoginState.Rejected or PanelLoginState.Expired)
             return;
 
+        // AwaitingScan means we're waiting for mobile to scan the login QR — don't auto-dispatch
+        if (session.Status == PanelLoginState.AwaitingScan)
+            return;
+
         if (_group?.BoundMobileId is null)
         {
             session.Status = PanelLoginState.AwaitingMobile;
-            session.Message = "Waiting for mobile scan.";
+            session.Message = "Waiting for mobile binding.";
             return;
         }
 
         var mobileClient = _clients.Values.FirstOrDefault(c => c.RegisteredDeviceId == _group.BoundMobileId);
         if (mobileClient is null)
         {
-            session.Status = PanelLoginState.AwaitingMobile;
-            session.Message = "Mobile is offline.";
+            // Mobile is bound but offline — keep waiting, do NOT auto-approve
+            session.Status = PanelLoginState.AwaitingScan;
+            session.Message = "Waiting for mobile scan.";
             return;
         }
 
@@ -1742,9 +1798,110 @@ public sealed class RelayServer : IDisposable
         {
             if (session.Status == PanelLoginState.AwaitingMobile)
             {
-                _ = TryDispatchPanelLoginSessionAsync(session);
+                // First bind just completed — auto-approve pending sessions
+                Log?.Invoke($"Panel login auto-approved (first bind completed, requestId={session.RequestId})");
+                ApprovePanelLogin(session);
             }
         }
+    }
+
+    /// <summary>
+    /// Handle a panel login scan message from a mobile device.
+    /// Verifies the sender is the bound mobile, then sends an auth request for confirmation.
+    /// </summary>
+    private async Task HandlePanelLoginScan(ConnectedClient client, PanelLoginScanMessage loginScan)
+    {
+        if (_group is null)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "no_group",
+                Message = "No group exists on this server."
+            }));
+            return;
+        }
+
+        // Verify sender is the bound mobile
+        if (string.IsNullOrEmpty(_group.BoundMobileId) ||
+            client.RegisteredDeviceId != _group.BoundMobileId)
+        {
+            Log?.Invoke($"Panel login scan rejected: {client.RegisteredDeviceId} is not the bound mobile");
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "not_bound_mobile",
+                Message = "Only the bound mobile can scan login QR codes."
+            }));
+            return;
+        }
+
+        // Find the corresponding login session
+        if (!_panelLoginSessions.TryGetValue(loginScan.RequestId, out var session))
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "login_session_not_found",
+                Message = "Login session not found or expired."
+            }));
+            return;
+        }
+
+        if (session.Status is PanelLoginState.Approved or PanelLoginState.Rejected or PanelLoginState.Expired)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "login_session_closed",
+                Message = "Login session already resolved."
+            }));
+            return;
+        }
+
+        if (DateTimeOffset.UtcNow > session.ExpiresAtUtc)
+        {
+            session.Status = PanelLoginState.Expired;
+            session.Message = "Request expired.";
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "login_session_expired",
+                Message = "Login session expired."
+            }));
+            return;
+        }
+
+        // Scan verified — now send auth request to mobile for confirmation
+        session.Status = PanelLoginState.AwaitingApproval;
+        session.Message = "Waiting for mobile approval.";
+
+        _pendingAuths[session.RequestId] = new PendingAuth
+        {
+            RequestId = session.RequestId,
+            Approved = () => ApprovePanelLogin(session),
+            Rejected = () => RejectPanelLogin(session, "Rejected by mobile.")
+        };
+
+        var description = string.IsNullOrWhiteSpace(session.RequesterAddress)
+            ? "Web panel login request."
+            : $"Web panel login request from {session.RequesterAddress}.";
+
+        await SendAsync(client, MessageSerializer.Serialize(new AuthRequestMessage
+        {
+            RequestId = session.RequestId,
+            Action = "panel.login",
+            RequesterId = "web-panel",
+            RequesterName = "Web Panel",
+            TargetDeviceId = null,
+            Description = description
+        }));
+        Log?.Invoke($"Panel login scan accepted, auth request sent to mobile (requestId={loginScan.RequestId})");
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(60));
+            if (_pendingAuths.TryRemove(session.RequestId, out var timedOut))
+            {
+                Log?.Invoke($"Panel login request {session.RequestId} timed out");
+                timedOut.Rejected?.Invoke();
+            }
+        });
     }
 
     private void CleanupExpiredPanelAuth()
@@ -1787,6 +1944,7 @@ public sealed class RelayServer : IDisposable
 
     private static string PanelLoginStateToString(PanelLoginState state) => state switch
     {
+        PanelLoginState.AwaitingScan => "awaiting_scan",
         PanelLoginState.AwaitingMobile => "awaiting_mobile",
         PanelLoginState.AwaitingApproval => "awaiting_approval",
         PanelLoginState.Approved => "approved",
@@ -1932,6 +2090,7 @@ public sealed class RelayServer : IDisposable
 
     private enum PanelLoginState
     {
+        AwaitingScan,
         AwaitingMobile,
         AwaitingApproval,
         Approved,

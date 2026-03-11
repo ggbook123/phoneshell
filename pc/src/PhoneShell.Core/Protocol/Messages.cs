@@ -256,6 +256,15 @@ public sealed class AuthResponseMessage
     public bool Approved { get; init; }
 }
 
+// --- Panel login scan ---
+
+public sealed class PanelLoginScanMessage
+{
+    public string Type => "panel.login.scan";
+    public string RequestId { get; init; } = string.Empty;
+    public string MobileDeviceId { get; init; } = string.Empty;
+}
+
 // --- Error ---
 
 public sealed class ErrorMessage
