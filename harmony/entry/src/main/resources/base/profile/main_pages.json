@@ -3,6 +3,9 @@
     "pages/Index",
     "pages/DeviceListPage",
     "pages/SessionListPage",
-    "pages/TerminalPage"
+    "pages/TerminalPage",
+    "pages/AuthorizationPage",
+    "pages/GroupManagePage",
+    "pages/ScanPage"
   ]
 }

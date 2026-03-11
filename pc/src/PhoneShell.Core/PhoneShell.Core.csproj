@@ -6,4 +6,14 @@
     <RootNamespace>PhoneShell.Core</RootNamespace>
     <AssemblyName>PhoneShell.Core</AssemblyName>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\xterm.min.js" LogicalName="xterm.min.js" />
+    <EmbeddedResource Include="Assets\xterm.min.css" LogicalName="xterm.min.css" />
+    <EmbeddedResource Include="Assets\addon-fit.min.js" LogicalName="addon-fit.min.js" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="QRCoder" Version="1.4.3" />
+  </ItemGroup>
 </Project>

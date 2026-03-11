@@ -143,6 +143,119 @@ public sealed class ControlForceDisconnectMessage
     public string DeviceId { get; init; } = string.Empty;
 }
 
+// --- Group management ---
+
+public sealed class GroupJoinRequestMessage
+{
+    public string Type => "group.join.request";
+    public string GroupSecret { get; init; } = string.Empty;
+    public string DeviceId { get; init; } = string.Empty;
+    public string DisplayName { get; init; } = string.Empty;
+    public string Os { get; init; } = string.Empty;
+    public List<string> AvailableShells { get; init; } = new();
+}
+
+public sealed class GroupJoinAcceptedMessage
+{
+    public string Type => "group.join.accepted";
+    public string GroupId { get; init; } = string.Empty;
+    public List<GroupMemberInfo> Members { get; init; } = new();
+    public string ServerDeviceId { get; init; } = string.Empty;
+    public string? BoundMobileId { get; init; }
+}
+
+public sealed class GroupJoinRejectedMessage
+{
+    public string Type => "group.join.rejected";
+    public string Reason { get; init; } = string.Empty;
+}
+
+public sealed class GroupMemberJoinedMessage
+{
+    public string Type => "group.member.joined";
+    public GroupMemberInfo Member { get; init; } = new();
+}
+
+public sealed class GroupMemberLeftMessage
+{
+    public string Type => "group.member.left";
+    public string DeviceId { get; init; } = string.Empty;
+}
+
+public sealed class GroupMemberListMessage
+{
+    public string Type => "group.member.list";
+    public List<GroupMemberInfo> Members { get; init; } = new();
+}
+
+public sealed class GroupKickMessage
+{
+    public string Type => "group.kick";
+    public string DeviceId { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// Member info exchanged in group protocol messages.
+/// </summary>
+public sealed class GroupMemberInfo
+{
+    public string DeviceId { get; init; } = string.Empty;
+    public string DisplayName { get; init; } = string.Empty;
+    public string Os { get; init; } = string.Empty;
+    public string Role { get; init; } = string.Empty; // "Server", "Member", "Mobile"
+    public bool IsOnline { get; init; }
+    public List<string> AvailableShells { get; init; } = new();
+}
+
+// --- Mobile binding ---
+
+public sealed class MobileBindRequestMessage
+{
+    public string Type => "mobile.bind.request";
+    public string GroupId { get; init; } = string.Empty;
+    public string MobileDeviceId { get; init; } = string.Empty;
+    public string MobileDisplayName { get; init; } = string.Empty;
+}
+
+public sealed class MobileBindAcceptedMessage
+{
+    public string Type => "mobile.bind.accepted";
+    public string GroupId { get; init; } = string.Empty;
+    public string MobileDeviceId { get; init; } = string.Empty;
+}
+
+public sealed class MobileBindRejectedMessage
+{
+    public string Type => "mobile.bind.rejected";
+    public string Reason { get; init; } = string.Empty;
+}
+
+public sealed class MobileUnbindMessage
+{
+    public string Type => "mobile.unbind";
+    public string GroupId { get; init; } = string.Empty;
+}
+
+// --- Authorization ---
+
+public sealed class AuthRequestMessage
+{
+    public string Type => "auth.request";
+    public string RequestId { get; init; } = string.Empty;
+    public string Action { get; init; } = string.Empty;
+    public string RequesterId { get; init; } = string.Empty;
+    public string RequesterName { get; init; } = string.Empty;
+    public string? TargetDeviceId { get; init; }
+    public string Description { get; init; } = string.Empty;
+}
+
+public sealed class AuthResponseMessage
+{
+    public string Type => "auth.response";
+    public string RequestId { get; init; } = string.Empty;
+    public bool Approved { get; init; }
+}
+
 // --- Error ---
 
 public sealed class ErrorMessage
@@ -150,4 +263,43 @@ public sealed class ErrorMessage
     public string Type => "error";
     public string Code { get; init; } = string.Empty;
     public string Message { get; init; } = string.Empty;
+}
+
+// --- Server migration ---
+
+public sealed class GroupServerChangeRequestMessage
+{
+    public string Type => "group.server.change.request";
+    public string NewServerDeviceId { get; init; } = string.Empty;
+    public string RequesterId { get; init; } = string.Empty;
+}
+
+public sealed class GroupServerChangePrepareMessage
+{
+    public string Type => "group.server.change.prepare";
+    public string NewServerUrl { get; init; } = string.Empty;
+    public string GroupId { get; init; } = string.Empty;
+    public string GroupSecret { get; init; } = string.Empty;
+}
+
+public sealed class GroupServerChangeCommitMessage
+{
+    public string Type => "group.server.change.commit";
+    public string NewServerUrl { get; init; } = string.Empty;
+    public string GroupId { get; init; } = string.Empty;
+    public string GroupSecret { get; init; } = string.Empty;
+}
+
+// --- Group secret rotation ---
+
+public sealed class GroupSecretRotateRequestMessage
+{
+    public string Type => "group.secret.rotate.request";
+    public string RequesterId { get; init; } = string.Empty;
+}
+
+public sealed class GroupSecretRotateDoneMessage
+{
+    public string Type => "group.secret.rotate.done";
+    public string NewSecret { get; init; } = string.Empty;
 }

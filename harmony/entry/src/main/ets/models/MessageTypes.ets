@@ -133,6 +133,102 @@ export interface ErrorMessage extends BaseMessage {
   message: string;
 }
 
+// --- Group management ---
+
+export interface GroupJoinRequestMessage extends BaseMessage {
+  type: 'group.join.request';
+  groupSecret: string;
+  deviceId: string;
+  displayName: string;
+  os: string;
+  availableShells: Array<string>;
+}
+
+export interface GroupJoinAcceptedMessage extends BaseMessage {
+  type: 'group.join.accepted';
+  groupId: string;
+  members: Array<GroupMemberInfo>;
+  serverDeviceId: string;
+  boundMobileId: string | null;
+}
+
+export interface GroupJoinRejectedMessage extends BaseMessage {
+  type: 'group.join.rejected';
+  reason: string;
+}
+
+export interface GroupMemberJoinedMessage extends BaseMessage {
+  type: 'group.member.joined';
+  member: GroupMemberInfo;
+}
+
+export interface GroupMemberLeftMessage extends BaseMessage {
+  type: 'group.member.left';
+  deviceId: string;
+}
+
+export interface GroupMemberListMessage extends BaseMessage {
+  type: 'group.member.list';
+  members: Array<GroupMemberInfo>;
+}
+
+export interface GroupKickMessage extends BaseMessage {
+  type: 'group.kick';
+  deviceId: string;
+}
+
+export interface GroupMemberInfo {
+  deviceId: string;
+  displayName: string;
+  os: string;
+  role: string; // "Server", "Member", "Mobile"
+  isOnline: boolean;
+  availableShells: Array<string>;
+}
+
+// --- Mobile binding ---
+
+export interface MobileBindRequestMessage extends BaseMessage {
+  type: 'mobile.bind.request';
+  groupId: string;
+  mobileDeviceId: string;
+  mobileDisplayName: string;
+}
+
+export interface MobileBindAcceptedMessage extends BaseMessage {
+  type: 'mobile.bind.accepted';
+  groupId: string;
+  mobileDeviceId: string;
+}
+
+export interface MobileBindRejectedMessage extends BaseMessage {
+  type: 'mobile.bind.rejected';
+  reason: string;
+}
+
+export interface MobileUnbindMessage extends BaseMessage {
+  type: 'mobile.unbind';
+  groupId: string;
+}
+
+// --- Authorization ---
+
+export interface AuthRequestMessage extends BaseMessage {
+  type: 'auth.request';
+  requestId: string;
+  action: string;
+  requesterId: string;
+  requesterName: string;
+  targetDeviceId: string | null;
+  description: string;
+}
+
+export interface AuthResponseMessage extends BaseMessage {
+  type: 'auth.response';
+  requestId: string;
+  approved: boolean;
+}
+
 // Union type for all incoming messages (for reference; individual types used in practice)
 export type ServerMessage =
   DeviceListMessage |
@@ -141,4 +237,12 @@ export type ServerMessage =
   TerminalClosedMessage |
   ControlGrantMessage |
   ControlForceDisconnectMessage |
+  GroupJoinAcceptedMessage |
+  GroupJoinRejectedMessage |
+  GroupMemberJoinedMessage |
+  GroupMemberLeftMessage |
+  GroupMemberListMessage |
+  MobileBindAcceptedMessage |
+  MobileBindRejectedMessage |
+  AuthRequestMessage |
   ErrorMessage;

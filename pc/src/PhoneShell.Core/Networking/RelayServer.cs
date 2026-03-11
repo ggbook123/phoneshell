@@ -1,14 +1,19 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using PhoneShell.Core.Models;
 using PhoneShell.Core.Protocol;
+using PhoneShell.Core.Services;
 
 namespace PhoneShell.Core.Networking;
 
 /// <summary>
 /// WebSocket relay server that accepts connections from PC clients and mobile clients.
 /// Maintains a registry of connected devices and forwards terminal I/O between them.
+/// Manages group membership and authentication via shared group secret.
 /// </summary>
 public sealed class RelayServer : IDisposable
 {
@@ -16,15 +21,30 @@ public sealed class RelayServer : IDisposable
     private CancellationTokenSource? _cts;
     private readonly ConcurrentDictionary<string, ConnectedDevice> _devices = new();
     private readonly ConcurrentDictionary<string, ConnectedClient> _clients = new();
+    private readonly ConcurrentDictionary<string, PendingAuth> _pendingAuths = new();
+    private readonly ConcurrentDictionary<string, PanelLoginSession> _panelLoginSessions = new();
+    private readonly ConcurrentDictionary<string, PanelAccessToken> _panelAccessTokens = new();
+    private readonly TimeSpan _panelLoginTtl = TimeSpan.FromMinutes(10);
+    private readonly TimeSpan _panelTokenTtl = TimeSpan.FromHours(8);
     private readonly List<string> _listenPrefixes = new();
     private readonly List<string> _reachableWebSocketUrls = new();
     private int _clientIdCounter;
     private bool _disposed;
+    private DateTimeOffset _startedAtUtc;
+    private WebPanelModule? _webPanelModule;
+    private GroupInfo? _group;
+    private GroupStore? _groupStore;
 
     public event Action<string>? Log;
     public event Action<List<DeviceInfo>>? DeviceListChanged;
+    public event Action<List<GroupMemberInfo>>? GroupMemberListChanged;
     public Func<string, Task<string>>? LocalTerminalSnapshotProvider { get; set; } // sessionId -> snapshot
     public Func<string, (int Cols, int Rows)>? LocalTerminalSizeProvider { get; set; } // sessionId -> size
+    public string AuthToken { get; set; } = string.Empty;
+    public bool WebPanelEnabled { get; set; }
+
+    /// <summary>Current group info (null if no group created yet).</summary>
+    public GroupInfo? Group => _group;
 
     public bool IsRunning => _httpListener?.IsListening == true;
     public IReadOnlyList<string> ListenPrefixes => _listenPrefixes;
@@ -32,10 +52,22 @@ public sealed class RelayServer : IDisposable
 
     public Task StartAsync(int port, CancellationToken ct = default)
     {
+        return StartAsync(port, null, ct);
+    }
+
+    public Task StartAsync(int port, string? baseDirectory, CancellationToken ct = default)
+    {
         if (_httpListener is not null) return Task.CompletedTask;
 
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _httpListener = StartListenerWithFallback(port);
+        _startedAtUtc = DateTimeOffset.UtcNow;
+
+        // Initialize group store if a base directory is provided
+        if (!string.IsNullOrEmpty(baseDirectory))
+        {
+            _groupStore = new GroupStore(baseDirectory);
+        }
 
         _listenPrefixes.Clear();
         _listenPrefixes.AddRange(_httpListener.Prefixes.Cast<string>());
@@ -54,6 +86,12 @@ public sealed class RelayServer : IDisposable
         Log?.Invoke($"Relay server started on port {port}");
         foreach (var url in _reachableWebSocketUrls)
             Log?.Invoke($"Relay server reachable at {url}");
+
+        if (WebPanelEnabled)
+        {
+            _webPanelModule = new WebPanelModule();
+            Log?.Invoke("Web panel enabled — serving at /panel");
+        }
 
         _ = AcceptClientsLoopAsync(_cts.Token);
         return Task.CompletedTask;
@@ -82,20 +120,94 @@ public sealed class RelayServer : IDisposable
     /// <summary>
     /// Register a local device (the server PC itself) without a WebSocket connection.
     /// Terminal I/O for this device is handled through direct delegates.
+    /// Also initializes or loads the group, registering this device as the Server member.
     /// </summary>
-    public void RegisterLocalDevice(string deviceId, string displayName, List<string> availableShells)
+    public void RegisterLocalDevice(string deviceId, string displayName, string os, List<string> availableShells)
     {
         var device = new ConnectedDevice
         {
             DeviceId = deviceId,
             DisplayName = displayName,
-            Os = "Windows",
+            Os = os,
             AvailableShells = availableShells,
             IsLocal = true
         };
         _devices[deviceId] = device;
+
+        // Initialize or load group
+        InitializeGroup(deviceId, displayName, os, availableShells);
+
         NotifyDeviceListChanged();
         Log?.Invoke($"Local device registered: {displayName} ({deviceId})");
+    }
+
+    /// <summary>
+    /// Initialize or load the group, ensuring the server device is a member.
+    /// If AuthToken is set and no group exists, uses AuthToken as GroupSecret for backward compat.
+    /// </summary>
+    private void InitializeGroup(string deviceId, string displayName, string os, List<string> availableShells)
+    {
+        if (_groupStore is not null)
+        {
+            _group = _groupStore.LoadGroup();
+        }
+
+        if (_group is null)
+        {
+            _group = new GroupInfo
+            {
+                GroupId = Guid.NewGuid().ToString("N"),
+                GroupSecret = !string.IsNullOrWhiteSpace(AuthToken)
+                    ? AuthToken
+                    : GenerateGroupSecret(),
+                ServerDeviceId = deviceId,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+        }
+
+        // Ensure server is in the member list
+        _group.ServerDeviceId = deviceId;
+        var serverMember = _group.Members.FirstOrDefault(m => m.DeviceId == deviceId);
+        if (serverMember is null)
+        {
+            _group.Members.Add(new GroupMember
+            {
+                DeviceId = deviceId,
+                DisplayName = displayName,
+                Os = os,
+                Role = MemberRole.Server,
+                JoinedAt = DateTimeOffset.UtcNow,
+                AvailableShells = availableShells
+            });
+        }
+        else
+        {
+            serverMember.DisplayName = displayName;
+            serverMember.Os = os;
+            serverMember.Role = MemberRole.Server;
+            serverMember.AvailableShells = availableShells;
+        }
+
+        // Use GroupSecret as the AuthToken for WebSocket authentication
+        if (string.IsNullOrWhiteSpace(AuthToken))
+            AuthToken = _group.GroupSecret;
+
+        _groupStore?.SaveGroup(_group);
+
+        Log?.Invoke($"Group initialized: {_group.GroupId} (secret: {_group.GroupSecret[..8]}...)");
+    }
+
+    /// <summary>Get current group info for external access (e.g. Web Panel API).</summary>
+    public GroupInfo? GetGroupInfo() => _group;
+
+    private static string GenerateGroupSecret()
+    {
+        Span<byte> buffer = stackalloc byte[32];
+        RandomNumberGenerator.Fill(buffer);
+        return Convert.ToBase64String(buffer)
+            .Replace('+', '-')
+            .Replace('/', '_')
+            .TrimEnd('=');
     }
 
     /// <summary>
@@ -193,6 +305,59 @@ public sealed class RelayServer : IDisposable
     /// </summary>
     public Func<List<Protocol.SessionInfo>>? LocalSessionListProvider { get; set; }
 
+    /// <summary>
+    /// Event raised when a remote device has opened a terminal in response to our request.
+    /// Used by server-mode PC to create a remote tab.
+    /// </summary>
+    public event Action<string, string, int, int>? RemoteTerminalOpenedReceived; // deviceId, sessionId, cols, rows
+
+    /// <summary>
+    /// Event raised when a remote device sends terminal output back.
+    /// Used by server-mode PC to display remote terminal output.
+    /// </summary>
+    public event Action<string, string, string>? RemoteTerminalOutputReceived; // deviceId, sessionId, data
+
+    /// <summary>
+    /// Event raised when a remote device terminal is closed.
+    /// </summary>
+    public event Action<string, string>? RemoteTerminalClosedReceived; // deviceId, sessionId
+
+    /// <summary>
+    /// Forward terminal input from server PC to a remote device.
+    /// </summary>
+    public async Task ForwardTerminalInputToDevice(string deviceId, string sessionId, string data)
+    {
+        if (!_devices.TryGetValue(deviceId, out var device)) return;
+        if (device.ClientId is null) return;
+        if (!_clients.TryGetValue(device.ClientId, out var client)) return;
+
+        var msg = MessageSerializer.Serialize(new TerminalInputMessage
+        {
+            DeviceId = deviceId,
+            SessionId = sessionId,
+            Data = data
+        });
+        await SendAsync(client, msg);
+    }
+
+    /// <summary>
+    /// Send a terminal.open request from the server PC to a remote device.
+    /// </summary>
+    public async Task SendTerminalOpenToDevice(string targetDeviceId, string shellId, string requesterDeviceId)
+    {
+        if (!_devices.TryGetValue(targetDeviceId, out var device)) return;
+        if (device.ClientId is null) return;
+        if (!_clients.TryGetValue(device.ClientId, out var client)) return;
+
+        var msg = MessageSerializer.Serialize(new TerminalOpenMessage
+        {
+            DeviceId = targetDeviceId,
+            ShellId = shellId
+        });
+        await SendAsync(client, msg);
+        Log?.Invoke($"Sent terminal.open to device {targetDeviceId} (shell={shellId}) requested by {requesterDeviceId}");
+    }
+
     public List<DeviceInfo> GetDeviceList()
     {
         return _devices.Values.Select(d => new DeviceInfo
@@ -203,6 +368,18 @@ public sealed class RelayServer : IDisposable
             IsOnline = true,
             AvailableShells = d.AvailableShells
         }).ToList();
+    }
+
+    private List<SessionInfo>? GetSessionsForDevice(string deviceId)
+    {
+        if (!_devices.TryGetValue(deviceId, out var device))
+            return null;
+
+        if (device.IsLocal)
+            return LocalSessionListProvider?.Invoke() ?? new List<SessionInfo>();
+
+        // For remote devices, we don't have direct session data via REST
+        return new List<SessionInfo>();
     }
 
     public void Dispose()
@@ -220,8 +397,28 @@ public sealed class RelayServer : IDisposable
             try
             {
                 var context = await _httpListener.GetContextAsync();
+                var path = NormalizeRequestPath(context.Request.Url?.AbsolutePath);
                 if (context.Request.IsWebSocketRequest)
                 {
+                    if (!IsWebSocketPath(path))
+                    {
+                        await WriteJsonResponseAsync(
+                            context.Response,
+                            HttpStatusCode.NotFound,
+                            new ErrorMessage { Code = "not_found", Message = "Unknown WebSocket endpoint." });
+                        continue;
+                    }
+
+                    if (!IsAuthorized(context.Request))
+                    {
+                        Log?.Invoke($"Unauthorized WebSocket request from {context.Request.RemoteEndPoint}");
+                        await WriteJsonResponseAsync(
+                            context.Response,
+                            HttpStatusCode.Unauthorized,
+                            new ErrorMessage { Code = "unauthorized", Message = "Missing or invalid relay token." });
+                        continue;
+                    }
+
                     var wsContext = await context.AcceptWebSocketAsync(null);
                     var clientId = $"client-{Interlocked.Increment(ref _clientIdCounter)}";
                     var client = new ConnectedClient
@@ -235,8 +432,7 @@ public sealed class RelayServer : IDisposable
                 }
                 else
                 {
-                    context.Response.StatusCode = 400;
-                    context.Response.Close();
+                    await HandleHttpRequestAsync(context, path);
                 }
             }
             catch (ObjectDisposedException) { break; }
@@ -329,6 +525,17 @@ public sealed class RelayServer : IDisposable
                 _devices.TryRemove(client.RegisteredDeviceId, out _);
                 NotifyDeviceListChanged();
                 Log?.Invoke($"Device unregistered: {client.RegisteredDeviceId}");
+
+                // Broadcast group member left (device goes offline, stays in persistent list)
+                if (_group is not null)
+                {
+                    var leftMsg = MessageSerializer.Serialize(new GroupMemberLeftMessage
+                    {
+                        DeviceId = client.RegisteredDeviceId
+                    });
+                    _ = BroadcastToOthersAsync(client, leftMsg);
+                    GroupMemberListChanged?.Invoke(BuildGroupMemberInfoList());
+                }
             }
 
             _clients.TryRemove(client.ClientId, out _);
@@ -349,6 +556,26 @@ public sealed class RelayServer : IDisposable
 
         switch (message)
         {
+            case GroupJoinRequestMessage joinReq:
+                await HandleGroupJoinRequest(client, joinReq);
+                break;
+
+            case GroupKickMessage kick:
+                await HandleGroupKick(client, kick);
+                break;
+
+            case MobileBindRequestMessage bindReq:
+                await HandleMobileBindRequest(client, bindReq);
+                break;
+
+            case MobileUnbindMessage unbind:
+                await HandleMobileUnbind(client, unbind);
+                break;
+
+            case AuthResponseMessage authResp:
+                HandleAuthResponse(client, authResp);
+                break;
+
             case DeviceRegisterMessage reg:
                 var device = new ConnectedDevice
                 {
@@ -433,6 +660,8 @@ public sealed class RelayServer : IDisposable
                         await SendAsync(c, json);
                     }
                 }
+                // Also notify the server PC if it requested this remote terminal
+                RemoteTerminalOutputReceived?.Invoke(output.DeviceId, output.SessionId, output.Data);
                 break;
 
             case TerminalOpenMessage open:
@@ -580,8 +809,32 @@ public sealed class RelayServer : IDisposable
                 }
                 break;
 
-            case TerminalOpenedMessage:
-            case TerminalClosedMessage:
+            case TerminalOpenedMessage opened:
+                // Forward to subscribed clients
+                foreach (var c in _clients.Values)
+                {
+                    if (c.ClientId != client.ClientId)
+                    {
+                        await SendAsync(c, json);
+                    }
+                }
+                // Notify the server PC
+                RemoteTerminalOpenedReceived?.Invoke(opened.DeviceId, opened.SessionId, opened.Cols, opened.Rows);
+                break;
+
+            case TerminalClosedMessage closed:
+                // Forward to subscribed clients
+                foreach (var c in _clients.Values)
+                {
+                    if (c.ClientId != client.ClientId)
+                    {
+                        await SendAsync(c, json);
+                    }
+                }
+                // Notify the server PC
+                RemoteTerminalClosedReceived?.Invoke(closed.DeviceId, closed.SessionId);
+                break;
+
             case SessionListMessage:
                 // Forward to subscribed clients
                 foreach (var c in _clients.Values)
@@ -604,6 +857,24 @@ public sealed class RelayServer : IDisposable
                         await SendAsync(c, json);
                     }
                 }
+                break;
+
+            case GroupServerChangeRequestMessage changeReq:
+                await HandleServerChangeRequest(client, changeReq);
+                break;
+
+            case GroupServerChangePrepareMessage prepare:
+                // A target device reports it's ready as the new server
+                await HandleServerChangePrepare(client, prepare);
+                break;
+
+            case GroupSecretRotateRequestMessage rotateReq:
+                await HandleSecretRotateRequest(client, rotateReq);
+                break;
+
+            case GroupSecretRotateDoneMessage rotated:
+                // Forward to all clients (usually sent by server, not expected from client)
+                await BroadcastToOthersAsync(client, json);
                 break;
         }
     }
@@ -716,6 +987,445 @@ public sealed class RelayServer : IDisposable
         DeviceListChanged?.Invoke(GetDeviceList());
     }
 
+    // --- Group management handlers ---
+
+    private async Task HandleGroupJoinRequest(ConnectedClient client, GroupJoinRequestMessage req)
+    {
+        if (_group is null)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new GroupJoinRejectedMessage
+            {
+                Reason = "No group exists on this server."
+            }));
+            return;
+        }
+
+        if (!TokensEqual(req.GroupSecret, _group.GroupSecret))
+        {
+            Log?.Invoke($"Group join rejected for {req.DisplayName} ({req.DeviceId}): invalid secret");
+            await SendAsync(client, MessageSerializer.Serialize(new GroupJoinRejectedMessage
+            {
+                Reason = "Invalid group secret."
+            }));
+            return;
+        }
+
+        // Determine role
+        var role = MemberRole.Member;
+
+        // Add or update member in group
+        var existing = _group.Members.FirstOrDefault(m => m.DeviceId == req.DeviceId);
+        if (existing is not null)
+        {
+            existing.DisplayName = req.DisplayName;
+            existing.Os = req.Os;
+            existing.AvailableShells = req.AvailableShells;
+        }
+        else
+        {
+            _group.Members.Add(new GroupMember
+            {
+                DeviceId = req.DeviceId,
+                DisplayName = req.DisplayName,
+                Os = req.Os,
+                Role = role,
+                JoinedAt = DateTimeOffset.UtcNow,
+                AvailableShells = req.AvailableShells
+            });
+        }
+
+        // Register device
+        var device = new ConnectedDevice
+        {
+            DeviceId = req.DeviceId,
+            DisplayName = req.DisplayName,
+            Os = req.Os,
+            AvailableShells = req.AvailableShells,
+            ClientId = client.ClientId,
+            IsLocal = false
+        };
+        _devices[req.DeviceId] = device;
+        client.RegisteredDeviceId = req.DeviceId;
+        client.MemberRole = role;
+
+        _groupStore?.SaveGroup(_group);
+        NotifyDeviceListChanged();
+
+        // Reply with accepted + full member list
+        var memberList = BuildGroupMemberInfoList();
+        await SendAsync(client, MessageSerializer.Serialize(new GroupJoinAcceptedMessage
+        {
+            GroupId = _group.GroupId,
+            Members = memberList,
+            ServerDeviceId = _group.ServerDeviceId,
+            BoundMobileId = _group.BoundMobileId
+        }));
+
+        // Broadcast member joined to all other clients
+        var joinedMember = memberList.FirstOrDefault(m => m.DeviceId == req.DeviceId);
+        if (joinedMember is not null)
+        {
+            var broadcastMsg = MessageSerializer.Serialize(new GroupMemberJoinedMessage
+            {
+                Member = joinedMember
+            });
+            await BroadcastToOthersAsync(client, broadcastMsg);
+        }
+
+        GroupMemberListChanged?.Invoke(memberList);
+        Log?.Invoke($"Group member joined: {req.DisplayName} ({req.DeviceId})");
+    }
+
+    private async Task HandleGroupKick(ConnectedClient client, GroupKickMessage kick)
+    {
+        if (_group is null) return;
+
+        // Only bound mobile can kick
+        if (client.MemberRole != MemberRole.Mobile)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "permission_denied",
+                Message = "Only the bound mobile can kick members."
+            }));
+            return;
+        }
+
+        // Can't kick the server or yourself
+        if (kick.DeviceId == _group.ServerDeviceId)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "cannot_kick_server",
+                Message = "Cannot kick the server device."
+            }));
+            return;
+        }
+
+        _group.Members.RemoveAll(m => m.DeviceId == kick.DeviceId);
+        _groupStore?.SaveGroup(_group);
+
+        // Disconnect the kicked device
+        var kickedClient = _clients.Values.FirstOrDefault(c => c.RegisteredDeviceId == kick.DeviceId);
+        if (kickedClient is not null)
+        {
+            await SendAsync(kickedClient, MessageSerializer.Serialize(new GroupJoinRejectedMessage
+            {
+                Reason = "You have been removed from the group."
+            }));
+            try { kickedClient.WebSocket.Abort(); } catch { }
+        }
+
+        // Broadcast member left
+        await BroadcastToAllAsync(MessageSerializer.Serialize(new GroupMemberLeftMessage
+        {
+            DeviceId = kick.DeviceId
+        }));
+
+        GroupMemberListChanged?.Invoke(BuildGroupMemberInfoList());
+        Log?.Invoke($"Group member kicked: {kick.DeviceId}");
+    }
+
+    private async Task HandleMobileBindRequest(ConnectedClient client, MobileBindRequestMessage req)
+    {
+        if (_group is null) return;
+
+        if (!string.IsNullOrEmpty(_group.BoundMobileId) && _group.BoundMobileId != req.MobileDeviceId)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new MobileBindRejectedMessage
+            {
+                Reason = "Another mobile device is already bound to this group."
+            }));
+            return;
+        }
+
+        _group.BoundMobileId = req.MobileDeviceId;
+
+        // Ensure mobile is in the member list
+        var mobileMember = _group.Members.FirstOrDefault(m => m.DeviceId == req.MobileDeviceId);
+        if (mobileMember is null)
+        {
+            _group.Members.Add(new GroupMember
+            {
+                DeviceId = req.MobileDeviceId,
+                DisplayName = req.MobileDisplayName,
+                Os = "HarmonyOS",
+                Role = MemberRole.Mobile,
+                JoinedAt = DateTimeOffset.UtcNow
+            });
+        }
+        else
+        {
+            mobileMember.Role = MemberRole.Mobile;
+            mobileMember.DisplayName = req.MobileDisplayName;
+        }
+
+        client.MemberRole = MemberRole.Mobile;
+        client.RegisteredDeviceId = req.MobileDeviceId;
+        _groupStore?.SaveGroup(_group);
+
+        await SendAsync(client, MessageSerializer.Serialize(new MobileBindAcceptedMessage
+        {
+            GroupId = _group.GroupId,
+            MobileDeviceId = req.MobileDeviceId
+        }));
+
+        // Broadcast updated member list
+        var memberList = BuildGroupMemberInfoList();
+        await BroadcastToAllAsync(MessageSerializer.Serialize(new GroupMemberListMessage
+        {
+            Members = memberList
+        }));
+
+        GroupMemberListChanged?.Invoke(memberList);
+        Log?.Invoke($"Mobile bound: {req.MobileDisplayName} ({req.MobileDeviceId})");
+
+        TryDispatchPendingPanelLogins();
+    }
+
+    private async Task HandleMobileUnbind(ConnectedClient client, MobileUnbindMessage unbind)
+    {
+        if (_group is null) return;
+
+        // Only the bound mobile or server can unbind
+        if (client.MemberRole != MemberRole.Mobile && client.RegisteredDeviceId != _group.ServerDeviceId)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "permission_denied",
+                Message = "Only the bound mobile or server can unbind."
+            }));
+            return;
+        }
+
+        _group.BoundMobileId = null;
+        // Change mobile member role back to Member
+        var mobileMember = _group.Members.FirstOrDefault(m => m.Role == MemberRole.Mobile);
+        if (mobileMember is not null)
+            mobileMember.Role = MemberRole.Member;
+
+        _groupStore?.SaveGroup(_group);
+
+        // Broadcast updated member list
+        var memberList = BuildGroupMemberInfoList();
+        await BroadcastToAllAsync(MessageSerializer.Serialize(new GroupMemberListMessage
+        {
+            Members = memberList
+        }));
+
+        GroupMemberListChanged?.Invoke(memberList);
+        Log?.Invoke("Mobile unbound from group");
+    }
+
+    private void HandleAuthResponse(ConnectedClient client, AuthResponseMessage resp)
+    {
+        if (!_pendingAuths.TryRemove(resp.RequestId, out var pending)) return;
+
+        if (resp.Approved)
+        {
+            Log?.Invoke($"Auth request {resp.RequestId} approved");
+            pending.Approved?.Invoke();
+        }
+        else
+        {
+            Log?.Invoke($"Auth request {resp.RequestId} rejected");
+            pending.Rejected?.Invoke();
+        }
+    }
+
+    /// <summary>
+    /// Handle a server migration request (from mobile admin).
+    /// </summary>
+    private async Task HandleServerChangeRequest(ConnectedClient client, GroupServerChangeRequestMessage req)
+    {
+        if (_group is null) return;
+
+        // Only bound mobile can initiate server change
+        if (client.MemberRole != MemberRole.Mobile)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "permission_denied",
+                Message = "Only the bound mobile can initiate server migration."
+            }));
+            return;
+        }
+
+        // Target device must exist and be online
+        if (!_devices.TryGetValue(req.NewServerDeviceId, out var targetDevice))
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "device_not_found",
+                Message = "Target device is not online."
+            }));
+            return;
+        }
+
+        if (targetDevice.ClientId is null || !_clients.TryGetValue(targetDevice.ClientId, out var targetClient))
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "device_not_connected",
+                Message = "Target device is not connected."
+            }));
+            return;
+        }
+
+        // Send prepare message to the target device
+        var prepareMsg = MessageSerializer.Serialize(new GroupServerChangePrepareMessage
+        {
+            GroupId = _group.GroupId,
+            GroupSecret = _group.GroupSecret,
+            NewServerUrl = "" // Target device fills this in when it starts its server
+        });
+        await SendAsync(targetClient, prepareMsg);
+        Log?.Invoke($"Server migration: sent prepare to {req.NewServerDeviceId}");
+    }
+
+    /// <summary>
+    /// Handle a server change prepare response (target device confirms it has started a server).
+    /// </summary>
+    private async Task HandleServerChangePrepare(ConnectedClient client, GroupServerChangePrepareMessage prepare)
+    {
+        if (_group is null) return;
+        if (string.IsNullOrWhiteSpace(prepare.NewServerUrl)) return;
+
+        // Broadcast commit to all clients so they switch to the new server
+        var commitMsg = MessageSerializer.Serialize(new GroupServerChangeCommitMessage
+        {
+            NewServerUrl = prepare.NewServerUrl,
+            GroupId = _group.GroupId,
+            GroupSecret = _group.GroupSecret
+        });
+        await BroadcastToAllAsync(commitMsg);
+        Log?.Invoke($"Server migration: commit broadcast, new server={prepare.NewServerUrl}");
+
+        // The old server can now stop
+        ServerMigrationCommitted?.Invoke(prepare.NewServerUrl, _group.GroupSecret);
+    }
+
+    /// <summary>
+    /// Handle a group secret rotation request (from mobile admin).
+    /// </summary>
+    private async Task HandleSecretRotateRequest(ConnectedClient client, GroupSecretRotateRequestMessage req)
+    {
+        if (_group is null) return;
+
+        // Only bound mobile can rotate
+        if (client.MemberRole != MemberRole.Mobile)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "permission_denied",
+                Message = "Only the bound mobile can rotate the group secret."
+            }));
+            return;
+        }
+
+        // Generate new secret
+        var newSecret = GenerateGroupSecret();
+        _group.GroupSecret = newSecret;
+        AuthToken = newSecret;
+        _groupStore?.SaveGroup(_group);
+
+        // Broadcast to all online members
+        var doneMsg = MessageSerializer.Serialize(new GroupSecretRotateDoneMessage
+        {
+            NewSecret = newSecret
+        });
+        await BroadcastToAllAsync(doneMsg);
+        Log?.Invoke($"Group secret rotated to {newSecret[..8]}...");
+    }
+
+    /// <summary>Event raised when a server migration commit is broadcast.</summary>
+    public event Action<string, string>? ServerMigrationCommitted; // newUrl, groupSecret
+
+    /// <summary>
+    /// Build the group member info list with online status.
+    /// </summary>
+    public List<GroupMemberInfo> BuildGroupMemberInfoList()
+    {
+        if (_group is null) return new List<GroupMemberInfo>();
+
+        return _group.Members.Select(m => new GroupMemberInfo
+        {
+            DeviceId = m.DeviceId,
+            DisplayName = m.DisplayName,
+            Os = m.Os,
+            Role = m.Role.ToString(),
+            IsOnline = _devices.ContainsKey(m.DeviceId),
+            AvailableShells = m.AvailableShells
+        }).ToList();
+    }
+
+    private async Task BroadcastToOthersAsync(ConnectedClient sender, string message)
+    {
+        foreach (var c in _clients.Values)
+        {
+            if (c.ClientId != sender.ClientId)
+                await SendAsync(c, message);
+        }
+    }
+
+    private async Task BroadcastToAllAsync(string message)
+    {
+        foreach (var c in _clients.Values)
+        {
+            await SendAsync(c, message);
+        }
+    }
+
+    /// <summary>
+    /// Send an auth request to the bound mobile and execute callbacks on response.
+    /// Returns false if no mobile is bound.
+    /// </summary>
+    public async Task<bool> RequestMobileAuthAsync(
+        string action, string requesterId, string requesterName,
+        string? targetDeviceId, string description,
+        Action onApproved, Action onRejected, int timeoutSeconds = 60)
+    {
+        if (_group?.BoundMobileId is null)
+            return false;
+
+        var mobileClient = _clients.Values.FirstOrDefault(c =>
+            c.RegisteredDeviceId == _group.BoundMobileId);
+        if (mobileClient is null)
+            return false;
+
+        var requestId = Guid.NewGuid().ToString("N");
+        var pending = new PendingAuth
+        {
+            RequestId = requestId,
+            Approved = onApproved,
+            Rejected = onRejected
+        };
+        _pendingAuths[requestId] = pending;
+
+        await SendAsync(mobileClient, MessageSerializer.Serialize(new AuthRequestMessage
+        {
+            RequestId = requestId,
+            Action = action,
+            RequesterId = requesterId,
+            RequesterName = requesterName,
+            TargetDeviceId = targetDeviceId,
+            Description = description
+        }));
+
+        // Timeout cleanup
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(timeoutSeconds));
+            if (_pendingAuths.TryRemove(requestId, out var timedOut))
+            {
+                Log?.Invoke($"Auth request {requestId} timed out");
+                timedOut.Rejected?.Invoke();
+            }
+        });
+
+        return true;
+    }
+
     private static HttpListener CreateListener(IEnumerable<string> prefixes)
     {
         var listener = new HttpListener();
@@ -757,6 +1467,420 @@ public sealed class RelayServer : IDisposable
             lastException?.Message ?? "Unable to bind relay server listener.");
     }
 
+    private async Task HandleHttpRequestAsync(HttpListenerContext context, string path)
+    {
+        // Web panel routes (served before relay API routes)
+        if (_webPanelModule is not null && _webPanelModule.CanHandle(path))
+        {
+            var handled = await _webPanelModule.HandleAsync(
+                context,
+                path,
+                isAuthorized: () => IsAuthorized(context.Request),
+                buildStatusPayload: BuildStatusPayload,
+                getDeviceList: GetDeviceList,
+                getSessionsForDevice: GetSessionsForDevice,
+                getPanelPairingPayload: BuildPanelPairingPayload,
+                getPanelQrPayload: GetPanelQrPayload,
+                startPanelLogin: StartPanelLoginAsync,
+                getPanelLoginStatus: GetPanelLoginStatusPayload,
+                getGroupInfo: GetGroupInfo,
+                getGroupMembers: BuildGroupMemberInfoList);
+            if (handled) return;
+        }
+
+        if (path == "/ws/healthz")
+        {
+            await WriteJsonResponseAsync(context.Response, HttpStatusCode.OK, new
+            {
+                status = "ok",
+                startedAtUtc = _startedAtUtc,
+                uptimeSeconds = Math.Max(0, (int)(DateTimeOffset.UtcNow - _startedAtUtc).TotalSeconds)
+            });
+            return;
+        }
+
+        if (path == "/ws/status")
+        {
+            if (!IsAuthorized(context.Request))
+            {
+                await WriteJsonResponseAsync(
+                    context.Response,
+                    HttpStatusCode.Unauthorized,
+                    new ErrorMessage { Code = "unauthorized", Message = "Missing or invalid relay token." });
+                return;
+            }
+
+            await WriteJsonResponseAsync(context.Response, HttpStatusCode.OK, BuildStatusPayload());
+            return;
+        }
+
+        if (path == "/ws/" || path == "/ws")
+        {
+            await WriteJsonResponseAsync(context.Response, HttpStatusCode.OK, new
+            {
+                service = "PhoneShell Relay",
+                websocketPath = "/ws/",
+                healthPath = "/ws/healthz",
+                statusPath = "/ws/status",
+                authenticationRequired = !string.IsNullOrWhiteSpace(AuthToken)
+            });
+            return;
+        }
+
+        await WriteJsonResponseAsync(
+            context.Response,
+            HttpStatusCode.NotFound,
+            new ErrorMessage { Code = "not_found", Message = "Unknown relay endpoint." });
+    }
+
+    private object BuildStatusPayload()
+    {
+        var devices = _devices.Values
+            .OrderBy(device => device.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(device => device.DeviceId, StringComparer.Ordinal)
+            .Select(device => new
+            {
+                device.DeviceId,
+                device.DisplayName,
+                device.Os,
+                device.IsLocal,
+                AvailableShells = device.AvailableShells
+            })
+            .ToList();
+
+        return new
+        {
+            status = "ok",
+            startedAtUtc = _startedAtUtc,
+            uptimeSeconds = Math.Max(0, (int)(DateTimeOffset.UtcNow - _startedAtUtc).TotalSeconds),
+            connectedClientCount = _clients.Count,
+            registeredDeviceCount = _devices.Count,
+            listenPrefixes = _listenPrefixes.ToArray(),
+            reachableWebSocketUrls = _reachableWebSocketUrls.ToArray(),
+            devices
+        };
+    }
+
+    private object BuildPanelPairingPayload()
+    {
+        var group = _group;
+        var serverUrl = _reachableWebSocketUrls.FirstOrDefault() ?? string.Empty;
+        var qrPayload = GetPanelQrPayload() ?? string.Empty;
+        var boundMobileId = group?.BoundMobileId;
+        var boundMobileOnline = false;
+        if (!string.IsNullOrWhiteSpace(boundMobileId))
+        {
+            boundMobileOnline = _clients.Values.Any(c => c.RegisteredDeviceId == boundMobileId);
+        }
+
+        return new
+        {
+            requiresAuth = !string.IsNullOrWhiteSpace(AuthToken),
+            hasGroup = group is not null,
+            groupId = group?.GroupId ?? string.Empty,
+            serverUrl,
+            qrPayload,
+            hasBoundMobile = !string.IsNullOrWhiteSpace(boundMobileId),
+            boundMobileOnline
+        };
+    }
+
+    private string? GetPanelQrPayload()
+    {
+        if (_group is null)
+            return null;
+
+        var serverUrl = _reachableWebSocketUrls.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(serverUrl))
+            return null;
+
+        var builder = new QrPayloadBuilder();
+        return builder.BuildGroupBind(serverUrl, _group.GroupId, _group.GroupSecret);
+    }
+
+    private async Task<object> StartPanelLoginAsync(HttpListenerRequest request)
+    {
+        CleanupExpiredPanelAuth();
+
+        var requestId = Guid.NewGuid().ToString("N");
+        var token = GeneratePanelToken();
+        var requesterAddress = request.RemoteEndPoint?.Address?.ToString();
+
+        var session = new PanelLoginSession
+        {
+            RequestId = requestId,
+            Token = token,
+            Status = PanelLoginState.AwaitingMobile,
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            ExpiresAtUtc = DateTimeOffset.UtcNow.Add(_panelLoginTtl),
+            RequesterAddress = requesterAddress,
+            Message = "Waiting for mobile scan."
+        };
+        _panelLoginSessions[requestId] = session;
+
+        await TryDispatchPanelLoginSessionAsync(session);
+
+        return new
+        {
+            requestId,
+            status = PanelLoginStateToString(session.Status),
+            message = session.Message ?? string.Empty,
+            expiresAtUtc = session.ExpiresAtUtc
+        };
+    }
+
+    private object? GetPanelLoginStatusPayload(string requestId)
+    {
+        CleanupExpiredPanelAuth();
+
+        if (!_panelLoginSessions.TryGetValue(requestId, out var session))
+            return null;
+
+        if (session.Status != PanelLoginState.Approved &&
+            DateTimeOffset.UtcNow > session.ExpiresAtUtc)
+        {
+            session.Status = PanelLoginState.Expired;
+            session.Message ??= "Request expired.";
+        }
+
+        return new
+        {
+            requestId = session.RequestId,
+            status = PanelLoginStateToString(session.Status),
+            message = session.Message ?? string.Empty,
+            token = session.Status == PanelLoginState.Approved ? session.Token : null,
+            expiresAtUtc = session.ExpiresAtUtc
+        };
+    }
+
+    private async Task TryDispatchPanelLoginSessionAsync(PanelLoginSession session)
+    {
+        if (session.Status is PanelLoginState.Approved or PanelLoginState.Rejected or PanelLoginState.Expired)
+            return;
+
+        if (_group?.BoundMobileId is null)
+        {
+            session.Status = PanelLoginState.AwaitingMobile;
+            session.Message = "Waiting for mobile scan.";
+            return;
+        }
+
+        var mobileClient = _clients.Values.FirstOrDefault(c => c.RegisteredDeviceId == _group.BoundMobileId);
+        if (mobileClient is null)
+        {
+            session.Status = PanelLoginState.AwaitingMobile;
+            session.Message = "Mobile is offline.";
+            return;
+        }
+
+        if (_pendingAuths.ContainsKey(session.RequestId))
+        {
+            session.Status = PanelLoginState.AwaitingApproval;
+            session.Message = "Waiting for mobile approval.";
+            return;
+        }
+
+        session.Status = PanelLoginState.AwaitingApproval;
+        session.Message = "Waiting for mobile approval.";
+
+        _pendingAuths[session.RequestId] = new PendingAuth
+        {
+            RequestId = session.RequestId,
+            Approved = () => ApprovePanelLogin(session),
+            Rejected = () => RejectPanelLogin(session, "Rejected by mobile.")
+        };
+
+        var description = string.IsNullOrWhiteSpace(session.RequesterAddress)
+            ? "Web panel login request."
+            : $"Web panel login request from {session.RequesterAddress}.";
+
+        await SendAsync(mobileClient, MessageSerializer.Serialize(new AuthRequestMessage
+        {
+            RequestId = session.RequestId,
+            Action = "panel.login",
+            RequesterId = "web-panel",
+            RequesterName = "Web Panel",
+            TargetDeviceId = null,
+            Description = description
+        }));
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(60));
+            if (_pendingAuths.TryRemove(session.RequestId, out var timedOut))
+            {
+                Log?.Invoke($"Panel login request {session.RequestId} timed out");
+                timedOut.Rejected?.Invoke();
+            }
+        });
+    }
+
+    private void ApprovePanelLogin(PanelLoginSession session)
+    {
+        session.Status = PanelLoginState.Approved;
+        session.Message = "Approved.";
+        _panelAccessTokens[session.Token] = new PanelAccessToken
+        {
+            Token = session.Token,
+            ExpiresAtUtc = DateTimeOffset.UtcNow.Add(_panelTokenTtl)
+        };
+    }
+
+    private void RejectPanelLogin(PanelLoginSession session, string message)
+    {
+        session.Status = PanelLoginState.Rejected;
+        session.Message = message;
+    }
+
+    private void TryDispatchPendingPanelLogins()
+    {
+        foreach (var session in _panelLoginSessions.Values)
+        {
+            if (session.Status == PanelLoginState.AwaitingMobile)
+            {
+                _ = TryDispatchPanelLoginSessionAsync(session);
+            }
+        }
+    }
+
+    private void CleanupExpiredPanelAuth()
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var kvp in _panelAccessTokens)
+        {
+            if (kvp.Value.ExpiresAtUtc <= now)
+                _panelAccessTokens.TryRemove(kvp.Key, out _);
+        }
+
+        foreach (var kvp in _panelLoginSessions)
+        {
+            if (kvp.Value.Status == PanelLoginState.Approved)
+                continue;
+
+            if (kvp.Value.ExpiresAtUtc <= now)
+            {
+                kvp.Value.Status = PanelLoginState.Expired;
+                kvp.Value.Message ??= "Request expired.";
+            }
+        }
+    }
+
+    private bool IsPanelTokenAuthorized(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            return false;
+
+        if (_panelAccessTokens.TryGetValue(token, out var entry))
+        {
+            if (entry.ExpiresAtUtc > DateTimeOffset.UtcNow)
+                return true;
+
+            _panelAccessTokens.TryRemove(token, out _);
+        }
+
+        return false;
+    }
+
+    private static string PanelLoginStateToString(PanelLoginState state) => state switch
+    {
+        PanelLoginState.AwaitingMobile => "awaiting_mobile",
+        PanelLoginState.AwaitingApproval => "awaiting_approval",
+        PanelLoginState.Approved => "approved",
+        PanelLoginState.Rejected => "rejected",
+        PanelLoginState.Expired => "expired",
+        _ => "unknown"
+    };
+
+    private static string GeneratePanelToken()
+    {
+        Span<byte> buffer = stackalloc byte[32];
+        RandomNumberGenerator.Fill(buffer);
+        return Convert.ToBase64String(buffer)
+            .Replace('+', '-')
+            .Replace('/', '_')
+            .TrimEnd('=');
+    }
+
+    private bool IsAuthorized(HttpListenerRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(AuthToken))
+            return true;
+
+        var bearerHeader = request.Headers["Authorization"];
+        if (!string.IsNullOrWhiteSpace(bearerHeader) &&
+            bearerHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) &&
+            (TokensEqual(bearerHeader["Bearer ".Length..].Trim(), AuthToken) ||
+             IsPanelTokenAuthorized(bearerHeader["Bearer ".Length..].Trim())))
+        {
+            return true;
+        }
+
+        var tokenHeader = request.Headers["X-PhoneShell-Token"];
+        if (!string.IsNullOrWhiteSpace(tokenHeader))
+        {
+            var trimmed = tokenHeader.Trim();
+            if (TokensEqual(trimmed, AuthToken) || IsPanelTokenAuthorized(trimmed))
+                return true;
+        }
+
+        // Support token via query string (for browser WebSocket connections)
+        var queryToken = request.QueryString["token"];
+        if (!string.IsNullOrWhiteSpace(queryToken))
+        {
+            var trimmed = queryToken.Trim();
+            return TokensEqual(trimmed, AuthToken) || IsPanelTokenAuthorized(trimmed);
+        }
+
+        return false;
+    }
+
+    private static bool TokensEqual(string left, string right)
+    {
+        var leftBytes = Encoding.UTF8.GetBytes(left);
+        var rightBytes = Encoding.UTF8.GetBytes(right);
+        return leftBytes.Length == rightBytes.Length &&
+               CryptographicOperations.FixedTimeEquals(leftBytes, rightBytes);
+    }
+
+    private static bool IsWebSocketPath(string path) =>
+        path == "/ws/" || path == "/ws";
+
+    private static string NormalizeRequestPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return "/";
+
+        var normalized = path.Trim();
+        if (normalized.Length > 1 && normalized.EndsWith('/'))
+            normalized = normalized.TrimEnd('/');
+
+        return normalized switch
+        {
+            "/ws" => "/ws",
+            "/ws/healthz" => "/ws/healthz",
+            "/ws/status" => "/ws/status",
+            "/" => "/",
+            "/panel" => "/panel",
+            _ when normalized.StartsWith("/panel/", StringComparison.Ordinal) => normalized,
+            _ when normalized.StartsWith("/api/", StringComparison.Ordinal) => normalized,
+            _ when path.EndsWith('/') => normalized + "/",
+            _ => normalized
+        };
+    }
+
+    private static async Task WriteJsonResponseAsync(HttpListenerResponse response, HttpStatusCode statusCode, object payload)
+    {
+        var json = JsonSerializer.Serialize(payload);
+        var bytes = Encoding.UTF8.GetBytes(json);
+
+        response.StatusCode = (int)statusCode;
+        response.ContentType = "application/json; charset=utf-8";
+        response.ContentEncoding = Encoding.UTF8;
+        response.ContentLength64 = bytes.Length;
+        await response.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+        response.Close();
+    }
+
     private sealed class ConnectedDevice
     {
         public string DeviceId { get; init; } = string.Empty;
@@ -774,7 +1898,41 @@ public sealed class RelayServer : IDisposable
         public string? RegisteredDeviceId { get; set; }
         public string? SubscribedDeviceId { get; set; }
         public string? SubscribedSessionId { get; set; }
+        public MemberRole MemberRole { get; set; } = MemberRole.Member;
         public SemaphoreSlim SendLock { get; } = new(1, 1);
+    }
+
+    private sealed class PendingAuth
+    {
+        public string RequestId { get; init; } = string.Empty;
+        public Action? Approved { get; init; }
+        public Action? Rejected { get; init; }
+    }
+
+    private sealed class PanelLoginSession
+    {
+        public string RequestId { get; init; } = string.Empty;
+        public string Token { get; init; } = string.Empty;
+        public PanelLoginState Status { get; set; }
+        public DateTimeOffset CreatedAtUtc { get; init; }
+        public DateTimeOffset ExpiresAtUtc { get; set; }
+        public string? RequesterAddress { get; init; }
+        public string? Message { get; set; }
+    }
+
+    private sealed class PanelAccessToken
+    {
+        public string Token { get; init; } = string.Empty;
+        public DateTimeOffset ExpiresAtUtc { get; init; }
+    }
+
+    private enum PanelLoginState
+    {
+        AwaitingMobile,
+        AwaitingApproval,
+        Approved,
+        Rejected,
+        Expired
     }
 }
 

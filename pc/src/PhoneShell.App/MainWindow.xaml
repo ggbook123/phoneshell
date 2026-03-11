@@ -180,6 +180,44 @@
                                          Style="{StaticResource DarkTextBox}" Margin="0,0,0,12"
                                          IsEnabled="{Binding IsRelayServer, Converter={StaticResource InvertBoolConverter}}" />
 
+                                <TextBlock Text="GROUP SECRET" Style="{StaticResource SectionLabel}" />
+                                <Grid Margin="0,0,0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="6" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Grid.Column="0"
+                                             Text="{Binding GroupSecret, UpdateSourceTrigger=PropertyChanged}"
+                                             Style="{StaticResource DarkTextBox}"
+                                             FontFamily="{StaticResource MonoFont}" FontSize="10.5" />
+                                    <Button Grid.Column="2" Content="Copy" Style="{StaticResource GhostButton}"
+                                            Width="58" Height="26"
+                                            Command="{Binding CopyGroupSecretCommand}" />
+                                </Grid>
+                                <TextBlock Text="Share this key with other PCs to join the group"
+                                           FontSize="10" Foreground="{StaticResource Text3Brush}"
+                                           TextWrapping="Wrap" Margin="0,0,0,12" />
+
+                                <TextBlock Text="GROUP ID" Style="{StaticResource SectionLabel}"
+                                           Visibility="{Binding IsGroupJoined, Converter={StaticResource BoolToVisConverter}}" />
+                                <Grid Margin="0,0,0,12"
+                                      Visibility="{Binding IsGroupJoined, Converter={StaticResource BoolToVisConverter}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="6" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Grid.Column="0"
+                                             Text="{Binding GroupId, Mode=OneWay}"
+                                             Style="{StaticResource DarkTextBox}"
+                                             FontFamily="{StaticResource MonoFont}" FontSize="10.5"
+                                             IsReadOnly="True" />
+                                    <Button Grid.Column="2" Content="Copy" Style="{StaticResource GhostButton}"
+                                            Width="58" Height="26"
+                                            Command="{Binding CopyGroupIdCommand}" />
+                                </Grid>
+
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <Button Content="Save" Style="{StaticResource GhostButton}"
                                             Width="70" Margin="0,0,6,0"
@@ -196,6 +234,47 @@
 
                                 <TextBlock Text="{Binding ServerStatus}" FontSize="11"
                                            Foreground="{StaticResource Text3Brush}" TextWrapping="Wrap" />
+
+                                <!-- Group status -->
+                                <TextBlock Text="{Binding GroupStatus}" FontSize="11"
+                                           Foreground="{StaticResource AccentBrush}" TextWrapping="Wrap"
+                                           Margin="0,4,0,0"
+                                           Visibility="{Binding IsGroupJoined, Converter={StaticResource BoolToVisConverter}}" />
+
+                                <!-- Group member list -->
+                                <ItemsControl ItemsSource="{Binding GroupMembers}" Margin="0,6,0,0"
+                                              Visibility="{Binding IsGroupJoined, Converter={StaticResource BoolToVisConverter}}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Padding="6,3" Margin="0,1" CornerRadius="4"
+                                                    Background="{StaticResource Surface3Brush}">
+                                                <DockPanel>
+                                                    <Ellipse DockPanel.Dock="Left" Width="6" Height="6"
+                                                             VerticalAlignment="Center" Margin="0,0,6,0">
+                                                        <Ellipse.Style>
+                                                            <Style TargetType="Ellipse">
+                                                                <Setter Property="Fill" Value="{StaticResource Text3Brush}" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsOnline}" Value="True">
+                                                                        <Setter Property="Fill" Value="{StaticResource AccentBrush}" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Ellipse.Style>
+                                                    </Ellipse>
+                                                    <TextBlock DockPanel.Dock="Right" Text="{Binding Role}"
+                                                               FontSize="9" Foreground="{StaticResource Text3Brush}"
+                                                               VerticalAlignment="Center"
+                                                               FontFamily="{StaticResource MonoFont}" />
+                                                    <TextBlock Text="{Binding DisplayName}" FontSize="11"
+                                                               Foreground="{StaticResource Text2Brush}"
+                                                               VerticalAlignment="Center"
+                                                               FontFamily="{StaticResource BodyFont}" />
+                                                </DockPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
                             </StackPanel>
                         </Expander>
 
@@ -241,6 +320,60 @@
                                 <TextBlock Text="{Binding SessionStatus}" Foreground="{StaticResource Text2Brush}"
                                            FontSize="12" TextWrapping="Wrap" />
                             </StackPanel>
+                        </Expander>
+
+                        <!-- ===== Group Devices ===== -->
+                        <Expander DockPanel.Dock="Top" Header="Group Devices"
+                                  Style="{StaticResource SidebarExpander}" IsExpanded="False"
+                                  Visibility="{Binding IsGroupJoined, Converter={StaticResource BoolToVisConverter}}">
+                            <ItemsControl ItemsSource="{Binding GroupMembers}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="8,6" Margin="0,2" CornerRadius="6"
+                                                Background="{StaticResource Surface3Brush}">
+                                            <StackPanel>
+                                                <DockPanel>
+                                                    <Ellipse Width="6" Height="6" Margin="0,0,6,0"
+                                                             VerticalAlignment="Center" DockPanel.Dock="Left">
+                                                        <Ellipse.Style>
+                                                            <Style TargetType="Ellipse">
+                                                                <Setter Property="Fill" Value="#555555" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsOnline}" Value="True">
+                                                                        <Setter Property="Fill" Value="#00D4AA" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Ellipse.Style>
+                                                    </Ellipse>
+                                                    <TextBlock Text="{Binding Os}" DockPanel.Dock="Right"
+                                                               Foreground="{StaticResource Text3Brush}" FontSize="10"
+                                                               VerticalAlignment="Center" />
+                                                    <TextBlock Text="{Binding DisplayName}"
+                                                               Foreground="{StaticResource Text1Brush}" FontSize="12"
+                                                               FontWeight="Medium" VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                </DockPanel>
+                                                <ItemsControl ItemsSource="{Binding AvailableShells}" Margin="0,4,0,0">
+                                                    <ItemsControl.ItemsPanel>
+                                                        <ItemsPanelTemplate>
+                                                            <WrapPanel />
+                                                        </ItemsPanelTemplate>
+                                                    </ItemsControl.ItemsPanel>
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Button Content="{Binding}" Style="{StaticResource GhostButton}"
+                                                                    FontSize="10" Padding="6,2" Margin="0,0,4,2"
+                                                                    Click="RemoteShellButton_Click"
+                                                                    Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Border}}" />
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </Expander>
 
                         <!-- ===== QR Code ===== -->
@@ -577,6 +710,20 @@
                                                                 </Style>
                                                             </Ellipse.Style>
                                                         </Ellipse>
+                                                        <!-- Remote terminal indicator -->
+                                                        <TextBlock Text="&#x2B21;" FontSize="8" VerticalAlignment="Center" Margin="0,0,4,0">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Foreground" Value="#FF9800" />
+                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsRemote}" Value="True">
+                                                                            <Setter Property="Visibility" Value="Visible" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
                                                         <TextBlock Text="{Binding Title}" FontSize="12"
                                                                    VerticalAlignment="Center" Margin="0,0,8,0"
                                                                    FontFamily="{StaticResource BodyFont}">

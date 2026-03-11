@@ -52,6 +52,21 @@ export class AppStrings {
   static readonly SESSION_LIST_TITLE: string = '会话列表';
   static readonly EMPTY_SESSION_LIST: string = '暂无活动会话';
   static readonly NEW_SESSION_BUTTON: string = '新建会话';
+
+  // Group-related strings
+  static readonly GROUP_SECRET_HINT: string = '输入群组密钥';
+  static readonly GROUP_SECRET_LABEL: string = '群组密钥';
+  static readonly GROUP_JOIN_BUTTON: string = '加入群组';
+  static readonly GROUP_STATUS_JOINED: string = '已加入群组';
+  static readonly GROUP_STATUS_NOT_JOINED: string = '未加入群组';
+  static readonly GROUP_MEMBERS_TITLE: string = '群组成员';
+  static readonly GROUP_MANAGE_TITLE: string = '群组管理';
+  static readonly SCAN_CONNECT_BUTTON: string = '扫码连接';
+  static readonly AUTH_REQUEST_TITLE: string = '授权请求';
+  static readonly AUTH_APPROVE_BUTTON: string = '批准';
+  static readonly AUTH_REJECT_BUTTON: string = '拒绝';
+  static readonly MOBILE_BIND_SUCCESS: string = '手机绑定成功';
+  static readonly MOBILE_BIND_FAILED: string = '手机绑定失败';
 }
 
 export enum ConnectionState {
@@ -63,4 +78,6 @@ export enum ConnectionState {
 export class StorageKeys {
   static readonly CONNECTION_HISTORY: string = 'connection_history';
   static readonly LAST_SERVER_URL: string = 'last_server_url';
+  static readonly GROUP_SECRET: string = 'group_secret';
+  static readonly MOBILE_DEVICE_ID: string = 'mobile_device_id';
 }

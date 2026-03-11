@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -39,6 +40,10 @@ public sealed class TerminalTab : ObservableObject, IDisposable
     private bool _isMobileViewportLocked;
     private bool _isActive;
     private int _tabNumber;
+    private bool _isRemote;
+    private string _remoteDeviceId = string.Empty;
+    private string _remoteDeviceName = string.Empty;
+    private string _remoteSessionId = string.Empty;
 
     public TerminalTab(string tabId, ShellInfo shell, int tabNumber)
     {
@@ -46,6 +51,23 @@ public sealed class TerminalTab : ObservableObject, IDisposable
         Shell = shell;
         _tabNumber = tabNumber;
         _title = $"{shell.DisplayName} #{tabNumber}";
+        SessionManager = new TerminalSessionManager();
+        OutputBuffer = new TerminalOutputBuffer();
+        VirtualScreen = new VirtualScreen();
+        OutputStabilizer = new TerminalOutputStabilizer();
+    }
+
+    /// <summary>Constructor for remote tabs (PC-to-PC remote terminal).</summary>
+    public TerminalTab(string tabId, string remoteDeviceId, string remoteDeviceName,
+                       string shellDisplayName, int tabNumber)
+    {
+        TabId = tabId;
+        Shell = new ShellInfo(shellDisplayName, shellDisplayName, "", "");
+        _tabNumber = tabNumber;
+        _isRemote = true;
+        _remoteDeviceId = remoteDeviceId;
+        _remoteDeviceName = remoteDeviceName;
+        _title = $"[{remoteDeviceName}] {shellDisplayName} #{tabNumber}";
         SessionManager = new TerminalSessionManager();
         OutputBuffer = new TerminalOutputBuffer();
         VirtualScreen = new VirtualScreen();
@@ -129,6 +151,16 @@ public sealed class TerminalTab : ObservableObject, IDisposable
     {
         get => _isActive;
         set => SetProperty(ref _isActive, value);
+    }
+
+    public bool IsRemote => _isRemote;
+    public string RemoteDeviceId => _remoteDeviceId;
+    public string RemoteDeviceName => _remoteDeviceName;
+
+    public string RemoteSessionId
+    {
+        get => _remoteSessionId;
+        set => SetProperty(ref _remoteSessionId, value);
     }
 
     public void Dispose()
@@ -230,6 +262,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private RelayServer? _relayServer;
     private RelayClient? _relayClient;
 
+    // Group fields
+    private string _groupSecret = string.Empty;
+    private string _groupId = string.Empty;
+    private bool _isGroupJoined;
+    private string _groupStatus = string.Empty;
+
     // Shell selection fields
     private readonly IShellLocator _shellLocator;
     private ObservableCollection<ShellInfo> _availableShells = new();
@@ -259,6 +297,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _isRelayServer = _serverSettings.IsRelayServer;
         _serverPort = _serverSettings.Port;
         _relayServerAddress = _serverSettings.RelayServerAddress ?? string.Empty;
+        _groupSecret = _serverSettings.GroupSecret ?? string.Empty;
 
         RefreshQrCommand = new RelayCommand(RefreshQr);
         ForceDisconnectCommand = new RelayCommand(ForceDisconnect, () => IsMobileConnected);
@@ -266,6 +305,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SaveAiSettingsCommand = new RelayCommand(SaveAiSettings);
         StopAutoExecCommand = new RelayCommand(StopAutoExec);
         SaveServerSettingsCommand = new RelayCommand(SaveServerSettings);
+        CopyGroupSecretCommand = new RelayCommand(() => CopyToClipboard(GroupSecret),
+            () => !string.IsNullOrWhiteSpace(GroupSecret));
+        CopyGroupIdCommand = new RelayCommand(() => CopyToClipboard(GroupId),
+            () => !string.IsNullOrWhiteSpace(GroupId));
         RefreshShellsCommand = new RelayCommand(RefreshShells);
         StartNetworkCommand = new AsyncRelayCommand(StartNetworkAsync, () => !IsServerRunning);
         StopNetworkCommand = new RelayCommand(StopNetwork, () => IsServerRunning);
@@ -469,6 +512,41 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _relayReachableAddresses, value);
     }
 
+    // Group properties
+    public string GroupSecret
+    {
+        get => _groupSecret;
+        set
+        {
+            if (SetProperty(ref _groupSecret, value))
+                CopyGroupSecretCommand.RaiseCanExecuteChanged();
+        }
+    }
+
+    public string GroupId
+    {
+        get => _groupId;
+        private set
+        {
+            if (SetProperty(ref _groupId, value))
+                CopyGroupIdCommand.RaiseCanExecuteChanged();
+        }
+    }
+
+    public bool IsGroupJoined
+    {
+        get => _isGroupJoined;
+        private set => SetProperty(ref _isGroupJoined, value);
+    }
+
+    public string GroupStatus
+    {
+        get => _groupStatus;
+        private set => SetProperty(ref _groupStatus, value);
+    }
+
+    public ObservableCollection<GroupMemberInfo> GroupMembers { get; } = new();
+
     // Shell selection properties
     public ObservableCollection<ShellInfo> AvailableShells
     {
@@ -512,6 +590,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand SaveAiSettingsCommand { get; }
     public RelayCommand StopAutoExecCommand { get; }
     public RelayCommand SaveServerSettingsCommand { get; }
+    public RelayCommand CopyGroupSecretCommand { get; }
+    public RelayCommand CopyGroupIdCommand { get; }
     public RelayCommand RefreshShellsCommand { get; }
     public AsyncRelayCommand StartNetworkCommand { get; }
     public RelayCommand StopNetworkCommand { get; }
@@ -564,6 +644,58 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         return tab;
     }
 
+    public TerminalTab CreateRemoteTab(string remoteDeviceId, string remoteDeviceName,
+                                        string shellId, string remoteSessionId, int cols, int rows)
+    {
+        _tabCounter++;
+        var tabId = Guid.NewGuid().ToString("N")[..8];
+        var tab = new TerminalTab(tabId, remoteDeviceId, remoteDeviceName, shellId, _tabCounter);
+        tab.RemoteSessionId = remoteSessionId;
+        tab.Cols = cols;
+        tab.Rows = rows;
+        tab.VirtualScreen.Resize(cols, rows);
+
+        Tabs.Add(tab);
+        OnPropertyChanged(nameof(HasTabs));
+        SetActiveTab(tab);
+
+        return tab;
+    }
+
+    /// <summary>
+    /// Write input to a tab — routes to local ConPTY or remote device as appropriate.
+    /// </summary>
+    public void WriteTabInput(TerminalTab tab, string data)
+    {
+        if (tab.IsRemote)
+        {
+            if (_relayClient is not null && _relayClient.IsConnected)
+                _ = _relayClient.SendTerminalInputAsync(tab.RemoteDeviceId, tab.RemoteSessionId, data);
+            else if (_relayServer is not null && _relayServer.IsRunning)
+                _ = _relayServer.ForwardTerminalInputToDevice(tab.RemoteDeviceId, tab.RemoteSessionId, data);
+        }
+        else
+        {
+            tab.SessionManager.WriteInput(data);
+        }
+    }
+
+    /// <summary>
+    /// Request to open a terminal on a remote device.
+    /// </summary>
+    public async Task OpenRemoteTerminalAsync(string deviceId, string shellId)
+    {
+        if (_relayClient is not null && _relayClient.IsConnected)
+        {
+            await _relayClient.SendTerminalOpenAsync(deviceId, shellId);
+            OnNetworkLog($"Sent terminal.open to device={deviceId}, shell={shellId}");
+        }
+        else if (_relayServer is not null && _relayServer.IsRunning)
+        {
+            await _relayServer.SendTerminalOpenToDevice(deviceId, shellId, _identity.DeviceId);
+        }
+    }
+
     private void StartTabTerminal(TerminalTab tab, int cols, int rows)
     {
         if (tab.SessionManager.IsRunning) return;
@@ -607,8 +739,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var tab = Tabs.FirstOrDefault(t => t.TabId == tabId);
         if (tab is null) return;
 
+        // Remote tab: notify remote device to close
+        if (tab.IsRemote && !string.IsNullOrEmpty(tab.RemoteSessionId))
+        {
+            if (_relayClient is not null && _relayClient.IsConnected)
+                _ = _relayClient.SendTerminalCloseAsync(tab.RemoteDeviceId, tab.RemoteSessionId);
+        }
+
         var index = Tabs.IndexOf(tab);
-        NotifyLocalTerminalClosed(tab);
+        if (!tab.IsRemote)
+            NotifyLocalTerminalClosed(tab);
         tab.SessionManager.OutputReceived -= text => OnTabOutput(tab, text);
         tab.Dispose();
         Tabs.Remove(tab);
@@ -777,7 +917,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private void UpdateExecuteTerminalCommand()
     {
         if (ActiveTab is not null)
-            ExecuteTerminalCommand = cmd => ActiveTab.SessionManager.WriteInput(cmd);
+        {
+            if (ActiveTab.IsRemote)
+                ExecuteTerminalCommand = cmd => WriteTabInput(ActiveTab, cmd);
+            else
+                ExecuteTerminalCommand = cmd => ActiveTab.SessionManager.WriteInput(cmd);
+        }
         else
             ExecuteTerminalCommand = null;
     }
@@ -886,7 +1031,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void RefreshQr()
     {
-        QrPayload = _payloadBuilder.Build(_identity);
+        // In server mode with a group, generate a binding QR code
+        if (IsRelayServer && _relayServer?.Group is not null && !string.IsNullOrEmpty(PrimaryRelayAddress))
+        {
+            var group = _relayServer.Group;
+            QrPayload = _payloadBuilder.BuildGroupBind(PrimaryRelayAddress, group.GroupId, group.GroupSecret);
+        }
+        else
+        {
+            QrPayload = _payloadBuilder.Build(_identity);
+        }
         QrImage = _qrCodeService.Generate(QrPayload);
     }
 
@@ -924,8 +1078,40 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _serverSettings.IsRelayServer = IsRelayServer;
         _serverSettings.Port = ServerPort;
         _serverSettings.RelayServerAddress = string.IsNullOrWhiteSpace(RelayServerAddress) ? null : RelayServerAddress;
+        _serverSettings.GroupSecret = string.IsNullOrWhiteSpace(GroupSecret) ? null : GroupSecret;
         _serverSettingsStore.Save(_serverSettings);
         UpdateRelayAddressPreview();
+    }
+
+    private void ClearPersistedGroupIfRequested()
+    {
+        if (!IsRelayServer || !string.IsNullOrWhiteSpace(GroupSecret))
+            return;
+
+        try
+        {
+            var groupFile = Path.Combine(AppContext.BaseDirectory, "data", "group.json");
+            if (File.Exists(groupFile))
+                File.Delete(groupFile);
+        }
+        catch (Exception ex)
+        {
+            ServerStatus = $"Failed to clear group: {ex.Message}";
+        }
+    }
+
+    private void CopyToClipboard(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+
+        try
+        {
+            _dispatcher.Invoke(() => Clipboard.SetText(text));
+        }
+        catch (Exception ex)
+        {
+            ServerStatus = $"Copy failed: {ex.Message}";
+        }
     }
 
     private void RefreshShells()
@@ -954,6 +1140,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         SaveServerSettings();
+        ClearPersistedGroupIfRequested();
 
         try
         {
@@ -968,18 +1155,52 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayServer.LocalTerminalSnapshotProvider = CaptureTabTerminalViewAsync;
                 _relayServer.LocalTerminalSizeProvider = GetTabTerminalSize;
                 _relayServer.LocalSessionListProvider = GetLocalSessionList;
+                _relayServer.GroupMemberListChanged += OnGroupMemberListChanged;
+                _relayServer.RemoteTerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
+                _relayServer.RemoteTerminalOutputReceived += OnRemoteTerminalOutputReceived;
+                _relayServer.RemoteTerminalClosedReceived += OnRemoteTerminalClosedReceived;
 
-                await _relayServer.StartAsync(ServerPort);
+                // Use GroupSecret as AuthToken if provided
+                if (!string.IsNullOrWhiteSpace(GroupSecret))
+                    _relayServer.AuthToken = GroupSecret;
+
+                await _relayServer.StartAsync(ServerPort, AppContext.BaseDirectory);
 
                 // Register local device
                 var shellIds = AvailableShells.Select(s => s.Id).ToList();
-                _relayServer.RegisterLocalDevice(_identity.DeviceId, _identity.DisplayName, shellIds);
+                _relayServer.RegisterLocalDevice(_identity.DeviceId, _identity.DisplayName, "Windows", shellIds);
+
+                // Update UI with group info
+                if (_relayServer.Group is not null)
+                {
+                    GroupId = _relayServer.Group.GroupId;
+                    GroupSecret = _relayServer.Group.GroupSecret;
+                    IsGroupJoined = true;
+                    GroupStatus = $"Group created: {GroupId}";
+
+                    // Update GroupMembers from server
+                    var members = _relayServer.BuildGroupMemberInfoList();
+                    _dispatcher.InvokeAsync(() =>
+                    {
+                        GroupMembers.Clear();
+                        foreach (var m in members)
+                            GroupMembers.Add(m);
+                    });
+
+                    // Save the GroupSecret back to settings
+                    _serverSettings.GroupSecret = GroupSecret;
+                    _serverSettingsStore.Save(_serverSettings);
+                }
 
                 IsServerRunning = true;
                 var reachableUrls = _relayServer.ReachableWebSocketUrls;
                 PrimaryRelayAddress = reachableUrls.FirstOrDefault() ??
                                       RelayAddressHelper.GetLocalhostWebSocketUrl(ServerPort);
                 RelayReachableAddresses = string.Join(Environment.NewLine, reachableUrls);
+
+                // Generate QR with group info for mobile binding (must be after PrimaryRelayAddress is set)
+                RefreshQr();
+
                 ServerStatus = $"Relay server running. Mobile can connect to {PrimaryRelayAddress}";
                 ConnectionStatus = $"Listening at {PrimaryRelayAddress}";
             }
@@ -993,13 +1214,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     DeviceId = _identity.DeviceId,
                     DisplayName = _identity.DisplayName,
                     Os = "Windows",
-                    AvailableShells = AvailableShells.Select(s => s.Id).ToList()
+                    AvailableShells = AvailableShells.Select(s => s.Id).ToList(),
+                    GroupSecret = GroupSecret
                 };
                 _relayClient.Log += OnNetworkLog;
                 _relayClient.ConnectionStateChanged += OnClientConnectionStateChanged;
                 _relayClient.TerminalInputReceived += OnRemoteTerminalInput;
                 _relayClient.TerminalResizeRequested += OnRemoteTerminalResize;
                 _relayClient.TerminalCloseRequested += OnRemoteTerminalCloseRequested;
+                _relayClient.GroupJoined += OnGroupJoined;
+                _relayClient.GroupJoinRejected += OnGroupJoinRejected;
+                _relayClient.GroupMemberChanged += OnGroupMemberListChanged;
+                _relayClient.TerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
+                _relayClient.TerminalOutputReceived += OnRemoteTerminalOutputReceived;
+                _relayClient.TerminalClosedReceived += OnRemoteTerminalClosedReceived;
 
                 _ = _relayClient.ConnectAsync(url);
 
@@ -1031,6 +1259,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayServer.LocalTerminalSnapshotProvider = null;
             _relayServer.LocalTerminalSizeProvider = null;
             _relayServer.LocalSessionListProvider = null;
+            _relayServer.GroupMemberListChanged -= OnGroupMemberListChanged;
+            _relayServer.RemoteTerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
+            _relayServer.RemoteTerminalOutputReceived -= OnRemoteTerminalOutputReceived;
+            _relayServer.RemoteTerminalClosedReceived -= OnRemoteTerminalClosedReceived;
             _relayServer.Dispose();
             _relayServer = null;
         }
@@ -1042,12 +1274,21 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayClient.TerminalInputReceived -= OnRemoteTerminalInput;
             _relayClient.TerminalResizeRequested -= OnRemoteTerminalResize;
             _relayClient.TerminalCloseRequested -= OnRemoteTerminalCloseRequested;
+            _relayClient.GroupJoined -= OnGroupJoined;
+            _relayClient.GroupJoinRejected -= OnGroupJoinRejected;
+            _relayClient.GroupMemberChanged -= OnGroupMemberListChanged;
+            _relayClient.TerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
+            _relayClient.TerminalOutputReceived -= OnRemoteTerminalOutputReceived;
+            _relayClient.TerminalClosedReceived -= OnRemoteTerminalClosedReceived;
             _relayClient.Dispose();
             _relayClient = null;
         }
 
         RestoreDesktopTerminalViewport();
         IsServerRunning = false;
+        IsGroupJoined = false;
+        GroupMembers.Clear();
+        GroupStatus = string.Empty;
         UpdateRelayAddressPreview();
         ConnectionStatus = "Local only";
     }
@@ -1077,6 +1318,83 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 ServerStatus = "Disconnected from relay (reconnecting...)";
                 ConnectionStatus = "Reconnecting...";
+            }
+        });
+    }
+
+    private void OnGroupJoined(GroupJoinAcceptedMessage accepted)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            GroupId = accepted.GroupId;
+            IsGroupJoined = true;
+            GroupStatus = $"Joined group ({accepted.Members.Count} members)";
+
+            GroupMembers.Clear();
+            foreach (var m in accepted.Members)
+                GroupMembers.Add(m);
+        });
+    }
+
+    private void OnGroupJoinRejected(string reason)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            IsGroupJoined = false;
+            GroupStatus = $"Join rejected: {reason}";
+            ServerStatus = $"Group join rejected: {reason}";
+        });
+    }
+
+    private void OnGroupMemberListChanged(List<GroupMemberInfo> members)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            GroupMembers.Clear();
+            foreach (var m in members)
+                GroupMembers.Add(m);
+            GroupStatus = $"Group: {members.Count} member(s)";
+        });
+    }
+
+    // --- Remote terminal event handlers (for PC-to-PC remote terminals) ---
+
+    private void OnRemoteTerminalOpenedReceived(string deviceId, string sessionId, int cols, int rows)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            var member = GroupMembers.FirstOrDefault(m => m.DeviceId == deviceId);
+            var deviceName = member?.DisplayName ?? deviceId[..Math.Min(8, deviceId.Length)];
+
+            var tab = CreateRemoteTab(deviceId, deviceName, "remote", sessionId, cols, rows);
+            OnNetworkLog($"Remote tab created: [{deviceName}] session={sessionId}");
+        });
+    }
+
+    private void OnRemoteTerminalOutputReceived(string deviceId, string sessionId, string data)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            var tab = Tabs.FirstOrDefault(t => t.IsRemote && t.RemoteSessionId == sessionId);
+            if (tab is null) return;
+
+            tab.OutputBuffer.Append(data);
+            tab.VirtualScreen.Write(data);
+
+            if (tab == ActiveTab)
+                TerminalOutputForwarded?.Invoke(data);
+        });
+    }
+
+    private void OnRemoteTerminalClosedReceived(string deviceId, string sessionId)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            var tab = Tabs.FirstOrDefault(t => t.IsRemote && t.RemoteSessionId == sessionId);
+            if (tab is not null)
+            {
+                CloseTab(tab.TabId);
+                OnNetworkLog($"Remote terminal closed: device={deviceId}, session={sessionId}");
             }
         });
     }

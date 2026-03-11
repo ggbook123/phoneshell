@@ -11,4 +11,17 @@ public sealed class QrPayloadBuilder
         var name = Uri.EscapeDataString(identity.DisplayName);
         return $"phoneshell://bind?deviceId={deviceId}&name={name}&nonce={nonce}";
     }
+
+    /// <summary>
+    /// Build a QR payload for mobile binding that includes server address and group secret.
+    /// Scanning this QR code allows the phone to connect + join group + bind as mobile admin.
+    /// </summary>
+    public string BuildGroupBind(string serverWsUrl, string groupId, string groupSecret)
+    {
+        var server = Uri.EscapeDataString(serverWsUrl);
+        var gid = Uri.EscapeDataString(groupId);
+        var secret = Uri.EscapeDataString(groupSecret);
+        var nonce = Guid.NewGuid().ToString("N");
+        return $"phoneshell://bind?server={server}&groupId={gid}&groupSecret={secret}&nonce={nonce}";
+    }
 }

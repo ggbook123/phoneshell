@@ -7,6 +7,19 @@ import { DeviceInfo } from '../models/MessageTypes';
 const DOMAIN = 0x0000;
 const PAGE_TAG = 'DeviceListPage';
 
+interface AuthorizationPageParams {
+  requestId: string;
+  action: string;
+  requesterName: string;
+  description: string;
+}
+
+interface SessionListParams {
+  deviceId: string;
+  displayName: string;
+  availableShells: Array<string>;
+}
+
 @Entry
 @Component
 struct DeviceListPage {
@@ -90,6 +103,22 @@ struct DeviceListPage {
           this.isRefreshing = false;
         } else if (type === 'error') {
           this.isRefreshing = false;
+        } else if (type === 'auth.request') {
+          // Navigate to authorization page
+          const requestId: string = (data['requestId'] ?? '') as string;
+          const action: string = (data['action'] ?? '') as string;
+          const requesterName: string = (data['requesterName'] ?? '') as string;
+          const description: string = (data['description'] ?? '') as string;
+          const params: AuthorizationPageParams = {
+            requestId: requestId,
+            action: action,
+            requesterName: requesterName,
+            description: description
+          };
+          this.getUIContext().getRouter().pushUrl({
+            url: 'pages/AuthorizationPage',
+            params: params
+          });
         }
       });
     }
@@ -127,13 +156,14 @@ struct DeviceListPage {
     }
     // Navigate to session list page for this device
     hilog.info(DOMAIN, PAGE_TAG, 'navigateToSessionList device=%{public}s', deviceId);
+    const params: SessionListParams = {
+      deviceId: deviceId,
+      displayName: this.getDeviceDisplayName(device),
+      availableShells: this.getAvailableShells(device)
+    };
     this.getUIContext().getRouter().pushUrl({
       url: 'pages/SessionListPage',
-      params: {
-        deviceId: deviceId,
-        displayName: this.getDeviceDisplayName(device),
-        availableShells: this.getAvailableShells(device)
-      }
+      params: params
     });
   }
 
@@ -187,6 +217,32 @@ struct DeviceListPage {
       .height(56)
       .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE })
       .alignItems(VerticalAlign.Center)
+
+      // Group management bar (shown when group is joined)
+      if (WebSocketService.getIsGroupJoined()) {
+        Row() {
+          Text(`${AppStrings.GROUP_STATUS_JOINED} · ${WebSocketService.getCachedGroupMembers().length} 成员`)
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor(AppColors.ACCENT)
+            .layoutWeight(1)
+
+          Button(AppStrings.GROUP_MANAGE_TITLE)
+            .height(28)
+            .fontSize(12)
+            .fontColor(AppColors.ACCENT)
+            .backgroundColor(Color.Transparent)
+            .borderWidth(1)
+            .borderColor(AppColors.ACCENT)
+            .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+            .onClick(() => {
+              this.getUIContext().getRouter().pushUrl({ url: 'pages/GroupManagePage' });
+            })
+        }
+        .width('100%')
+        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 8, bottom: 8 })
+        .backgroundColor(AppColors.CARD_BACKGROUND)
+        .alignItems(VerticalAlign.Center)
+      }
 
       // Divider
       Divider()

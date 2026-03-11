@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using Microsoft.Web.WebView2.Core;
 using PhoneShell.Core.Terminals;
+using PhoneShell.Core.Protocol;
 using PhoneShell.ViewModels;
 
 namespace PhoneShell;
@@ -111,7 +112,7 @@ public partial class MainWindow : Window
             case "input":
                 var data = root.GetProperty("data").GetString();
                 if (data is not null && _viewModel.ActiveTab is not null)
-                    _viewModel.ActiveTab.SessionManager.WriteInput(data);
+                    _viewModel.WriteTabInput(_viewModel.ActiveTab, data);
                 break;
             case "resize":
                 var cols = root.GetProperty("cols").GetInt32();
@@ -120,8 +121,9 @@ public partial class MainWindow : Window
                 {
                     _viewModel.HandleLocalViewportResize(cols, rows);
 
-                    // If active tab exists but terminal not started yet, start it
-                    if (_viewModel.ActiveTab is not null && !_viewModel.ActiveTab.SessionManager.IsRunning)
+                    // If active tab exists but terminal not started yet, start it (local tabs only)
+                    if (_viewModel.ActiveTab is not null && !_viewModel.ActiveTab.IsRemote &&
+                        !_viewModel.ActiveTab.SessionManager.IsRunning)
                     {
                         _viewModel.StartActiveTabTerminal(cols, rows);
                     }
@@ -304,6 +306,20 @@ public partial class MainWindow : Window
     private void ApiKeyBox_PasswordChanged(object sender, RoutedEventArgs e)
     {
         _viewModel.AiApiKey = ApiKeyBox.Password;
+    }
+
+    private async void RemoteShellButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn)
+        {
+            var shellId = btn.Content as string ?? "";
+            // Navigate up to the parent DataContext which is the GroupMemberInfo
+            var parent = btn.Tag as GroupMemberInfo;
+            if (parent is not null)
+            {
+                await _viewModel.OpenRemoteTerminalAsync(parent.DeviceId, shellId);
+            }
+        }
     }
 
     private void ChatInput_KeyDown(object sender, KeyEventArgs e)

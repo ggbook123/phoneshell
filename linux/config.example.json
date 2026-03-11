@@ -1,0 +1,15 @@
+{
+  "displayName": "prod-linux-node-01",
+  "port": 9090,
+  "relayUrl": "",
+  "relayAuthToken": "replace-with-a-long-random-secret",
+  "defaultCols": 120,
+  "defaultRows": 30,
+  "modules": {
+    "terminal": true,
+    "relayServer": true,
+    "relayClient": false,
+    "webPanel": false,
+    "aiChat": false
+  }
+}

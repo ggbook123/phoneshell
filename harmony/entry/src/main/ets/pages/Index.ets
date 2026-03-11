@@ -1,4 +1,4 @@
-import { AppColors, AppSizes, AppStrings, ConnectionState } from '../common/Constants';
+import { AppColors, AppSizes, AppStrings, ConnectionState, StorageKeys } from '../common/Constants';
 import { WebSocketService } from '../services/WebSocketService';
 import { PreferencesUtil } from '../services/PreferencesUtil';
 
@@ -6,14 +6,16 @@ import { PreferencesUtil } from '../services/PreferencesUtil';
 @Component
 struct Index {
   @State serverUrl: string = '';
+  @State groupSecret: string = '';
   @State connectionState: ConnectionState = ConnectionState.DISCONNECTED;
   @State connectionHistory: Array<string> = [];
   @State errorMessage: string = '';
   private stateListenerId: number = -1;
   private messageListenerId: number = -1;
+  private hasAutoNavigated: boolean = false;
 
   aboutToAppear(): void {
-    this.initPreferences();
+    this.refreshPreferencesAndMaybeNavigate();
     this.activatePage();
   }
 
@@ -22,6 +24,7 @@ struct Index {
   }
 
   onPageShow(): void {
+    this.refreshPreferencesAndMaybeNavigate();
     this.activatePage();
   }
 
@@ -39,11 +42,25 @@ struct Index {
     if (lastUrl.length > 0) {
       this.serverUrl = lastUrl;
     }
+    const savedSecret: string = await PreferencesUtil.getString(StorageKeys.GROUP_SECRET);
+    if (savedSecret.length > 0) {
+      this.groupSecret = savedSecret;
+    }
+  }
+
+  private refreshPreferencesAndMaybeNavigate(): void {
+    this.initPreferences().then(() => {
+      this.connectionState = WebSocketService.getConnectionState();
+      this.maybeNavigateOnConnected();
+    });
   }
 
   private async saveAndNavigate(): Promise<void> {
     await PreferencesUtil.addConnectionHistory(this.serverUrl);
     await PreferencesUtil.setLastServerUrl(this.serverUrl);
+    if (this.groupSecret.length > 0) {
+      await PreferencesUtil.setString(StorageKeys.GROUP_SECRET, this.groupSecret);
+    }
     this.connectionHistory = await PreferencesUtil.getConnectionHistory();
     this.getUIContext().getRouter().pushUrl({ url: 'pages/DeviceListPage' });
   }
@@ -96,6 +113,23 @@ struct Index {
     return scheme + '://' + rest;
   }
 
+  private buildConnectUrlWithToken(baseUrl: string, groupSecret: string): string {
+    const trimmedSecret: string = groupSecret.trim();
+    if (trimmedSecret.length === 0) {
+      return baseUrl;
+    }
+
+    if (baseUrl.indexOf('token=') >= 0) {
+      return baseUrl;
+    }
+
+    const token: string = encodeURIComponent(trimmedSecret);
+    if (baseUrl.indexOf('?') >= 0) {
+      return baseUrl + '&token=' + token;
+    }
+    return baseUrl + '?token=' + token;
+  }
+
   private validateServerUrl(url: string): string {
     const schemeSeparator: number = url.indexOf('://');
     if (schemeSeparator < 0) {
@@ -132,7 +166,21 @@ struct Index {
 
     this.serverUrl = normalizedUrl;
     this.errorMessage = '';
-    WebSocketService.connect(normalizedUrl);
+    const connectUrl: string = this.buildConnectUrlWithToken(normalizedUrl, this.groupSecret);
+    WebSocketService.connect(connectUrl);
+  }
+
+  private maybeNavigateOnConnected(): void {
+    if (this.connectionState !== ConnectionState.CONNECTED) {
+      return;
+    }
+
+    if (this.hasAutoNavigated) {
+      return;
+    }
+
+    this.hasAutoNavigated = true;
+    this.saveAndNavigate();
   }
 
   private activatePage(): void {
@@ -143,7 +191,14 @@ struct Index {
         this.connectionState = state;
         if (state === ConnectionState.CONNECTED) {
           this.errorMessage = '';
-          this.saveAndNavigate();
+          // After connecting, join group if a group secret is provided
+          if (this.groupSecret.trim().length > 0) {
+            const deviceId: string = PreferencesUtil.getMobileDeviceId(getContext(this));
+            WebSocketService.joinGroup(this.groupSecret.trim(), deviceId, 'HarmonyOS Device');
+          }
+          this.maybeNavigateOnConnected();
+        } else if (state === ConnectionState.DISCONNECTED) {
+          this.hasAutoNavigated = false;
         }
       });
     }
@@ -241,6 +296,19 @@ struct Index {
         .backgroundColor(AppColors.INPUT_BG)
         .borderRadius(AppSizes.BORDER_RADIUS_INPUT)
         .padding({ left: 16, right: 16 })
+        .margin({ bottom: 12 })
+
+      // Group secret input
+      TextInput({ text: $$this.groupSecret, placeholder: AppStrings.GROUP_SECRET_HINT })
+        .type(InputType.Normal)
+        .width('100%')
+        .height(48)
+        .fontSize(AppSizes.FONT_SIZE_BODY)
+        .fontColor(AppColors.TEXT_PRIMARY)
+        .placeholderColor(AppColors.TEXT_SECONDARY)
+        .backgroundColor(AppColors.INPUT_BG)
+        .borderRadius(AppSizes.BORDER_RADIUS_INPUT)
+        .padding({ left: 16, right: 16 })
         .margin({ bottom: 16 })
 
       // Error message
@@ -264,6 +332,21 @@ struct Index {
         .enabled(this.connectionState !== ConnectionState.CONNECTING)
         .onClick(() => {
           this.connectToServer();
+        })
+        .margin({ bottom: 12 })
+
+      // Scan connect button
+      Button('扫码连接')
+        .width('100%')
+        .height(44)
+        .fontSize(AppSizes.FONT_SIZE_BODY)
+        .fontColor(AppColors.TEXT_PRIMARY)
+        .backgroundColor(Color.Transparent)
+        .borderWidth(1)
+        .borderColor(AppColors.ACCENT)
+        .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+        .onClick(() => {
+          this.getUIContext().getRouter().pushUrl({ url: 'pages/ScanPage' });
         })
         .margin({ bottom: 32 })
 
