@@ -1060,6 +1060,17 @@ public sealed class RelayServer : IDisposable
         client.RegisteredDeviceId = req.DeviceId;
         client.MemberRole = role;
 
+        var autoBindMobile = string.IsNullOrWhiteSpace(_group.BoundMobileId) &&
+                             IsLikelyMobileOs(req.Os);
+        if (autoBindMobile)
+        {
+            _group.BoundMobileId = req.DeviceId;
+            var member = _group.Members.FirstOrDefault(m => m.DeviceId == req.DeviceId);
+            if (member is not null)
+                member.Role = MemberRole.Mobile;
+            client.MemberRole = MemberRole.Mobile;
+        }
+
         _groupStore?.SaveGroup(_group);
         NotifyDeviceListChanged();
 
@@ -1086,6 +1097,12 @@ public sealed class RelayServer : IDisposable
 
         GroupMemberListChanged?.Invoke(memberList);
         Log?.Invoke($"Group member joined: {req.DisplayName} ({req.DeviceId})");
+
+        if (autoBindMobile)
+        {
+            Log?.Invoke($"Mobile auto-bound: {req.DisplayName} ({req.DeviceId})");
+            TryDispatchPendingPanelLogins();
+        }
     }
 
     private async Task HandleGroupKick(ConnectedClient client, GroupKickMessage kick)
@@ -2002,6 +2019,18 @@ public sealed class RelayServer : IDisposable
         var rightBytes = Encoding.UTF8.GetBytes(right);
         return leftBytes.Length == rightBytes.Length &&
                CryptographicOperations.FixedTimeEquals(leftBytes, rightBytes);
+    }
+
+    private static bool IsLikelyMobileOs(string os)
+    {
+        if (string.IsNullOrWhiteSpace(os))
+            return false;
+        var value = os.Trim().ToLowerInvariant();
+        return value.Contains("android") ||
+               value.Contains("ios") ||
+               value.Contains("iphone") ||
+               value.Contains("ipad") ||
+               value.Contains("harmony");
     }
 
     private static bool IsWebSocketPath(string path) =>

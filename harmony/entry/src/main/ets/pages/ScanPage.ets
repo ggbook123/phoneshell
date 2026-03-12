@@ -18,9 +18,15 @@ struct ScanPage {
   @State showMigrationDialog: boolean = false;
   @State migrationHint: string = '';
   private pendingServerDeviceId: string = '';
+  private authListenerId: number = -1;
+  private pendingPanelLoginRequestId: string = '';
 
   aboutToAppear(): void {
     hilog.info(DOMAIN, PAGE_TAG, 'ScanPage aboutToAppear');
+  }
+
+  aboutToDisappear(): void {
+    this.deactivateLoginAuthListener();
   }
 
   private startScan(): void {
@@ -240,6 +246,8 @@ struct ScanPage {
 
     hilog.info(DOMAIN, PAGE_TAG, 'login QR: connecting with saved secret');
     this.scanStatus = `正在连接 ${server.substring(0, 40)}...`;
+    this.pendingPanelLoginRequestId = requestId;
+    this.activateLoginAuthListener();
 
     // Connect to server
     const connectUrl: string = this.buildConnectUrlWithToken(server, savedSecret);
@@ -287,9 +295,6 @@ struct ScanPage {
           // Send panel.login.scan to notify server
           WebSocketService.sendPanelLoginScan(requestId, mobileDeviceId);
           this.scanStatus = '已发送登录请求，请在手机端确认授权...';
-
-          // Navigate back — auth request will appear via AuthorizationPage
-          this.getUIContext().getRouter().back();
         } else if (type === 'group.join.rejected') {
           WebSocketService.removeOnMessage(msgListenerId);
           this.parseError = '加入群组被拒绝，密钥可能已变更';
@@ -312,6 +317,51 @@ struct ScanPage {
     // Handle race where connection is already established
     if (WebSocketService.getConnectionState() === ConnectionState.CONNECTED) {
       handleConnected();
+    }
+  }
+
+  private activateLoginAuthListener(): void {
+    if (this.authListenerId !== -1) {
+      return;
+    }
+
+    this.authListenerId = WebSocketService.addOnMessage((type: string, data: Record<string, Object>) => {
+      if (type !== 'auth.request') {
+        return;
+      }
+
+      const action: string = (data['action'] ?? '') as string;
+      const requestId: string = (data['requestId'] ?? '') as string;
+      if (action !== 'panel.login') {
+        return;
+      }
+
+      if (this.pendingPanelLoginRequestId.length > 0 && requestId !== this.pendingPanelLoginRequestId) {
+        return;
+      }
+
+      this.pendingPanelLoginRequestId = '';
+      this.deactivateLoginAuthListener();
+
+      const requesterName: string = (data['requesterName'] ?? '') as string;
+      const description: string = (data['description'] ?? '') as string;
+
+      this.getUIContext().getRouter().pushUrl({
+        url: 'pages/AuthorizationPage',
+        params: {
+          requestId: requestId,
+          action: action,
+          requesterName: requesterName,
+          description: description
+        }
+      });
+    });
+  }
+
+  private deactivateLoginAuthListener(): void {
+    if (this.authListenerId !== -1) {
+      WebSocketService.removeOnMessage(this.authListenerId);
+      this.authListenerId = -1;
     }
   }
 

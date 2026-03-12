@@ -1,7 +1,7 @@
 {
   "displayName": "prod-linux-node-01",
-  "publicHost": "",
-  "port": 9090,
+  "publicHost": "43.140.37.188:9090",
+  "port": 19090,
   "relayUrl": "",
   "relayAuthToken": "replace-with-a-long-random-secret",
   "defaultCols": 120,

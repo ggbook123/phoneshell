@@ -826,7 +826,7 @@ html, body {
 
   function showLoginQr(payload) {
     setPairingSubtitle('请使用绑定的手机扫描二维码');
-    setPairingStatus('等待手机扫码登录');
+    setPairingStatus('网站已绑定手机，请使用已绑定手机扫码登录');
     var qr = document.getElementById('pairingQr');
     qr.src = '/api/panel/login/qr.png?payload=' + encodeURIComponent(payload) + '&ts=' + Date.now();
   }
@@ -851,6 +851,8 @@ html, body {
         if (!info.hasBoundMobile) {
           // Show bind QR + poll for binding
           showBindQr(info);
+          // Pre-create a login session so the first bind can auto-approve panel access.
+          startLoginFlow();
           startPairingPolling();
         } else {
           // Already bound — auto-start login flow
