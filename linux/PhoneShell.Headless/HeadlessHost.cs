@@ -102,6 +102,7 @@ public sealed class HeadlessHost : IDisposable
             _relayServer.LocalTerminalOpenRequested += OnLocalTerminalOpenRequested;
             _relayServer.LocalSessionListProvider += GetSessionList;
             _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
+            _relayServer.GroupMergeRequested += OnGroupMergeRequested;
 
             await _relayServer.StartAsync(_config.Port, _baseDirectory, _cts.Token);
 
@@ -232,6 +233,7 @@ public sealed class HeadlessHost : IDisposable
                         _relayServer.LocalTerminalOpenRequested += OnLocalTerminalOpenRequested;
                         _relayServer.LocalSessionListProvider += GetSessionList;
                         _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
+                        _relayServer.GroupMergeRequested += OnGroupMergeRequested;
 
                         var allShells = _config.Modules.Terminal
                             ? _shellLocator.GetAvailableShells().Select(s => s.DisplayName).ToList()
@@ -343,6 +345,7 @@ public sealed class HeadlessHost : IDisposable
         if (_relayServer is not null)
         {
             _relayServer.ServerMigrationCommitted -= OnServerMigrationCommitted;
+            _relayServer.GroupMergeRequested -= OnGroupMergeRequested;
             _relayServer.Dispose();
         }
         _relayServer = null;
@@ -584,6 +587,7 @@ public sealed class HeadlessHost : IDisposable
                             _relayServer.LocalTerminalOpenRequested += OnLocalTerminalOpenRequested;
                             _relayServer.LocalSessionListProvider += GetSessionList;
                             _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
+                            _relayServer.GroupMergeRequested += OnGroupMergeRequested;
 
                             var allShells = _config.Modules.Terminal
                                 ? _shellLocator.GetAvailableShells().Select(s => s.DisplayName).ToList()
@@ -635,6 +639,141 @@ public sealed class HeadlessHost : IDisposable
             catch (Exception ex)
             {
                 Log($"[relay-server] Migration switch failed: {ex.Message}");
+            }
+        });
+    }
+
+    private void OnGroupMergeRequested(string targetServerUrl, string targetGroupSecret, string targetGroupId)
+    {
+        Log($"[relay-server] Group merge requested. Switching to client: {targetServerUrl} (group {targetGroupId})");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (_relayServer is not null)
+                {
+                    _relayServer.ServerMigrationCommitted -= OnServerMigrationCommitted;
+                    _relayServer.GroupMergeRequested -= OnGroupMergeRequested;
+                    _relayServer.Dispose();
+                    _relayServer = null;
+                }
+
+                _groupStore.ClearGroup();
+
+                _config.Modules.RelayServer = false;
+                _config.Modules.RelayClient = true;
+                _config.RelayUrl = targetServerUrl;
+                _config.GroupSecret = targetGroupSecret;
+
+                var shells = _config.Modules.Terminal
+                    ? _shellLocator.GetAvailableShells().Select(s => s.DisplayName).ToList()
+                    : new List<string>();
+
+                _relayClient?.Dispose();
+                _relayClient = new RelayClient
+                {
+                    DeviceId = DeviceId,
+                    DisplayName = string.IsNullOrWhiteSpace(_config.DisplayName)
+                        ? _identityStore.LoadOrCreate().DisplayName
+                        : _config.DisplayName,
+                    Os = TerminalPlatformFactory.GetOsIdentifier(),
+                    AvailableShells = shells,
+                    GroupSecret = targetGroupSecret
+                };
+                _relayClient.Log += msg => Log($"[relay-client] {msg}");
+                _relayClient.TerminalInputReceived += OnRelayClientTerminalInput;
+                _relayClient.TerminalOpenRequested += OnRelayClientTerminalOpen;
+                _relayClient.TerminalResizeRequested += OnRelayClientTerminalResize;
+                _relayClient.TerminalCloseRequested += OnRelayClientTerminalClose;
+                _relayClient.GroupJoined += accepted =>
+                    Log($"[relay-client] Joined group {accepted.GroupId} ({accepted.Members.Count} members)");
+                _relayClient.GroupJoinRejected += reason =>
+                    Log($"[relay-client] Group join rejected: {reason}");
+                _relayClient.GroupSecretRotated += secret =>
+                {
+                    _config.GroupSecret = secret;
+                    Log($"[relay-client] Group secret updated to {secret[..Math.Min(8, secret.Length)]}...");
+                };
+
+                _relayClient.ServerChangeRequested += async (groupId, groupSecret) =>
+                {
+                    Log($"[relay-client] Server migration: this device selected as new server");
+                    try
+                    {
+                        _groupStore.SaveGroup(new GroupInfo
+                        {
+                            GroupId = groupId,
+                            GroupSecret = groupSecret,
+                            ServerDeviceId = DeviceId,
+                            CreatedAt = DateTimeOffset.UtcNow
+                        });
+
+                        if (_relayServer is null || !_relayServer.IsRunning)
+                        {
+                            _relayServer = new RelayServer
+                            {
+                                AuthToken = groupSecret,
+                                WebPanelEnabled = _config.Modules.WebPanel
+                            };
+                            _relayServer.Log += msg => Log($"[relay-server] {msg}");
+                            _relayServer.LocalTerminalInputReceived += OnLocalTerminalInput;
+                            _relayServer.LocalTerminalResizeReceived += OnLocalTerminalResize;
+                            _relayServer.LocalTerminalSessionEnded += OnLocalTerminalSessionEnded;
+                            _relayServer.LocalTerminalOpenRequested += OnLocalTerminalOpenRequested;
+                            _relayServer.LocalSessionListProvider += GetSessionList;
+                            _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
+                            _relayServer.GroupMergeRequested += OnGroupMergeRequested;
+
+                            var allShells = _config.Modules.Terminal
+                                ? _shellLocator.GetAvailableShells().Select(s => s.DisplayName).ToList()
+                                : new List<string>();
+                            var identity = _identityStore.LoadOrCreate();
+                            _relayServer.RegisterLocalDevice(DeviceId,
+                                string.IsNullOrWhiteSpace(_config.DisplayName) ? identity.DisplayName : _config.DisplayName,
+                                TerminalPlatformFactory.GetOsIdentifier(), allShells);
+
+                            await _relayServer.StartAsync(_config.Port, _baseDirectory, _cts?.Token ?? CancellationToken.None);
+                            Log($"[relay-server] Server role activated on port {_config.Port}");
+                        }
+
+                        var newServerUrl = _relayServer.ReachableWebSocketUrls.FirstOrDefault() ??
+                                           $"ws://localhost:{_config.Port}/ws/";
+                        await _relayClient.SendServerChangePrepareAsync(groupId, groupSecret, newServerUrl);
+                        Log($"[relay-client] Server migration prepare sent: {newServerUrl}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[relay-client] Server migration failed: {ex.Message}");
+                    }
+                };
+
+                _relayClient.ServerChanged += (url, secret) =>
+                {
+                    Log($"[relay-client] Server changed, reconnecting to {url}");
+                    _ = Task.Run(async () =>
+                    {
+                        if (_relayServer is not null && _relayServer.IsRunning)
+                        {
+                            _relayClient?.Disconnect();
+                            _relayClient?.Dispose();
+                            _relayClient = null;
+                            _config.Modules.RelayServer = true;
+                            _config.Modules.RelayClient = false;
+                            _config.GroupSecret = secret;
+                            return;
+                        }
+
+                        _relayClient?.Disconnect();
+                        _relayClient!.GroupSecret = secret;
+                        await _relayClient.ConnectAsync(url, _cts?.Token ?? CancellationToken.None);
+                    });
+                };
+
+                await _relayClient.ConnectAsync(targetServerUrl, _cts?.Token ?? CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                Log($"[relay-server] Group merge switch failed: {ex.Message}");
             }
         });
     }

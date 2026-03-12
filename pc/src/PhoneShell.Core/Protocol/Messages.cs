@@ -312,3 +312,36 @@ public sealed class GroupSecretRotateDoneMessage
     public string Type => "group.secret.rotate.done";
     public string NewSecret { get; init; } = string.Empty;
 }
+
+// --- Group merge (auto-expansion) ---
+
+/// <summary>
+/// Sent by a phone (already bound to an existing group) to a new server,
+/// requesting the server to stop and join the phone's existing group instead.
+/// </summary>
+public sealed class GroupMergeRequestMessage
+{
+    public string Type => "group.merge.request";
+    public string TargetServerUrl { get; init; } = string.Empty;
+    public string TargetGroupId { get; init; } = string.Empty;
+    public string TargetGroupSecret { get; init; } = string.Empty;
+    public string MobileDeviceId { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// Sent by the server back to the phone confirming it will merge into the target group.
+/// </summary>
+public sealed class GroupMergeAcceptedMessage
+{
+    public string Type => "group.merge.accepted";
+    public string TargetGroupId { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// Sent by the server back to the phone if the merge cannot be performed.
+/// </summary>
+public sealed class GroupMergeRejectedMessage
+{
+    public string Type => "group.merge.rejected";
+    public string Reason { get; init; } = string.Empty;
+}

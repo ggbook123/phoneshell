@@ -81,6 +81,9 @@ public static class MessageSerializer
             "group.server.change.commit" => Deserialize<GroupServerChangeCommitMessage>(json),
             "group.secret.rotate.request" => Deserialize<GroupSecretRotateRequestMessage>(json),
             "group.secret.rotate.done" => Deserialize<GroupSecretRotateDoneMessage>(json),
+            "group.merge.request" => Deserialize<GroupMergeRequestMessage>(json),
+            "group.merge.accepted" => Deserialize<GroupMergeAcceptedMessage>(json),
+            "group.merge.rejected" => Deserialize<GroupMergeRejectedMessage>(json),
             "panel.login.scan" => Deserialize<PanelLoginScanMessage>(json),
             "error" => Deserialize<ErrorMessage>(json),
             _ => null

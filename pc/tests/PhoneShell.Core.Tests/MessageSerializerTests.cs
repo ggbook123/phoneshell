@@ -260,4 +260,49 @@ public class MessageSerializerTests
         Assert.Equal(120, deserialized.Cols);
         Assert.Equal(40, deserialized.Rows);
     }
+
+    [Fact]
+    public void Roundtrip_GroupMergeRequestMessage()
+    {
+        var msg = new GroupMergeRequestMessage
+        {
+            TargetServerUrl = "ws://192.168.1.10:9090/ws/",
+            TargetGroupId = "group-abc",
+            TargetGroupSecret = "secret-xyz",
+            MobileDeviceId = "mobile-1"
+        };
+        var json = MessageSerializer.Serialize(msg);
+        var deserialized = MessageSerializer.DeserializeMessage(json) as GroupMergeRequestMessage;
+        Assert.NotNull(deserialized);
+        Assert.Equal("ws://192.168.1.10:9090/ws/", deserialized.TargetServerUrl);
+        Assert.Equal("group-abc", deserialized.TargetGroupId);
+        Assert.Equal("secret-xyz", deserialized.TargetGroupSecret);
+        Assert.Equal("mobile-1", deserialized.MobileDeviceId);
+    }
+
+    [Fact]
+    public void Roundtrip_GroupMergeAcceptedMessage()
+    {
+        var msg = new GroupMergeAcceptedMessage
+        {
+            TargetGroupId = "group-abc"
+        };
+        var json = MessageSerializer.Serialize(msg);
+        var deserialized = MessageSerializer.DeserializeMessage(json) as GroupMergeAcceptedMessage;
+        Assert.NotNull(deserialized);
+        Assert.Equal("group-abc", deserialized.TargetGroupId);
+    }
+
+    [Fact]
+    public void Roundtrip_GroupMergeRejectedMessage()
+    {
+        var msg = new GroupMergeRejectedMessage
+        {
+            Reason = "Server is busy"
+        };
+        var json = MessageSerializer.Serialize(msg);
+        var deserialized = MessageSerializer.DeserializeMessage(json) as GroupMergeRejectedMessage;
+        Assert.NotNull(deserialized);
+        Assert.Equal("Server is busy", deserialized.Reason);
+    }
 }

@@ -888,6 +888,10 @@ public sealed class RelayServer : IDisposable
                 // Forward to all clients (usually sent by server, not expected from client)
                 await BroadcastToOthersAsync(client, json);
                 break;
+
+            case GroupMergeRequestMessage mergeReq:
+                await HandleGroupMergeRequest(client, mergeReq);
+                break;
         }
     }
 
@@ -1022,8 +1026,10 @@ public sealed class RelayServer : IDisposable
             return;
         }
 
-        // Determine role
+        // Determine role — restore Mobile role if this is the bound mobile rejoining
         var role = MemberRole.Member;
+        if (_group.BoundMobileId == req.DeviceId)
+            role = MemberRole.Mobile;
 
         // Add or update member in group
         var existing = _group.Members.FirstOrDefault(m => m.DeviceId == req.DeviceId);
@@ -1032,6 +1038,7 @@ public sealed class RelayServer : IDisposable
             existing.DisplayName = req.DisplayName;
             existing.Os = req.Os;
             existing.AvailableShells = req.AvailableShells;
+            existing.Role = role;
         }
         else
         {
@@ -1093,7 +1100,9 @@ public sealed class RelayServer : IDisposable
         if (_group is null) return;
 
         // Only bound mobile can kick
-        if (client.MemberRole != MemberRole.Mobile)
+        var isKickerBoundMobile = client.MemberRole == MemberRole.Mobile ||
+            (client.RegisteredDeviceId != null && client.RegisteredDeviceId == _group.BoundMobileId);
+        if (!isKickerBoundMobile)
         {
             await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
             {
@@ -1253,7 +1262,9 @@ public sealed class RelayServer : IDisposable
         if (_group is null) return;
 
         // Only bound mobile can initiate server change
-        if (client.MemberRole != MemberRole.Mobile)
+        var isChangerBoundMobile = client.MemberRole == MemberRole.Mobile ||
+            (client.RegisteredDeviceId != null && client.RegisteredDeviceId == _group.BoundMobileId);
+        if (!isChangerBoundMobile)
         {
             await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
             {
@@ -1325,7 +1336,9 @@ public sealed class RelayServer : IDisposable
         if (_group is null) return;
 
         // Only bound mobile can rotate
-        if (client.MemberRole != MemberRole.Mobile)
+        var isRotaterBoundMobile = client.MemberRole == MemberRole.Mobile ||
+            (client.RegisteredDeviceId != null && client.RegisteredDeviceId == _group.BoundMobileId);
+        if (!isRotaterBoundMobile)
         {
             await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
             {
@@ -1350,8 +1363,83 @@ public sealed class RelayServer : IDisposable
         Log?.Invoke($"Group secret rotated to {newSecret[..8]}...");
     }
 
+    /// <summary>
+    /// Handle a group merge request from a phone that is already bound to another group.
+    /// The phone tells this server to stop and join the phone's existing group.
+    /// </summary>
+    private async Task HandleGroupMergeRequest(ConnectedClient client, GroupMergeRequestMessage req)
+    {
+        if (_group is null)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new GroupMergeRejectedMessage
+            {
+                Reason = "No group exists on this server."
+            }));
+            return;
+        }
+
+        // Validate required fields
+        if (string.IsNullOrWhiteSpace(req.TargetServerUrl) ||
+            string.IsNullOrWhiteSpace(req.TargetGroupId) ||
+            string.IsNullOrWhiteSpace(req.TargetGroupSecret))
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new GroupMergeRejectedMessage
+            {
+                Reason = "Missing target server URL, group ID, or group secret."
+            }));
+            return;
+        }
+
+        // Validate sender identity — must provide a MobileDeviceId
+        if (string.IsNullOrWhiteSpace(req.MobileDeviceId))
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new GroupMergeRejectedMessage
+            {
+                Reason = "Missing mobile device ID."
+            }));
+            return;
+        }
+
+        // If a mobile is already bound to THIS group, only that mobile can merge
+        if (!string.IsNullOrEmpty(_group.BoundMobileId) && _group.BoundMobileId != req.MobileDeviceId)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new GroupMergeRejectedMessage
+            {
+                Reason = "Another mobile device is already bound to this group."
+            }));
+            return;
+        }
+
+        Log?.Invoke($"Group merge request from {req.MobileDeviceId}: merge into group {req.TargetGroupId} at {req.TargetServerUrl}");
+
+        // Send accepted to phone
+        await SendAsync(client, MessageSerializer.Serialize(new GroupMergeAcceptedMessage
+        {
+            TargetGroupId = req.TargetGroupId
+        }));
+
+        // Broadcast server change commit to all existing clients so they reconnect to the new server
+        var commitMsg = MessageSerializer.Serialize(new GroupServerChangeCommitMessage
+        {
+            NewServerUrl = req.TargetServerUrl,
+            GroupId = req.TargetGroupId,
+            GroupSecret = req.TargetGroupSecret
+        });
+        await BroadcastToAllAsync(commitMsg);
+
+        // Fire event so the host (MainViewModel / HeadlessHost) can switch to client mode
+        GroupMergeRequested?.Invoke(req.TargetServerUrl, req.TargetGroupSecret, req.TargetGroupId);
+    }
+
     /// <summary>Event raised when a server migration commit is broadcast.</summary>
     public event Action<string, string>? ServerMigrationCommitted; // newUrl, groupSecret
+
+    /// <summary>
+    /// Event raised when a group merge request is received from a bound mobile.
+    /// The server should stop, then connect as a client to the target server.
+    /// Parameters: targetServerUrl, targetGroupSecret, targetGroupId.
+    /// </summary>
+    public event Action<string, string, string>? GroupMergeRequested;
 
     /// <summary>
     /// Build the group member info list with online status.

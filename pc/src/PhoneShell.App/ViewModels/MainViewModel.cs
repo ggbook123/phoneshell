@@ -1244,6 +1244,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayServer.RemoteTerminalOutputReceived += OnRemoteTerminalOutputReceived;
                 _relayServer.RemoteTerminalClosedReceived += OnRemoteTerminalClosedReceived;
                 _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
+                _relayServer.GroupMergeRequested += OnGroupMergeRequested;
 
                 // Use GroupSecret as AuthToken if provided
                 if (!string.IsNullOrWhiteSpace(GroupSecret))
@@ -1355,6 +1356,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayServer.RemoteTerminalOutputReceived -= OnRemoteTerminalOutputReceived;
             _relayServer.RemoteTerminalClosedReceived -= OnRemoteTerminalClosedReceived;
             _relayServer.ServerMigrationCommitted -= OnServerMigrationCommitted;
+            _relayServer.GroupMergeRequested -= OnGroupMergeRequested;
             _relayServer.Dispose();
             _relayServer = null;
         }
@@ -1504,6 +1506,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _dispatcher.InvokeAsync(async () =>
         {
             await SwitchToClientAsync(newUrl, newSecret, _relayServer?.Group?.GroupId);
+        });
+    }
+
+    private void OnGroupMergeRequested(string targetServerUrl, string targetGroupSecret, string targetGroupId)
+    {
+        _dispatcher.InvokeAsync(async () =>
+        {
+            OnNetworkLog($"Group merge: switching to client, connecting to {targetServerUrl}");
+            await SwitchToClientAsync(targetServerUrl, targetGroupSecret, targetGroupId);
         });
     }
 
