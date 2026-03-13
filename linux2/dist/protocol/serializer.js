@@ -12,6 +12,12 @@ const MESSAGE_TYPES = new Set([
     'error',
     'group.server.change.request', 'group.server.change.prepare', 'group.server.change.commit',
     'group.secret.rotate.request', 'group.secret.rotate.done',
+    'relay.designate', 'relay.designated',
+    'invite.create.request', 'invite.create.response',
+    'device.settings.update', 'device.settings.updated',
+    'device.kick', 'device.kicked',
+    'group.dissolve', 'group.dissolved',
+    'panel.disconnected',
 ]);
 export function serialize(message) {
     return JSON.stringify(message);

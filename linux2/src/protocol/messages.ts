@@ -9,6 +9,7 @@ export interface DeviceRegisterMessage {
   displayName: string;
   os: string;
   availableShells: string[];
+  mode?: 'standalone' | 'relay' | 'client';
 }
 
 export interface DeviceUnregisterMessage {
@@ -121,11 +122,81 @@ export interface ControlForceDisconnectMessage {
   deviceId: string;
 }
 
+// --- Relay designation ---
+
+export interface RelayDesignateMessage {
+  type: 'relay.designate';
+}
+
+export interface RelayDesignatedMessage {
+  type: 'relay.designated';
+  relayUrl: string;
+  groupId: string;
+}
+
+// --- Invite system ---
+
+export interface InviteCreateRequestMessage {
+  type: 'invite.create.request';
+}
+
+export interface InviteCreateResponseMessage {
+  type: 'invite.create.response';
+  inviteCode: string;
+  relayUrl: string;
+  expiresAt: string;
+}
+
+// --- Device settings ---
+
+export interface DeviceSettingsUpdateMessage {
+  type: 'device.settings.update';
+  deviceId: string;
+  displayName?: string;
+}
+
+export interface DeviceSettingsUpdatedMessage {
+  type: 'device.settings.updated';
+  deviceId: string;
+  displayName: string;
+}
+
+// --- Device kick (new style) ---
+
+export interface DeviceKickMessage {
+  type: 'device.kick';
+  deviceId: string;
+}
+
+export interface DeviceKickedMessage {
+  type: 'device.kicked';
+  reason: string;
+}
+
+// --- Group dissolve ---
+
+export interface GroupDissolveMessage {
+  type: 'group.dissolve';
+}
+
+export interface GroupDissolvedMessage {
+  type: 'group.dissolved';
+  reason: string;
+}
+
+// --- Panel disconnect notification ---
+
+export interface PanelDisconnectedMessage {
+  type: 'panel.disconnected';
+  clientId: string;
+}
+
 // --- Group management ---
 
 export interface GroupJoinRequestMessage {
   type: 'group.join.request';
-  groupSecret: string;
+  groupSecret?: string;
+  inviteCode?: string;
   deviceId: string;
   displayName: string;
   os: string;
@@ -332,4 +403,15 @@ export type Message =
   | GroupServerChangePrepareMessage
   | GroupServerChangeCommitMessage
   | GroupSecretRotateRequestMessage
-  | GroupSecretRotateDoneMessage;
+  | GroupSecretRotateDoneMessage
+  | RelayDesignateMessage
+  | RelayDesignatedMessage
+  | InviteCreateRequestMessage
+  | InviteCreateResponseMessage
+  | DeviceSettingsUpdateMessage
+  | DeviceSettingsUpdatedMessage
+  | DeviceKickMessage
+  | DeviceKickedMessage
+  | GroupDissolveMessage
+  | GroupDissolvedMessage
+  | PanelDisconnectedMessage;

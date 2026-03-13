@@ -18,6 +18,7 @@ function defaultConfig() {
             aiChat: false,
         },
         baseDirectory: '/etc/phoneshell',
+        mode: 'standalone',
     };
 }
 function loadConfigFile(filePath) {
@@ -107,13 +108,20 @@ function applyCliArgs(config, args) {
             case '--mode': {
                 if (i + 1 < args.length) {
                     const mode = args[++i].toLowerCase();
-                    if (mode === 'server' || mode === 'relay-server') {
+                    if (mode === 'server' || mode === 'relay-server' || mode === 'relay') {
                         config.modules.relayServer = true;
                         config.modules.relayClient = false;
+                        config.mode = 'server';
                     }
                     else if (mode === 'client' || mode === 'relay-client') {
                         config.modules.relayServer = false;
                         config.modules.relayClient = true;
+                        config.mode = 'client';
+                    }
+                    else if (mode === 'standalone') {
+                        config.modules.relayServer = true;
+                        config.modules.relayClient = false;
+                        config.mode = 'standalone';
                     }
                 }
                 break;
@@ -184,6 +192,8 @@ export function loadConfig(args) {
         config.defaultRows = fileConfig.defaultRows;
     if (fileConfig.baseDirectory !== undefined)
         config.baseDirectory = fileConfig.baseDirectory;
+    if (fileConfig.mode !== undefined)
+        config.mode = fileConfig.mode;
     if (fileConfig.modules) {
         Object.assign(config.modules, fileConfig.modules);
     }

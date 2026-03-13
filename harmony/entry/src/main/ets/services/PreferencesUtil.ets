@@ -137,6 +137,30 @@ class PreferencesUtilClass {
     this.setString(StorageKeys.GROUP_SECRET, secret);
   }
 
+  async getSingleDevices(): Promise<string> {
+    return this.getString(StorageKeys.SINGLE_DEVICES);
+  }
+
+  async setSingleDevices(json: string): Promise<void> {
+    return this.setString(StorageKeys.SINGLE_DEVICES, json);
+  }
+
+  async getGroupRelayUrl(): Promise<string> {
+    return this.getString(StorageKeys.GROUP_RELAY_URL);
+  }
+
+  async setGroupRelayUrl(url: string): Promise<void> {
+    return this.setString(StorageKeys.GROUP_RELAY_URL, url);
+  }
+
+  async getGroupId(): Promise<string> {
+    return this.getString(StorageKeys.GROUP_ID);
+  }
+
+  async setGroupId(id: string): Promise<void> {
+    return this.setString(StorageKeys.GROUP_ID, id);
+  }
+
   getMobileDeviceId(context: Context): string {
     if (this.cachedMobileDeviceId.length > 0) {
       return this.cachedMobileDeviceId;

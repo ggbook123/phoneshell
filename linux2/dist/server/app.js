@@ -7,7 +7,7 @@ import { RelayServer } from '../relay/relay-server.js';
 import { TerminalManager } from '../terminal/terminal-manager.js';
 import { DeviceStore } from '../store/device-store.js';
 import { GroupStore } from '../store/group-store.js';
-import { generateQrPng } from '../auth/qr-service.js';
+import { generateQrPng, buildStandalonePayload } from '../auth/qr-service.js';
 function log(msg) {
     const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
     console.log(`[${ts}] ${msg}`);
@@ -127,6 +127,57 @@ export function createApp(config) {
         // --- Health check (no auth) ---
         if (pathname === '/ws/healthz') {
             writeJson(res, 200, { status: 'ok', startedAtUtc: new Date().toISOString() });
+            return;
+        }
+        // --- POST /api/invite — receive invite to join a group (standalone devices) ---
+        if (pathname === '/api/invite' && req.method === 'POST') {
+            let body = '';
+            req.on('data', (chunk) => { body += chunk.toString(); });
+            req.on('end', () => {
+                try {
+                    const invite = JSON.parse(body);
+                    if (!invite.relayUrl || !invite.inviteCode) {
+                        writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'relayUrl and inviteCode are required.' });
+                        return;
+                    }
+                    log(`[invite] Received invite: relay=${invite.relayUrl} code=${invite.inviteCode}`);
+                    // TODO: Trigger mode-manager transition to client and connect via relay-client
+                    // For now, return accepted and the mode-manager integration will handle it
+                    writeJson(res, 200, { status: 'accepted', relayUrl: invite.relayUrl });
+                }
+                catch {
+                    writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'Invalid JSON body.' });
+                }
+            });
+            return;
+        }
+        // --- Standalone QR code endpoint ---
+        if (pathname === '/api/standalone/qr.png') {
+            const serverUrl = resolveServerUrl(req);
+            const httpUrl = serverUrl.replace(/^ws/, 'http').replace(/\/ws\/?$/, '');
+            const qrPayload = buildStandalonePayload(httpUrl, serverUrl, deviceId, displayName);
+            try {
+                const png = await generateQrPng(qrPayload);
+                res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-cache' });
+                res.end(png);
+            }
+            catch {
+                writeJson(res, 500, { type: 'error', code: 'qr_error', message: 'QR generation failed.' });
+            }
+            return;
+        }
+        // --- Standalone device info ---
+        if (pathname === '/api/standalone/info') {
+            const serverUrl = resolveServerUrl(req);
+            const httpUrl = serverUrl.replace(/^ws/, 'http').replace(/\/ws\/?$/, '');
+            writeJson(res, 200, {
+                deviceId,
+                displayName,
+                os,
+                availableShells,
+                httpUrl,
+                wsUrl: serverUrl,
+            });
             return;
         }
         // --- Panel HTML ---
@@ -325,6 +376,14 @@ export function createApp(config) {
                 log(`  Device: ${displayName} (${deviceId})`);
                 log(`  OS: ${os}`);
                 log(`  Available shells: ${availableShells.join(', ')}`);
+                // Set relay URL for invite system
+                if (config.publicHost) {
+                    const ph = config.publicHost.includes(':') ? config.publicHost : `${config.publicHost}:${config.port}`;
+                    relay.setRelayUrl(`ws://${ph}/ws/`);
+                }
+                else {
+                    relay.setRelayUrl(`ws://localhost:${config.port}/ws/`);
+                }
                 const group = relay.getGroup();
                 if (group) {
                     log(`  Group ID: ${group.groupId}`);

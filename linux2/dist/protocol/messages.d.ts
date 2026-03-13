@@ -4,6 +4,7 @@ export interface DeviceRegisterMessage {
     displayName: string;
     os: string;
     availableShells: string[];
+    mode?: 'standalone' | 'relay' | 'client';
 }
 export interface DeviceUnregisterMessage {
     type: 'device.unregister';
@@ -92,9 +93,56 @@ export interface ControlForceDisconnectMessage {
     type: 'control.force_disconnect';
     deviceId: string;
 }
+export interface RelayDesignateMessage {
+    type: 'relay.designate';
+}
+export interface RelayDesignatedMessage {
+    type: 'relay.designated';
+    relayUrl: string;
+    groupId: string;
+}
+export interface InviteCreateRequestMessage {
+    type: 'invite.create.request';
+}
+export interface InviteCreateResponseMessage {
+    type: 'invite.create.response';
+    inviteCode: string;
+    relayUrl: string;
+    expiresAt: string;
+}
+export interface DeviceSettingsUpdateMessage {
+    type: 'device.settings.update';
+    deviceId: string;
+    displayName?: string;
+}
+export interface DeviceSettingsUpdatedMessage {
+    type: 'device.settings.updated';
+    deviceId: string;
+    displayName: string;
+}
+export interface DeviceKickMessage {
+    type: 'device.kick';
+    deviceId: string;
+}
+export interface DeviceKickedMessage {
+    type: 'device.kicked';
+    reason: string;
+}
+export interface GroupDissolveMessage {
+    type: 'group.dissolve';
+}
+export interface GroupDissolvedMessage {
+    type: 'group.dissolved';
+    reason: string;
+}
+export interface PanelDisconnectedMessage {
+    type: 'panel.disconnected';
+    clientId: string;
+}
 export interface GroupJoinRequestMessage {
     type: 'group.join.request';
-    groupSecret: string;
+    groupSecret?: string;
+    inviteCode?: string;
     deviceId: string;
     displayName: string;
     os: string;
@@ -225,4 +273,4 @@ export interface DeviceIdentity {
     displayName: string;
     createdAt: string;
 }
-export type Message = DeviceRegisterMessage | DeviceUnregisterMessage | DeviceListRequestMessage | DeviceListMessage | SessionListRequestMessage | SessionListMessage | TerminalOpenMessage | TerminalOpenedMessage | TerminalInputMessage | TerminalOutputMessage | TerminalResizeMessage | TerminalCloseMessage | TerminalClosedMessage | ControlRequestMessage | ControlGrantMessage | ControlForceDisconnectMessage | GroupJoinRequestMessage | GroupJoinAcceptedMessage | GroupJoinRejectedMessage | GroupMemberJoinedMessage | GroupMemberLeftMessage | GroupMemberListMessage | GroupKickMessage | MobileBindRequestMessage | MobileBindAcceptedMessage | MobileBindRejectedMessage | MobileUnbindMessage | AuthRequestMessage | AuthResponseMessage | PanelLoginScanMessage | ErrorMessage | GroupServerChangeRequestMessage | GroupServerChangePrepareMessage | GroupServerChangeCommitMessage | GroupSecretRotateRequestMessage | GroupSecretRotateDoneMessage;
+export type Message = DeviceRegisterMessage | DeviceUnregisterMessage | DeviceListRequestMessage | DeviceListMessage | SessionListRequestMessage | SessionListMessage | TerminalOpenMessage | TerminalOpenedMessage | TerminalInputMessage | TerminalOutputMessage | TerminalResizeMessage | TerminalCloseMessage | TerminalClosedMessage | ControlRequestMessage | ControlGrantMessage | ControlForceDisconnectMessage | GroupJoinRequestMessage | GroupJoinAcceptedMessage | GroupJoinRejectedMessage | GroupMemberJoinedMessage | GroupMemberLeftMessage | GroupMemberListMessage | GroupKickMessage | MobileBindRequestMessage | MobileBindAcceptedMessage | MobileBindRejectedMessage | MobileUnbindMessage | AuthRequestMessage | AuthResponseMessage | PanelLoginScanMessage | ErrorMessage | GroupServerChangeRequestMessage | GroupServerChangePrepareMessage | GroupServerChangeCommitMessage | GroupSecretRotateRequestMessage | GroupSecretRotateDoneMessage | RelayDesignateMessage | RelayDesignatedMessage | InviteCreateRequestMessage | InviteCreateResponseMessage | DeviceSettingsUpdateMessage | DeviceSettingsUpdatedMessage | DeviceKickMessage | DeviceKickedMessage | GroupDissolveMessage | GroupDissolvedMessage | PanelDisconnectedMessage;

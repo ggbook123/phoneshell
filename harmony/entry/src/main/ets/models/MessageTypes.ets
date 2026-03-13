@@ -13,6 +13,7 @@ export interface DeviceRegisterMessage extends BaseMessage {
   displayName: string;
   os: string;
   availableShells: Array<string>;
+  mode: string; // 'standalone' | 'relay' | 'client'
 }
 
 export interface DeviceUnregisterMessage extends BaseMessage {
@@ -138,6 +139,7 @@ export interface ErrorMessage extends BaseMessage {
 export interface GroupJoinRequestMessage extends BaseMessage {
   type: 'group.join.request';
   groupSecret: string;
+  inviteCode: string;
   deviceId: string;
   displayName: string;
   os: string;
@@ -216,7 +218,7 @@ export interface MobileUnbindMessage extends BaseMessage {
 export interface AuthRequestMessage extends BaseMessage {
   type: 'auth.request';
   requestId: string;
-  action: string;
+  action: string; // 'panel.login' | 'terminal.open.remote'
   requesterId: string;
   requesterName: string;
   targetDeviceId: string | null;
@@ -227,6 +229,75 @@ export interface AuthResponseMessage extends BaseMessage {
   type: 'auth.response';
   requestId: string;
   approved: boolean;
+}
+
+// --- Relay designation ---
+
+export interface RelayDesignateMessage extends BaseMessage {
+  type: 'relay.designate';
+}
+
+export interface RelayDesignatedMessage extends BaseMessage {
+  type: 'relay.designated';
+  relayUrl: string;
+  groupId: string;
+}
+
+// --- Invite system ---
+
+export interface InviteCreateRequestMessage extends BaseMessage {
+  type: 'invite.create.request';
+}
+
+export interface InviteCreateResponseMessage extends BaseMessage {
+  type: 'invite.create.response';
+  inviteCode: string;
+  relayUrl: string;
+  expiresAt: string;
+}
+
+// --- Device settings ---
+
+export interface DeviceSettingsUpdateMessage extends BaseMessage {
+  type: 'device.settings.update';
+  deviceId: string;
+  displayName: string;
+}
+
+export interface DeviceSettingsUpdatedMessage extends BaseMessage {
+  type: 'device.settings.updated';
+  deviceId: string;
+  displayName: string;
+}
+
+// --- Device kick (new style with response) ---
+
+export interface DeviceKickMessage extends BaseMessage {
+  type: 'device.kick';
+  deviceId: string;
+}
+
+export interface DeviceKickedMessage extends BaseMessage {
+  type: 'device.kicked';
+  reason: string;
+}
+
+// --- Group dissolve ---
+
+export interface GroupDissolveMessage extends BaseMessage {
+  type: 'group.dissolve';
+}
+
+export interface GroupDissolvedMessage extends BaseMessage {
+  type: 'group.dissolved';
+  reason: string;
+}
+
+// --- Panel disconnect notification ---
+
+export interface PanelDisconnectedMessage extends BaseMessage {
+  type: 'panel.disconnected';
+  clientId: string;
 }
 
 // Union type for all incoming messages (for reference; individual types used in practice)
@@ -246,4 +317,10 @@ export type ServerMessage =
   MobileBindAcceptedMessage |
   MobileBindRejectedMessage |
   AuthRequestMessage |
-  ErrorMessage;
+  ErrorMessage |
+  RelayDesignatedMessage |
+  InviteCreateResponseMessage |
+  DeviceSettingsUpdatedMessage |
+  DeviceKickedMessage |
+  GroupDissolvedMessage |
+  PanelDisconnectedMessage;

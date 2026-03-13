@@ -1,7 +1,7 @@
 import { webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppColors, AppSizes, AppStrings, ConnectionState } from '../common/Constants';
-import { WebSocketService } from '../services/WebSocketService';
+import { ConnectionManager } from '../services/ConnectionManager';
 
 const DOMAIN = 0x0000;
 const PAGE_TAG = 'TerminalPage';
@@ -94,7 +94,7 @@ struct TerminalPage {
     this.terminalReady = false;
     this.terminalHint = '正在初始化终端...';
     this.showSessionClosedDialog = false;
-    this.viewedSessionId = this.normalizeString(WebSocketService.getActiveSessionId());
+    this.viewedSessionId = this.normalizeString(ConnectionManager.getActiveSessionId());
     this.activatePage();
   }
 
@@ -126,26 +126,26 @@ struct TerminalPage {
       this.onTerminalResize(cols, rows);
     };
     this.terminalBridge.onInputCallback = (data: string) => {
-      WebSocketService.sendTerminalInput(data);
+      ConnectionManager.sendTerminalInput(data);
     };
     this.terminalBridge.onInteractionCallback = () => {
       this.requestRemoteResize();
       this.runTerminalScript('window.phoneShell && window.phoneShell.focus();');
     };
 
-    this.connectionState = WebSocketService.getConnectionState();
-    this.viewedSessionId = this.normalizeString(WebSocketService.getActiveSessionId(), this.viewedSessionId);
+    this.connectionState = ConnectionManager.getConnectionStateForDevice(ConnectionManager.getActiveDeviceId());
+    this.viewedSessionId = this.normalizeString(ConnectionManager.getActiveSessionId(), this.viewedSessionId);
     this.sessionActive = this.viewedSessionId.length > 0;
     hilog.info(DOMAIN, PAGE_TAG, 'activatePage connected=%{public}d sessionActive=%{public}s session=%{public}s',
       this.connectionState, this.sessionActive ? 'true' : 'false', this.viewedSessionId);
 
     if (!this.seededCachedOutput) {
       this.seededCachedOutput = true;
-      this.enqueueTerminalOutput(WebSocketService.getBufferedTerminalOutput());
+      this.enqueueTerminalOutput(ConnectionManager.getBufferedTerminalOutput());
     }
 
     if (this.stateListenerId === -1) {
-      this.stateListenerId = WebSocketService.addOnStateChange((state: ConnectionState) => {
+      this.stateListenerId = ConnectionManager.addOnStateChange((state: ConnectionState, _deviceId: string) => {
         hilog.info(DOMAIN, PAGE_TAG, 'state listener %{public}d', state);
         this.connectionState = state;
         if (state === ConnectionState.DISCONNECTED) {
@@ -156,7 +156,7 @@ struct TerminalPage {
     }
 
     if (this.messageListenerId === -1) {
-      this.messageListenerId = WebSocketService.addOnMessage((type: string, data: Record<string, Object>) => {
+      this.messageListenerId = ConnectionManager.addOnMessage((type: string, data: Record<string, Object>) => {
         hilog.info(DOMAIN, PAGE_TAG, 'message listener %{public}s', type);
         if (type === 'terminal.output') {
           if (this.isCurrentSessionMessage(data)) {
@@ -183,12 +183,12 @@ struct TerminalPage {
 
   private deactivatePage(): void {
     if (this.stateListenerId !== -1) {
-      WebSocketService.removeOnStateChange(this.stateListenerId);
+      ConnectionManager.removeOnStateChange(this.stateListenerId);
       this.stateListenerId = -1;
     }
 
     if (this.messageListenerId !== -1) {
-      WebSocketService.removeOnMessage(this.messageListenerId);
+      ConnectionManager.removeOnMessage(this.messageListenerId);
       this.messageListenerId = -1;
     }
 
@@ -264,7 +264,7 @@ struct TerminalPage {
       return;
     }
 
-    WebSocketService.resizeTerminal(this.lastReportedCols, this.lastReportedRows);
+    ConnectionManager.sendTerminalResize(this.lastReportedCols, this.lastReportedRows);
   }
 
   private isCurrentSessionMessage(data: Record<string, Object>): boolean {
@@ -273,7 +273,7 @@ struct TerminalPage {
   }
 
   private sendShortcutKey(data: string): void {
-    WebSocketService.sendTerminalInput(data);
+    ConnectionManager.sendTerminalInput(data);
     this.runTerminalScript('window.phoneShell && window.phoneShell.focus();');
   }
 

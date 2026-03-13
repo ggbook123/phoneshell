@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import { InviteManager } from '../auth/invite-manager.js';
 import { GroupStore } from '../store/group-store.js';
 import type { GroupInfo, GroupMemberInfo, DeviceInfo, SessionInfo } from '../protocol/messages.js';
 type LogFn = (msg: string) => void;
@@ -19,17 +20,21 @@ export declare class RelayServer {
     private readonly clients;
     private readonly pendingAuths;
     private readonly tokenManager;
+    private readonly inviteManager;
     private readonly outputChains;
     private group;
     private groupStore;
     private authToken;
+    private relayUrl;
     private startedAtUtc;
     private log;
     private callbacks;
     setLogger(fn: LogFn): void;
     setCallbacks(cb: RelayServerCallbacks): void;
     setAuthToken(token: string): void;
+    setRelayUrl(url: string): void;
     getGroup(): GroupInfo | null;
+    getInviteManager(): InviteManager;
     initGroup(groupStore: GroupStore, deviceId: string, displayName: string, os: string, availableShells: string[]): void;
     registerLocalDevice(deviceId: string, displayName: string, os: string, availableShells: string[]): void;
     start(): void;
@@ -88,6 +93,11 @@ export declare class RelayServer {
     private broadcastToAll;
     private tryDispatchPendingPanelLogins;
     private dispatchAuthForSession;
+    private handleRelayDesignate;
+    private handleInviteCreate;
+    private handleDeviceSettingsUpdate;
+    private handleDeviceKick;
+    private handleGroupDissolve;
     stop(): void;
 }
 export {};

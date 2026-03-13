@@ -75,9 +75,18 @@ export enum ConnectionState {
   CONNECTED = 2
 }
 
+export enum DeviceMode {
+  STANDALONE = 'standalone',
+  SINGLE = 'single',
+  GROUP = 'group'
+}
+
 export class StorageKeys {
   static readonly CONNECTION_HISTORY: string = 'connection_history';
   static readonly LAST_SERVER_URL: string = 'last_server_url';
   static readonly GROUP_SECRET: string = 'group_secret';
   static readonly MOBILE_DEVICE_ID: string = 'mobile_device_id';
+  static readonly SINGLE_DEVICES: string = 'single_devices';
+  static readonly GROUP_RELAY_URL: string = 'group_relay_url';
+  static readonly GROUP_ID: string = 'group_id';
 }

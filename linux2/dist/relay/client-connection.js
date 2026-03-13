@@ -6,6 +6,7 @@ export function createClientConnection(ws) {
         ws,
         memberRole: 'Member',
         sendQueue: Promise.resolve(),
+        isPanelClient: false,
     };
 }
 export function sendToClient(client, message) {

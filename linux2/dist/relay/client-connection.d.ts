@@ -8,6 +8,7 @@ export interface ClientConnection {
     subscribedSessionId?: string;
     memberRole: MemberRole;
     sendQueue: Promise<void>;
+    isPanelClient: boolean;
 }
 export declare function createClientConnection(ws: WebSocket): ClientConnection;
 export declare function sendToClient(client: ClientConnection, message: string): Promise<void>;

@@ -29,6 +29,21 @@ export function buildPanelLoginPayload(
   return `phoneshell://login?server=${server}&groupId=${gid}&requestId=${rid}&nonce=${nonce}`;
 }
 
+/** QR payload for standalone mode: phone scans to connect directly to this device */
+export function buildStandalonePayload(
+  httpUrl: string,
+  wsUrl: string,
+  deviceId: string,
+  displayName: string,
+): string {
+  const http = encodeURIComponent(httpUrl);
+  const ws = encodeURIComponent(wsUrl);
+  const did = encodeURIComponent(deviceId);
+  const name = encodeURIComponent(displayName);
+  const nonce = crypto.randomUUID().replace(/-/g, '');
+  return `phoneshell://connect?http=${http}&ws=${ws}&deviceId=${did}&displayName=${name}&nonce=${nonce}`;
+}
+
 export async function generateQrPng(payload: string, pixelsPerModule = 6): Promise<Buffer> {
   return QRCode.toBuffer(payload, {
     type: 'png',

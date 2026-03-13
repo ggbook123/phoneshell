@@ -1,7 +1,7 @@
 import { LengthMetrics } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppColors, AppSizes, AppStrings, ConnectionState } from '../common/Constants';
-import { WebSocketService } from '../services/WebSocketService';
+import { ConnectionManager } from '../services/ConnectionManager';
 
 const DOMAIN = 0x0000;
 const PAGE_TAG = 'SessionListPage';
@@ -77,19 +77,21 @@ struct SessionListPage {
   }
 
   private activatePage(): void {
-    this.connectionState = WebSocketService.getConnectionState();
+    this.connectionState = ConnectionManager.getConnectionStateForDevice(this.deviceId);
 
     if (this.stateListenerId === -1) {
-      this.stateListenerId = WebSocketService.addOnStateChange((state: ConnectionState) => {
-        this.connectionState = state;
-        if (state === ConnectionState.DISCONNECTED) {
-          this.getUIContext().getRouter().back();
+      this.stateListenerId = ConnectionManager.addOnStateChange((state: ConnectionState, deviceId: string) => {
+        if (deviceId === this.deviceId || deviceId === 'group') {
+          this.connectionState = state;
+          if (state === ConnectionState.DISCONNECTED) {
+            this.getUIContext().getRouter().back();
+          }
         }
       });
     }
 
     if (this.messageListenerId === -1) {
-      this.messageListenerId = WebSocketService.addOnMessage((type: string, data: Record<string, Object>) => {
+      this.messageListenerId = ConnectionManager.addOnMessage((type: string, data: Record<string, Object>) => {
         if (type === 'session.list') {
           this.handleSessionList(data);
         } else if (type === 'terminal.opened') {
@@ -105,7 +107,7 @@ struct SessionListPage {
             hilog.info(DOMAIN, PAGE_TAG, 'terminal.opened session=%{public}s device=%{public}s',
               resolvedSessionId, resolvedDeviceId);
             if (resolvedDeviceId === this.deviceId) {
-              WebSocketService.setActiveSession(resolvedDeviceId, resolvedSessionId);
+              ConnectionManager.setActiveSession(resolvedDeviceId, resolvedSessionId);
               try {
                 this.getUIContext().getRouter().pushUrl({ url: 'pages/TerminalPage' });
               } catch (_e) {
@@ -122,18 +124,18 @@ struct SessionListPage {
     // Request session list for this device
     if (this.deviceId.length > 0 && this.connectionState === ConnectionState.CONNECTED) {
       this.isRefreshing = true;
-      WebSocketService.requestSessionList(this.deviceId);
+      ConnectionManager.requestSessionList(this.deviceId);
     }
   }
 
   private deactivatePage(): void {
     if (this.stateListenerId !== -1) {
-      WebSocketService.removeOnStateChange(this.stateListenerId);
+      ConnectionManager.removeOnStateChange(this.stateListenerId);
       this.stateListenerId = -1;
     }
 
     if (this.messageListenerId !== -1) {
-      WebSocketService.removeOnMessage(this.messageListenerId);
+      ConnectionManager.removeOnMessage(this.messageListenerId);
       this.messageListenerId = -1;
     }
   }
@@ -173,14 +175,12 @@ struct SessionListPage {
       return;
     }
     this.isRefreshing = true;
-    WebSocketService.requestSessionList(this.deviceId);
+    ConnectionManager.requestSessionList(this.deviceId);
   }
 
   private onSessionClick(session: SessionItem): void {
     hilog.info(DOMAIN, PAGE_TAG, 'connectToSession session=%{public}s', session.sessionId);
-    // Set active session and navigate to terminal
-    WebSocketService.setActiveSession(this.deviceId, session.sessionId);
-    // Send resize to indicate we're connecting to existing session
+    ConnectionManager.setActiveSession(this.deviceId, session.sessionId);
     try {
       this.getUIContext().getRouter().pushUrl({ url: 'pages/TerminalPage' });
     } catch (_e) {
@@ -191,7 +191,7 @@ struct SessionListPage {
   private onNewSession(): void {
     const shellId: string = this.selectedShell;
     hilog.info(DOMAIN, PAGE_TAG, 'newSession device=%{public}s shell=%{public}s', this.deviceId, shellId);
-    WebSocketService.openTerminal(this.deviceId, shellId);
+    ConnectionManager.openTerminal(this.deviceId, shellId);
   }
 
   private goBack(): void {

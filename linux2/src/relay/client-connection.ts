@@ -9,6 +9,7 @@ export interface ClientConnection {
   subscribedSessionId?: string;
   memberRole: MemberRole;
   sendQueue: Promise<void>;
+  isPanelClient: boolean;
 }
 
 let clientIdCounter = 0;
@@ -19,6 +20,7 @@ export function createClientConnection(ws: WebSocket): ClientConnection {
     ws,
     memberRole: 'Member',
     sendQueue: Promise.resolve(),
+    isPanelClient: false,
   };
 }
 

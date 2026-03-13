@@ -21,6 +21,7 @@ export interface AppConfig {
   modules: ModuleConfig;
   configPath?: string;
   baseDirectory: string;
+  mode: 'standalone' | 'server' | 'client';
 }
 
 function defaultConfig(): AppConfig {
@@ -41,6 +42,7 @@ function defaultConfig(): AppConfig {
       aiChat: false,
     },
     baseDirectory: '/etc/phoneshell',
+    mode: 'standalone',
   };
 }
 
@@ -126,12 +128,18 @@ function applyCliArgs(config: AppConfig, args: string[]): string | undefined {
       case '--mode': {
         if (i + 1 < args.length) {
           const mode = args[++i].toLowerCase();
-          if (mode === 'server' || mode === 'relay-server') {
+          if (mode === 'server' || mode === 'relay-server' || mode === 'relay') {
             config.modules.relayServer = true;
             config.modules.relayClient = false;
+            config.mode = 'server';
           } else if (mode === 'client' || mode === 'relay-client') {
             config.modules.relayServer = false;
             config.modules.relayClient = true;
+            config.mode = 'client';
+          } else if (mode === 'standalone') {
+            config.modules.relayServer = true;
+            config.modules.relayClient = false;
+            config.mode = 'standalone';
           }
         }
         break;
@@ -178,6 +186,7 @@ export function loadConfig(args: string[]): AppConfig {
   if (fileConfig.defaultCols !== undefined) config.defaultCols = fileConfig.defaultCols;
   if (fileConfig.defaultRows !== undefined) config.defaultRows = fileConfig.defaultRows;
   if (fileConfig.baseDirectory !== undefined) config.baseDirectory = fileConfig.baseDirectory;
+  if ((fileConfig as Record<string, unknown>).mode !== undefined) config.mode = (fileConfig as Record<string, unknown>).mode as AppConfig['mode'];
   if (fileConfig.modules) {
     Object.assign(config.modules, fileConfig.modules);
   }

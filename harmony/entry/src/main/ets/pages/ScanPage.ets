@@ -1,10 +1,10 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { scanBarcode } from '@kit.ScanKit';
 import { Context } from '@kit.AbilityKit';
-import { AppColors, AppSizes, AppStrings, ConnectionState, StorageKeys } from '../common/Constants';
-import { WebSocketService } from '../services/WebSocketService';
+import { AppColors, AppSizes, ConnectionState, StorageKeys } from '../common/Constants';
+import { ConnectionManager } from '../services/ConnectionManager';
+import { AuthManager } from '../services/AuthManager';
 import { PreferencesUtil } from '../services/PreferencesUtil';
-import { GroupMemberInfo } from '../models/MessageTypes';
 
 const DOMAIN = 0x0000;
 const PAGE_TAG = 'ScanPage';
@@ -18,43 +18,26 @@ struct ScanPage {
   @State parseError: string = '';
   @State showMigrationDialog: boolean = false;
   @State migrationHint: string = '';
-  private pendingServerDeviceId: string = '';
-  private authListenerId: number = -1;
   private pendingPanelLoginRequestId: string = '';
-  private bindFlowMsgListenerId: number = -1;
-  private bindFlowStateListenerId: number = -1;
-  private loginFlowMsgListenerId: number = -1;
-  private loginFlowStateListenerId: number = -1;
+  private messageListenerId: number = -1;
+  private stateListenerId: number = -1;
 
   aboutToAppear(): void {
     hilog.info(DOMAIN, PAGE_TAG, 'ScanPage aboutToAppear');
   }
 
   aboutToDisappear(): void {
-    this.deactivateLoginAuthListener();
-    this.cleanupBindFlowListeners();
-    this.cleanupLoginFlowListeners();
+    this.cleanupListeners();
   }
 
-  private cleanupBindFlowListeners(): void {
-    if (this.bindFlowStateListenerId !== -1) {
-      WebSocketService.removeOnStateChange(this.bindFlowStateListenerId);
-      this.bindFlowStateListenerId = -1;
+  private cleanupListeners(): void {
+    if (this.messageListenerId !== -1) {
+      ConnectionManager.removeOnMessage(this.messageListenerId);
+      this.messageListenerId = -1;
     }
-    if (this.bindFlowMsgListenerId !== -1) {
-      WebSocketService.removeOnMessage(this.bindFlowMsgListenerId);
-      this.bindFlowMsgListenerId = -1;
-    }
-  }
-
-  private cleanupLoginFlowListeners(): void {
-    if (this.loginFlowStateListenerId !== -1) {
-      WebSocketService.removeOnStateChange(this.loginFlowStateListenerId);
-      this.loginFlowStateListenerId = -1;
-    }
-    if (this.loginFlowMsgListenerId !== -1) {
-      WebSocketService.removeOnMessage(this.loginFlowMsgListenerId);
-      this.loginFlowMsgListenerId = -1;
+    if (this.stateListenerId !== -1) {
+      ConnectionManager.removeOnStateChange(this.stateListenerId);
+      this.stateListenerId = -1;
     }
   }
 
@@ -93,339 +76,132 @@ struct ScanPage {
   }
 
   private async handleScanResult(payload: string): Promise<void> {
-    // Expected formats:
-    //   phoneshell://bind?server=...&groupId=...&groupSecret=...&serverDeviceId=...
-    //   phoneshell://login?server=...&groupId=...&requestId=...
+    // Supported formats:
+    //   phoneshell://connect?http=...&ws=...&deviceId=...&displayName=...   (standalone device)
+    //   phoneshell://bind?server=...&groupId=...&groupSecret=...            (group bind)
+    //   phoneshell://login?server=...&groupId=...&requestId=...             (panel login)
     if (!payload.startsWith('phoneshell://')) {
       this.parseError = '无效的二维码格式';
       return;
     }
 
-    // Detect scheme: bind or login
-    const isLogin: boolean = payload.startsWith('phoneshell://login');
-
     const params: Map<string, string> = this.parseQrParams(payload);
+
+    if (payload.startsWith('phoneshell://connect')) {
+      this.handleConnectQr(params);
+    } else if (payload.startsWith('phoneshell://login')) {
+      this.handleLoginQr(params);
+    } else if (payload.startsWith('phoneshell://bind')) {
+      await this.handleBindQr(params);
+    } else {
+      this.parseError = '未知的二维码类型';
+    }
+  }
+
+  // --- Standalone connect: phone directly connects to a device via WS ---
+  private handleConnectQr(params: Map<string, string>): void {
+    const wsUrl: string = params.get('ws') ?? '';
+    const httpUrl: string = params.get('http') ?? '';
+    const deviceId: string = params.get('deviceId') ?? '';
+    const displayName: string = params.get('displayName') ?? deviceId;
+
+    hilog.info(DOMAIN, PAGE_TAG, 'connect QR: ws=%{public}s deviceId=%{public}s', wsUrl, deviceId);
+
+    if (wsUrl.length === 0 || deviceId.length === 0) {
+      this.parseError = '二维码缺少必要参数 (ws/deviceId)';
+      return;
+    }
+
+    this.scanStatus = `正在连接 ${displayName}...`;
+
+    // Use ConnectionManager to establish single connection
+    ConnectionManager.connectSingle(wsUrl, deviceId, displayName, httpUrl);
+
+    // Navigate back to device manage page
+    this.scanStatus = `已添加设备 ${displayName}`;
+    this.getUIContext().getRouter().back();
+  }
+
+  // --- Group bind: connect to relay server and join group ---
+  private async handleBindQr(params: Map<string, string>): Promise<void> {
     const server: string = params.get('server') ?? '';
     const groupId: string = params.get('groupId') ?? '';
     const groupSecret: string = params.get('groupSecret') ?? '';
-    const serverDeviceId: string = params.get('serverDeviceId') ?? '';
-    const requestId: string = params.get('requestId') ?? '';
 
-    if (isLogin) {
-      hilog.info(DOMAIN, PAGE_TAG, 'login QR: server=%{public}s groupId=%{public}s requestId=%{public}s',
-        server, groupId, requestId);
-      this.scanStatus = `登录码: server=${server.length > 0 ? server.substring(0, 30) : '(空)'}, requestId=${requestId.length > 0 ? requestId.substring(0, 8) : '(空)'}`;
-
-      if (server.length === 0 || requestId.length === 0) {
-        this.parseError = `登录码缺少必要参数 (server=${server.length > 0 ? '有' : '无'}, requestId=${requestId.length > 0 ? '有' : '无'})`;
-        return;
-      }
-
-      this.handleLoginQr(server, groupId, requestId);
-      return;
-    }
-
-    // --- Bind QR flow (existing logic) ---
-    // Debug: show parsed params
-    hilog.info(DOMAIN, PAGE_TAG, 'parsed params: server=%{public}s groupId=%{public}s groupSecret=%{public}s',
-      server, groupId, groupSecret.length > 0 ? groupSecret.substring(0, 8) + '...' : '(empty)');
-    this.scanStatus = `解析: server=${server.length > 0 ? server.substring(0, 30) : '(空)'}, ` +
-      `groupId=${groupId.length > 0 ? groupId.substring(0, 8) : '(空)'}, ` +
-      `secret=${groupSecret.length > 0 ? '有' : '(空)'}`;
+    hilog.info(DOMAIN, PAGE_TAG, 'bind QR: server=%{public}s groupId=%{public}s', server, groupId);
 
     if (server.length === 0 || groupSecret.length === 0) {
-      this.parseError = `二维码缺少必要参数 (server=${server.length > 0 ? '有' : '无'}, secret=${groupSecret.length > 0 ? '有' : '无'})`;
+      this.parseError = '二维码缺少必要参数 (server/groupSecret)';
       return;
     }
 
-    const alreadyJoined: boolean = WebSocketService.getIsGroupJoined();
-    const currentGroupId: string = WebSocketService.getGroupId();
-    const isSameGroup: boolean = alreadyJoined && currentGroupId.length > 0 && currentGroupId === groupId;
-
-    if (isSameGroup && serverDeviceId.length > 0) {
-      const members: Array<GroupMemberInfo> = WebSocketService.getCachedGroupMembers();
-      let currentServerId: string = '';
-      for (let i: number = 0; i < members.length; i++) {
-        const member: GroupMemberInfo = members[i];
-        if (member.role === 'Server') {
-          currentServerId = member.deviceId;
-          break;
-        }
-      }
-      if (currentServerId.length > 0 && currentServerId === serverDeviceId) {
-        this.scanStatus = '当前已使用该服务器，无需迁移';
-        return;
-      }
-
-      this.pendingServerDeviceId = serverDeviceId;
-      this.migrationHint = '检测到已加入该群组。继续将导致出现两个 relay-server。\n是否将此设备指定为新的 relay-server？';
-      this.showMigrationDialog = true;
-      return;
-    }
-
-    hilog.info(DOMAIN, PAGE_TAG, 'connecting to server=%{public}s groupId=%{public}s', server, groupId);
-
-    // Save settings (Bug #3: await persistence)
+    // Save settings
     await PreferencesUtil.setLastServerUrl(server);
     await PreferencesUtil.setString(StorageKeys.GROUP_SECRET, groupSecret);
 
-    // Connect to server (append token for handshake auth)
-    this.scanStatus = `正在连接 ${server.substring(0, 40)}...`;
+    this.scanStatus = `正在连接群组 ${server.substring(0, 40)}...`;
+
+    // Connect as group
     const connectUrl: string = this.buildConnectUrlWithToken(server, groupSecret);
+    ConnectionManager.connectGroup(connectUrl, groupSecret, groupId);
 
-    // Clean up any previous bind flow listeners
-    this.cleanupBindFlowListeners();
-
-    WebSocketService.connect(connectUrl);
-
-    // After connection, join group and bind mobile
-    let didHandleConnected: boolean = false;
-    const connectTimeoutMs: number = 8000;
-    const timeoutId: number = setTimeout(() => {
-      if (!didHandleConnected) {
-        this.scanStatus = '连接失败，请检查网络或服务器地址';
-        this.parseError = '无法连接到服务器';
-        this.cleanupBindFlowListeners();
-      }
-    }, connectTimeoutMs);
-
-    const handleConnected = () => {
-      if (didHandleConnected) {
-        return;
-      }
-      didHandleConnected = true;
-      clearTimeout(timeoutId);
-      if (this.bindFlowStateListenerId !== -1) {
-        WebSocketService.removeOnStateChange(this.bindFlowStateListenerId);
-        this.bindFlowStateListenerId = -1;
-      }
-
-      this.scanStatus = '已连接，正在加入群组...';
-
-      const bindHostContext: Context | undefined = this.getUIContext().getHostContext();
-      const mobileDeviceId: string = bindHostContext !== undefined
-        ? PreferencesUtil.getMobileDeviceId(bindHostContext) : '';
-      const displayName: string = 'HarmonyOS Device';
-
-      // Join group first
-      WebSocketService.joinGroup(groupSecret, mobileDeviceId, displayName);
-
-      // Listen for group join acceptance to bind mobile
-      this.bindFlowMsgListenerId = WebSocketService.addOnMessage((type: string, _data: Record<string, Object>) => {
-        if (type === 'group.join.accepted') {
-          if (this.bindFlowMsgListenerId !== -1) {
-            WebSocketService.removeOnMessage(this.bindFlowMsgListenerId);
-            this.bindFlowMsgListenerId = -1;
-          }
-          this.scanStatus = '已加入群组，正在绑定手机...';
-          const joinedGroupId: string = WebSocketService.getGroupId();
-          WebSocketService.bindMobile(joinedGroupId, mobileDeviceId, displayName);
-          hilog.info(DOMAIN, PAGE_TAG, 'group joined, binding mobile');
-
-          // Navigate back
-          this.getUIContext().getRouter().back();
-        } else if (type === 'group.join.rejected') {
-          if (this.bindFlowMsgListenerId !== -1) {
-            WebSocketService.removeOnMessage(this.bindFlowMsgListenerId);
-            this.bindFlowMsgListenerId = -1;
-          }
-          this.parseError = '加入群组被拒绝';
-          this.scanStatus = '加入群组失败';
-        } else if (type === 'error') {
-          const errMsg: Object | undefined = _data['message'];
-          this.parseError = `错误: ${typeof errMsg === 'string' ? errMsg : '未知'}`;
-        }
-      });
-    };
-
-    this.bindFlowStateListenerId = WebSocketService.addOnStateChange((state: ConnectionState) => {
-      if (state === ConnectionState.CONNECTED) {
-        handleConnected();
-      } else if (state === ConnectionState.DISCONNECTED && !didHandleConnected) {
-        this.scanStatus = '连接断开，正在重试...';
+    // Listen for group join result
+    this.cleanupListeners();
+    this.messageListenerId = ConnectionManager.addOnMessage((type: string, _data: Record<string, Object>) => {
+      if (type === 'group.join.accepted') {
+        this.cleanupListeners();
+        this.scanStatus = '已加入群组';
+        // Bind mobile
+        const hostContext: Context | undefined = this.getUIContext().getHostContext();
+        const mobileDeviceId: string = hostContext !== undefined
+          ? PreferencesUtil.getMobileDeviceId(hostContext) : '';
+        ConnectionManager.sendMobileBindRequest(groupId);
+        this.getUIContext().getRouter().back();
+      } else if (type === 'group.join.rejected') {
+        this.cleanupListeners();
+        this.parseError = '加入群组被拒绝';
+        this.scanStatus = '加入群组失败';
       }
     });
 
-    // Handle race where connection is already established before listener attaches
-    if (WebSocketService.getConnectionState() === ConnectionState.CONNECTED) {
-      handleConnected();
+    this.stateListenerId = ConnectionManager.addOnStateChange((state: ConnectionState, _deviceId: string) => {
+      if (state === ConnectionState.CONNECTED) {
+        ConnectionManager.sendGroupJoinRequest(groupSecret);
+      }
+    });
+
+    // If already connected, send join immediately
+    if (ConnectionManager.getConnectionStateForDevice('group') === ConnectionState.CONNECTED) {
+      ConnectionManager.sendGroupJoinRequest(groupSecret);
     }
+  }
+
+  // --- Panel login: scan login QR from web panel ---
+  private handleLoginQr(params: Map<string, string>): void {
+    const server: string = params.get('server') ?? '';
+    const requestId: string = params.get('requestId') ?? '';
+
+    hilog.info(DOMAIN, PAGE_TAG, 'login QR: server=%{public}s requestId=%{public}s', server, requestId);
+
+    if (server.length === 0 || requestId.length === 0) {
+      this.parseError = '登录码缺少必要参数';
+      return;
+    }
+
+    this.scanStatus = '正在处理登录请求...';
+    this.pendingPanelLoginRequestId = requestId;
+
+    // Send panel.login.scan through ConnectionManager
+    ConnectionManager.sendPanelLoginScan(requestId);
+    this.scanStatus = '已发送登录确认，请在弹出的授权窗口中确认';
   }
 
   private confirmMigration(): void {
     this.showMigrationDialog = false;
-
-    if (this.pendingServerDeviceId.length === 0) {
-      this.parseError = '缺少服务器设备 ID，无法迁移';
-      return;
-    }
-
-    if (WebSocketService.getConnectionState() !== ConnectionState.CONNECTED) {
-      this.parseError = '请先连接当前服务器后再发起迁移';
-      return;
-    }
-
-    this.parseError = '';
-    this.scanStatus = '已发起服务器迁移请求，请在当前服务器确认...';
-    WebSocketService.sendServerChangeRequest(this.pendingServerDeviceId);
-    this.pendingServerDeviceId = '';
   }
 
   private cancelMigration(): void {
     this.showMigrationDialog = false;
-    this.pendingServerDeviceId = '';
-    this.scanStatus = '已取消服务器迁移';
-  }
-
-  /**
-   * Handle login QR: connect to server using saved groupSecret, join group, then send panel.login.scan.
-   * Server will verify this is the bound mobile and send an auth request for the user to confirm.
-   */
-  private async handleLoginQr(server: string, groupId: string, requestId: string): Promise<void> {
-    try {
-      // Get saved groupSecret from preferences
-      const savedSecret: string = await PreferencesUtil.getString(StorageKeys.GROUP_SECRET);
-      if (savedSecret.length === 0) {
-        this.parseError = '本机未保存群组密钥，请先使用绑定码绑定';
-        return;
-      }
-
-      hilog.info(DOMAIN, PAGE_TAG, 'login QR: connecting with saved secret');
-      this.scanStatus = `正在连接 ${server.substring(0, 40)}...`;
-      this.pendingPanelLoginRequestId = requestId;
-      this.activateLoginAuthListener();
-
-      // Connect to server
-      const connectUrl: string = this.buildConnectUrlWithToken(server, savedSecret);
-
-      // Clean up any previous login flow listeners
-      this.cleanupLoginFlowListeners();
-
-      WebSocketService.connect(connectUrl);
-
-      let didHandleConnected: boolean = false;
-      const connectTimeoutMs: number = 8000;
-      const timeoutId: number = setTimeout(() => {
-        if (!didHandleConnected) {
-          this.scanStatus = '连接失败，请检查网络或服务器地址';
-          this.parseError = '无法连接到服务器';
-          this.cleanupLoginFlowListeners();
-        }
-      }, connectTimeoutMs);
-
-      const loginHostContext: Context | undefined = this.getUIContext().getHostContext();
-      const mobileDeviceId: string = loginHostContext !== undefined
-        ? PreferencesUtil.getMobileDeviceId(loginHostContext) : '';
-      const displayName: string = 'HarmonyOS Device';
-
-      const handleConnected = () => {
-        if (didHandleConnected) {
-          return;
-        }
-        didHandleConnected = true;
-        clearTimeout(timeoutId);
-        if (this.loginFlowStateListenerId !== -1) {
-          WebSocketService.removeOnStateChange(this.loginFlowStateListenerId);
-          this.loginFlowStateListenerId = -1;
-        }
-
-        this.scanStatus = '已连接，正在加入群组...';
-
-        // Join group first
-        WebSocketService.joinGroup(savedSecret, mobileDeviceId, displayName);
-
-        // Listen for group join acceptance then send panel.login.scan
-        this.loginFlowMsgListenerId = WebSocketService.addOnMessage((type: string, _data: Record<string, Object>) => {
-          if (type === 'group.join.accepted') {
-            if (this.loginFlowMsgListenerId !== -1) {
-              WebSocketService.removeOnMessage(this.loginFlowMsgListenerId);
-              this.loginFlowMsgListenerId = -1;
-            }
-            this.scanStatus = '已加入群组，正在发送登录扫码确认...';
-            hilog.info(DOMAIN, PAGE_TAG, 'group joined for login, sending panel.login.scan');
-
-            // Send panel.login.scan to notify server
-            WebSocketService.sendPanelLoginScan(requestId, mobileDeviceId);
-            this.scanStatus = '已发送登录请求，请在手机端确认授权...';
-          } else if (type === 'group.join.rejected') {
-            if (this.loginFlowMsgListenerId !== -1) {
-              WebSocketService.removeOnMessage(this.loginFlowMsgListenerId);
-              this.loginFlowMsgListenerId = -1;
-            }
-            this.parseError = '加入群组被拒绝，密钥可能已变更';
-            this.scanStatus = '加入群组失败';
-          } else if (type === 'error') {
-            const errMsg: Object | undefined = _data['message'];
-            this.parseError = `错误: ${typeof errMsg === 'string' ? errMsg : '未知'}`;
-          }
-        });
-      };
-
-      this.loginFlowStateListenerId = WebSocketService.addOnStateChange((state: ConnectionState) => {
-        if (state === ConnectionState.CONNECTED) {
-          handleConnected();
-        } else if (state === ConnectionState.DISCONNECTED && !didHandleConnected) {
-          this.scanStatus = '连接断开，正在重试...';
-        }
-      });
-
-      // Handle race where connection is already established
-      if (WebSocketService.getConnectionState() === ConnectionState.CONNECTED) {
-        handleConnected();
-      }
-    } catch (err) {
-      hilog.error(DOMAIN, PAGE_TAG, 'handleLoginQr error: %{public}s', (err as Error).message ?? 'unknown');
-      this.parseError = `登录处理失败: ${(err as Error).message ?? '未知错误'}`;
-    }
-  }
-
-  private activateLoginAuthListener(): void {
-    if (this.authListenerId !== -1) {
-      return;
-    }
-
-    this.authListenerId = WebSocketService.addOnMessage((type: string, data: Record<string, Object>) => {
-      if (type !== 'auth.request') {
-        return;
-      }
-
-      const action: string = (data['action'] ?? '') as string;
-      const requestId: string = (data['requestId'] ?? '') as string;
-      if (action !== 'panel.login') {
-        return;
-      }
-
-      if (this.pendingPanelLoginRequestId.length > 0 && requestId !== this.pendingPanelLoginRequestId) {
-        return;
-      }
-
-      this.pendingPanelLoginRequestId = '';
-      this.deactivateLoginAuthListener();
-
-      const requesterName: string = (data['requesterName'] ?? '') as string;
-      const description: string = (data['description'] ?? '') as string;
-
-      try {
-        this.getUIContext().getRouter().pushUrl({
-          url: 'pages/AuthorizationPage',
-          params: {
-            requestId: requestId,
-            action: action,
-            requesterName: requesterName,
-            description: description
-          }
-        });
-      } catch (_e) {
-        // Ignore navigation errors
-      }
-    });
-  }
-
-  private deactivateLoginAuthListener(): void {
-    if (this.authListenerId !== -1) {
-      WebSocketService.removeOnMessage(this.authListenerId);
-      this.authListenerId = -1;
-    }
   }
 
   private buildConnectUrlWithToken(baseUrl: string, groupSecret: string): string {

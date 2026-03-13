@@ -17,6 +17,7 @@ export interface AppConfig {
     modules: ModuleConfig;
     configPath?: string;
     baseDirectory: string;
+    mode: 'standalone' | 'server' | 'client';
 }
 export declare function loadConfig(args: string[]): AppConfig;
 export declare function saveConfig(config: AppConfig): void;
