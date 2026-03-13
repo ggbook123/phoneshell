@@ -56,8 +56,8 @@ internal sealed class WebPanelModule
         Func<object> buildStatusPayload,
         Func<List<Protocol.DeviceInfo>> getDeviceList,
         Func<string, List<Protocol.SessionInfo>?> getSessionsForDevice,
-        Func<object> getPanelPairingPayload,
-        Func<string?> getPanelQrPayload,
+        Func<HttpListenerRequest, object> getPanelPairingPayload,
+        Func<HttpListenerRequest, string?> getPanelQrPayload,
         Func<HttpListenerRequest, Task<object>> startPanelLogin,
         Func<string, object?> getPanelLoginStatus,
         Func<GroupInfo?> getGroupInfo,
@@ -217,8 +217,8 @@ internal sealed class WebPanelModule
         HttpListenerContext context,
         string path,
         Func<bool> isAuthorized,
-        Func<object> getPanelPairingPayload,
-        Func<string?> getPanelQrPayload,
+        Func<HttpListenerRequest, object> getPanelPairingPayload,
+        Func<HttpListenerRequest, string?> getPanelQrPayload,
         Func<HttpListenerRequest, Task<object>> startPanelLogin,
         Func<string, object?> getPanelLoginStatus)
     {
@@ -232,13 +232,13 @@ internal sealed class WebPanelModule
 
         if (path == "/api/panel/pairing")
         {
-            await WriteJsonAsync(context.Response, HttpStatusCode.OK, getPanelPairingPayload());
+            await WriteJsonAsync(context.Response, HttpStatusCode.OK, getPanelPairingPayload(context.Request));
             return true;
         }
 
         if (path == "/api/panel/qr.png")
         {
-            var payload = getPanelQrPayload();
+            var payload = getPanelQrPayload(context.Request);
             if (string.IsNullOrWhiteSpace(payload))
             {
                 await WriteJsonAsync(context.Response, HttpStatusCode.NotFound, new

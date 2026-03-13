@@ -1,7 +1,8 @@
 import { webSocket } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ConnectionState } from '../common/Constants';
+import { ConnectionState, StorageKeys } from '../common/Constants';
+import { PreferencesUtil } from './PreferencesUtil';
 import { DeviceInfo, GroupMemberInfo } from '../models/MessageTypes';
 
 const DOMAIN = 0x0000;
@@ -10,6 +11,11 @@ const NET_TAG = 'PhoneShellNet';
 // Message classes for protocol - must be explicit classes for ArkTS strict mode
 class DeviceListRequestMsg {
   type: string = 'device.list.request';
+}
+
+class DeviceUnregisterMsg {
+  type: string = 'device.unregister';
+  deviceId: string = '';
 }
 
 class SessionListRequestMsg {
@@ -58,6 +64,11 @@ class MobileBindRequestMsg {
   groupId: string = '';
   mobileDeviceId: string = '';
   mobileDisplayName: string = '';
+}
+
+class MobileUnbindMsg {
+  type: string = 'mobile.unbind';
+  groupId: string = '';
 }
 
 class AuthResponseMsg {
@@ -115,6 +126,7 @@ class WebSocketServiceClass {
   private maxReconnectAttempts: number = 10;
   private reconnectBaseDelay: number = 1000;
   private shouldReconnect: boolean = false;
+  private connectionGeneration: number = 0;
 
   // Callbacks
   private messageCallbackWrappers: Array<MessageCallbackWrapper> = [];
@@ -230,8 +242,9 @@ class WebSocketServiceClass {
 
   private emitError(message: string): void {
     hilog.error(DOMAIN, NET_TAG, 'emitError %{public}s', message);
-    const payload: Record<string, Object> =
-      JSON.parse(JSON.stringify({ type: 'error', message: message })) as Record<string, Object>;
+    let payload: Record<string, Object> = {} as Record<string, Object>;
+    payload['type'] = 'error';
+    payload['message'] = message;
     this.emitMessage('error', payload);
   }
 
@@ -380,13 +393,39 @@ class WebSocketServiceClass {
     this.doConnect();
   }
 
+  private cleanupSocket(socket: webSocket.WebSocket): void {
+    try {
+      socket.off('open');
+      socket.off('message');
+      socket.off('close');
+      socket.off('error');
+    } catch (_e) {
+      // Ignore off() errors
+    }
+    socket.close().catch((closeErr: BusinessError) => {
+      hilog.error(DOMAIN, NET_TAG, 'cleanupSocket close error %{public}s', this.describeError(closeErr));
+    });
+  }
+
   private doConnect(): void {
+    this.connectionGeneration++;
+    const generation: number = this.connectionGeneration;
+
+    // Clean up any existing socket before creating a new one (Bug #4)
+    if (this.ws !== null) {
+      this.cleanupSocket(this.ws);
+      this.ws = null;
+    }
+
     this.updateState(ConnectionState.CONNECTING);
-    hilog.info(DOMAIN, NET_TAG, 'doConnect start');
+    hilog.info(DOMAIN, NET_TAG, 'doConnect start generation=%{public}d', generation);
 
     this.ws = webSocket.createWebSocket();
 
     this.ws.on('open', (err: BusinessError, value: Object) => {
+      if (generation !== this.connectionGeneration) {
+        return;
+      }
       if (err) {
         const errorMessage: string = this.extractErrorMessage(err);
         if (errorMessage.length > 0) {
@@ -406,6 +445,9 @@ class WebSocketServiceClass {
     });
 
     this.ws.on('message', (err: BusinessError, value: string | ArrayBuffer) => {
+      if (generation !== this.connectionGeneration) {
+        return;
+      }
       if (err) {
         return;
       }
@@ -416,6 +458,9 @@ class WebSocketServiceClass {
     });
 
     this.ws.on('close', (err: BusinessError, value: webSocket.CloseResult) => {
+      if (generation !== this.connectionGeneration) {
+        return;
+      }
       hilog.warn(DOMAIN, NET_TAG, 'websocket close code=%{public}d reason=%{public}s',
         value.code, this.normalizeString(value.reason));
       const errorMessage: string = this.extractErrorMessage(err);
@@ -429,6 +474,9 @@ class WebSocketServiceClass {
     });
 
     this.ws.on('error', (err: BusinessError) => {
+      if (generation !== this.connectionGeneration) {
+        return;
+      }
       hilog.error(DOMAIN, NET_TAG, 'websocket error %{public}s', JSON.stringify(err));
       const errorMessage: string = this.extractErrorMessage(err);
       if (errorMessage.length > 0) {
@@ -443,6 +491,9 @@ class WebSocketServiceClass {
     });
 
     this.ws.connect(this.serverUrl).catch((err: BusinessError) => {
+      if (generation !== this.connectionGeneration) {
+        return;
+      }
       hilog.error(DOMAIN, NET_TAG, 'connect catch %{public}s', JSON.stringify(err));
       const errorMessage: string = this.extractErrorMessage(err);
       if (errorMessage.length > 0) {
@@ -460,6 +511,7 @@ class WebSocketServiceClass {
   disconnect(): void {
     hilog.info(DOMAIN, NET_TAG, 'disconnect called');
     this.shouldReconnect = false;
+    this.connectionGeneration++;
     this.clearReconnectTimer();
     this.resetActiveSession();
 
@@ -467,9 +519,7 @@ class WebSocketServiceClass {
     this.ws = null;
 
     if (activeSocket !== null) {
-      activeSocket.close().catch((err: BusinessError) => {
-        hilog.error(DOMAIN, NET_TAG, 'disconnect close error %{public}s', this.describeError(err));
-      });
+      this.cleanupSocket(activeSocket);
     }
     this.updateState(ConnectionState.DISCONNECTED);
   }
@@ -492,6 +542,17 @@ class WebSocketServiceClass {
 
   requestDeviceList(): void {
     let msg: DeviceListRequestMsg = new DeviceListRequestMsg();
+    this.send(JSON.stringify(msg));
+  }
+
+  unregisterDevice(deviceId: string): void {
+    const normalizedDeviceId: string = this.normalizeString(deviceId);
+    if (normalizedDeviceId.length === 0) {
+      return;
+    }
+    hilog.info(DOMAIN, NET_TAG, 'unregisterDevice device=%{public}s', normalizedDeviceId);
+    let msg: DeviceUnregisterMsg = new DeviceUnregisterMsg();
+    msg.deviceId = normalizedDeviceId;
     this.send(JSON.stringify(msg));
   }
 
@@ -608,6 +669,17 @@ class WebSocketServiceClass {
     this.send(JSON.stringify(msg));
   }
 
+  unbindMobile(groupId: string = ''): void {
+    const resolvedGroupId: string = this.normalizeString(groupId, this.groupId);
+    if (resolvedGroupId.length === 0) {
+      return;
+    }
+    hilog.info(DOMAIN, NET_TAG, 'unbindMobile groupId=%{public}s', resolvedGroupId);
+    let msg: MobileUnbindMsg = new MobileUnbindMsg();
+    msg.groupId = resolvedGroupId;
+    this.send(JSON.stringify(msg));
+  }
+
   respondAuth(requestId: string, approved: boolean): void {
     hilog.info(DOMAIN, NET_TAG, 'respondAuth id=%{public}s approved=%{public}s', requestId, approved.toString());
     let msg: AuthResponseMsg = new AuthResponseMsg();
@@ -662,6 +734,14 @@ class WebSocketServiceClass {
     return this.normalizeString(this.mobileDeviceId);
   }
 
+  resetGroupState(): void {
+    this.groupId = '';
+    this.groupSecret = '';
+    this.isGroupJoined = false;
+    this.cachedGroupMembers = [];
+    this.cachedDevices = [];
+  }
+
   private normalizeGroupMemberList(value: Object | undefined | null): Array<GroupMemberInfo> {
     let normalized: Array<GroupMemberInfo> = [];
     if (!Array.isArray(value)) {
@@ -705,6 +785,14 @@ class WebSocketServiceClass {
       if (msgType === 'device.list') {
         const devices: Object | undefined = parsed['devices'];
         this.cachedDevices = this.normalizeDeviceList(devices);
+      } else if (msgType === 'device.unregister') {
+        const unboundDeviceId: string = this.normalizeString(parsed['deviceId']);
+        if (unboundDeviceId.length > 0 && unboundDeviceId === this.mobileDeviceId) {
+          hilog.warn(DOMAIN, NET_TAG, 'mobile unbound by server');
+          this.resetGroupState();
+          PreferencesUtil.setString(StorageKeys.GROUP_SECRET, '');
+          this.disconnect();
+        }
       } else if (msgType === 'group.join.accepted') {
         this.groupId = this.normalizeString(parsed['groupId']);
         this.cachedGroupMembers = this.normalizeGroupMemberList(parsed['members']);
@@ -826,12 +914,29 @@ class WebSocketServiceClass {
         if (newServerUrl.length > 0) {
           hilog.info(DOMAIN, NET_TAG, 'server migration: switching to %{public}s', newServerUrl);
           this.groupSecret = newGroupSecret;
+          const savedMobileDeviceId: string = this.mobileDeviceId;
+          const savedGroupSecret: string = this.groupSecret;
           // Reconnect to new server
           this.disconnect();
           this.connect(newServerUrl);
-          // After connecting, rejoin group
-          if (this.groupSecret.length > 0 && this.mobileDeviceId.length > 0) {
-            // Re-join will happen via the connect flow
+          // After connecting, rejoin group and rebind mobile
+          if (savedGroupSecret.length > 0 && savedMobileDeviceId.length > 0) {
+            const migrationStateListenerId: number = this.addOnStateChange((state: ConnectionState) => {
+              if (state === ConnectionState.CONNECTED) {
+                this.removeOnStateChange(migrationStateListenerId);
+                this.joinGroup(savedGroupSecret, savedMobileDeviceId, 'HarmonyOS Device');
+                const migrationMsgListenerId: number = this.addOnMessage((type: string, _data: Record<string, Object>) => {
+                  if (type === 'group.join.accepted') {
+                    this.removeOnMessage(migrationMsgListenerId);
+                    const joinedGroupId: string = this.getGroupId();
+                    this.bindMobile(joinedGroupId, savedMobileDeviceId, 'HarmonyOS Device');
+                  } else if (type === 'group.join.rejected') {
+                    this.removeOnMessage(migrationMsgListenerId);
+                    hilog.warn(DOMAIN, NET_TAG, 'server migration: rejoin rejected');
+                  }
+                });
+              }
+            });
           }
         }
       } else if (msgType === 'group.secret.rotate.done') {

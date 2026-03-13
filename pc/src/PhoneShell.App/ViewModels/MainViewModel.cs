@@ -81,6 +81,9 @@ public sealed class TerminalTab : ObservableObject, IDisposable
     public VirtualScreen VirtualScreen { get; }
     public TerminalOutputStabilizer OutputStabilizer { get; }
 
+    /// <summary>Cached delegate for OutputReceived subscription (allows proper unsubscribe).</summary>
+    internal Action<string>? OutputHandler;
+
     public string Title
     {
         get => _title;
@@ -245,6 +248,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     // Auto-exec fields
     private CancellationTokenSource? _autoExecCts;
+    private int _autoExecGeneration;
     private bool _isAutoExecuting;
     private int _autoExecStep;
     private const int AutoExecMaxSteps = 10;
@@ -646,7 +650,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var tabId = Guid.NewGuid().ToString("N")[..8];
         var tab = new TerminalTab(tabId, shell, _tabCounter);
 
-        tab.SessionManager.OutputReceived += text => OnTabOutput(tab, text);
+        tab.OutputHandler = text => OnTabOutput(tab, text);
+        tab.SessionManager.OutputReceived += tab.OutputHandler;
 
         Tabs.Add(tab);
         OnPropertyChanged(nameof(HasTabs));
@@ -767,18 +772,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var index = Tabs.IndexOf(tab);
         if (!tab.IsRemote)
             NotifyLocalTerminalClosed(tab);
-        tab.SessionManager.OutputReceived -= text => OnTabOutput(tab, text);
-        tab.Dispose();
-        Tabs.Remove(tab);
-        OnPropertyChanged(nameof(HasTabs));
-        NotifyLocalSessionListChanged();
-        UpdateMobileConnectionState();
+        tab.SessionManager.OutputReceived -= tab.OutputHandler;
 
+        // Switch active tab before disposing to avoid referencing a disposed object
         if (ActiveTab == tab)
         {
-            if (Tabs.Count > 0)
+            // Tab is still in Tabs at this point, so count-1 represents remaining tabs after removal
+            if (Tabs.Count > 1)
             {
-                var newIndex = Math.Min(index, Tabs.Count - 1);
+                // Pick the next tab, or the previous one if we're closing the last tab
+                var newIndex = index < Tabs.Count - 1 ? index + 1 : index - 1;
                 SetActiveTab(Tabs[newIndex]);
             }
             else
@@ -787,6 +790,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 SessionStatus = "No session";
             }
         }
+
+        tab.Dispose();
+        Tabs.Remove(tab);
+        OnPropertyChanged(nameof(HasTabs));
+        NotifyLocalSessionListChanged();
+        UpdateMobileConnectionState();
     }
 
     private void ToggleCompactMode(string? tabId)
@@ -1316,6 +1325,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayClient.ServerChanged += OnServerChanged;
                 _relayClient.ServerChangeRequested += OnServerChangeRequested;
                 _relayClient.GroupSecretRotated += OnGroupSecretRotated;
+                _relayClient.DeviceUnbound += OnDeviceUnbound;
                 _relayClient.TerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
                 _relayClient.TerminalOutputReceived += OnRemoteTerminalOutputReceived;
                 _relayClient.TerminalClosedReceived += OnRemoteTerminalClosedReceived;
@@ -1372,6 +1382,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayClient.ServerChanged -= OnServerChanged;
             _relayClient.ServerChangeRequested -= OnServerChangeRequested;
             _relayClient.GroupSecretRotated -= OnGroupSecretRotated;
+            _relayClient.DeviceUnbound -= OnDeviceUnbound;
             _relayClient.TerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
             _relayClient.TerminalOutputReceived -= OnRemoteTerminalOutputReceived;
             _relayClient.TerminalClosedReceived -= OnRemoteTerminalClosedReceived;
@@ -1440,6 +1451,28 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             IsGroupJoined = false;
             GroupStatus = $"Join rejected: {reason}";
             ServerStatus = $"Group join rejected: {reason}";
+        });
+    }
+
+    private void OnDeviceUnbound()
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            GroupSecret = string.Empty;
+            SaveServerSettings();
+
+            try
+            {
+                _groupStore.ClearMembership();
+            }
+            catch (Exception ex)
+            {
+                OnNetworkLog($"Clear membership failed: {ex.Message}");
+            }
+
+            StopNetwork();
+            GroupStatus = "Device unbound. Please rebind.";
+            ServerStatus = "Device unbound by mobile.";
         });
     }
 
@@ -2010,6 +2043,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _autoExecCts?.Cancel();
         _autoExecCts = new CancellationTokenSource();
         var ct = _autoExecCts.Token;
+        var gen = ++_autoExecGeneration;
 
         IsAutoExecuting = true;
         _autoExecStep = 0;
@@ -2066,7 +2100,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             await _dispatcher.InvokeAsync(() =>
             {
                 IsAiLoading = false;
-                IsAutoExecuting = false;
+                if (gen == _autoExecGeneration)
+                    IsAutoExecuting = false;
             });
         }
     }

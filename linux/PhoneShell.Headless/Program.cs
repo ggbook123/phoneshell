@@ -13,7 +13,7 @@ namespace PhoneShell.Headless;
 ///   phoneshell [options]
 ///
 /// Options:
-///   --config &lt;path&gt;           Config file path (default: data/config.json)
+///   --config &lt;path&gt;           Config file path (default varies by OS)
 ///   --name &lt;name&gt;             Device display name
 ///   --port &lt;port&gt;             Relay server listen port (default: 9090)
 ///   --relay &lt;url&gt;             Relay server URL to connect to
@@ -86,7 +86,8 @@ public static class Program
         }
 
         var baseDirectory = GetDataDirectory(configPath);
-        ApplyAutoMode(config, baseDirectory);
+        var allowAutoMode = !HasExplicitModeOverride(args);
+        ApplyAutoMode(config, baseDirectory, allowAutoMode);
 
         // Validate
         if (!config.Modules.RelayServer && !config.Modules.RelayClient)
@@ -105,7 +106,7 @@ public static class Program
         }
 
         // Run
-        using var host = new HeadlessHost(config, baseDirectory);
+        using var host = new HeadlessHost(config, baseDirectory, configPath);
         using var cts = new CancellationTokenSource();
 
         Console.CancelKeyPress += (_, e) =>
@@ -134,21 +135,21 @@ public static class Program
         for (var i = 0; i < args.Length - 1; i++)
         {
             if (args[i] == "--config")
-                return args[i + 1];
+                return Path.GetFullPath(args[i + 1]);
         }
 
         // Default: platform-appropriate config location
-        // Linux: ~/.config/phoneshell/config.json
+        // Linux: ~/.config/phoneshell/config.json (or $XDG_CONFIG_HOME/phoneshell/config.json)
         // Windows: AppContext.BaseDirectory/data/config.json
         if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
             var configHome = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
             if (string.IsNullOrWhiteSpace(configHome))
                 configHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
-            return Path.Combine(configHome, "phoneshell", "config.json");
+            return Path.GetFullPath(Path.Combine(configHome, "phoneshell", "config.json"));
         }
 
-        return Path.Combine(AppContext.BaseDirectory, "data", "config.json");
+        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "data", "config.json"));
     }
 
     /// <summary>
@@ -161,9 +162,34 @@ public static class Program
         // Data lives alongside config — the DeviceIdentityStore appends "data/" internally,
         // so we return the parent of that.
         var configDir = Path.GetDirectoryName(configPath);
-        if (!string.IsNullOrEmpty(configDir))
-            return configDir;
-        return AppContext.BaseDirectory;
+        if (string.IsNullOrEmpty(configDir))
+            return AppContext.BaseDirectory;
+
+        var trimmed = configDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var dirName = Path.GetFileName(trimmed);
+
+        // If config path is .../data/config.json (Windows default), return the parent to avoid .../data/data.
+        if (string.Equals(dirName, "data", StringComparison.OrdinalIgnoreCase))
+        {
+            var parent = Path.GetDirectoryName(trimmed);
+            return string.IsNullOrEmpty(parent) ? configDir : parent;
+        }
+
+        return configDir;
+    }
+
+    private static bool HasExplicitModeOverride(string[] args)
+    {
+        if (args.Any(arg =>
+                arg is "--mode"
+                    or "--enable-relay-server" or "--disable-relay-server"
+                    or "--enable-relay-client" or "--disable-relay-client"))
+        {
+            return true;
+        }
+
+        var envMode = Environment.GetEnvironmentVariable("PHONESHELL_MODE");
+        return !string.IsNullOrWhiteSpace(envMode);
     }
 
     private static void RunInteractiveSetup(string configPath)
@@ -243,8 +269,11 @@ public static class Program
         Console.WriteLine("Run 'phoneshell' to start the service.");
     }
 
-    private static void ApplyAutoMode(HeadlessConfig config, string baseDirectory)
+    private static void ApplyAutoMode(HeadlessConfig config, string baseDirectory, bool allowAutoMode)
     {
+        if (!allowAutoMode)
+            return;
+
         var groupStore = new GroupStore(baseDirectory);
         var hasGroup = groupStore.LoadGroup() is not null;
         var hasRelayUrl = !string.IsNullOrWhiteSpace(config.RelayUrl);
@@ -253,6 +282,10 @@ public static class Program
         // If a server group exists locally, prefer relay-server.
         if (hasGroup)
         {
+            // If a relay URL is explicitly configured, do not override client intent.
+            if (hasRelayUrl)
+                return;
+
             config.Modules.RelayServer = true;
             config.Modules.RelayClient = false;
             config.Modules.WebPanel = true;
@@ -275,7 +308,8 @@ public static class Program
         Console.WriteLine("Usage: phoneshell [options]");
         Console.WriteLine();
         Console.WriteLine("Options:");
-        Console.WriteLine("  --config <path>           Config file path (default: data/config.json)");
+        var defaultConfigPath = GetConfigPath(Array.Empty<string>());
+        Console.WriteLine($"  --config <path>           Config file path (default: {defaultConfigPath})");
         Console.WriteLine("  --name <name>             Device display name");
         Console.WriteLine("  --port <port>             Relay server listen port (default: 9090)");
         Console.WriteLine("  --relay <url>             Relay server URL to connect to");

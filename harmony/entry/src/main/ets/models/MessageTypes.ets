@@ -232,6 +232,7 @@ export interface AuthResponseMessage extends BaseMessage {
 // Union type for all incoming messages (for reference; individual types used in practice)
 export type ServerMessage =
   DeviceListMessage |
+  DeviceUnregisterMessage |
   TerminalOpenedMessage |
   TerminalOutputMessage |
   TerminalClosedMessage |

@@ -64,7 +64,11 @@ struct Index {
       await PreferencesUtil.setString(StorageKeys.GROUP_SECRET, this.groupSecret);
     }
     this.connectionHistory = await PreferencesUtil.getConnectionHistory();
-    this.getUIContext().getRouter().pushUrl({ url: 'pages/DeviceListPage' });
+    try {
+      this.getUIContext().getRouter().pushUrl({ url: 'pages/DeviceListPage' });
+    } catch (_e) {
+      // Ignore navigation errors
+    }
   }
 
   private normalizeServerUrl(rawUrl: string): string {
@@ -81,9 +85,11 @@ struct Index {
       normalized = 'ws://' + normalized;
     }
 
-    while (normalized.startsWith('ws://http://') || normalized.startsWith('ws://https://') ||
+    let loopGuard: number = 0;
+    while (loopGuard < 10 && (normalized.startsWith('ws://http://') || normalized.startsWith('ws://https://') ||
            normalized.startsWith('wss://http://') || normalized.startsWith('wss://https://') ||
-           normalized.startsWith('ws://ws://') || normalized.startsWith('wss://wss://')) {
+           normalized.startsWith('ws://ws://') || normalized.startsWith('wss://wss://'))) {
+      loopGuard++;
       const schemeSeparator: number = normalized.indexOf('://');
       normalized = normalized.substring(schemeSeparator + 3);
       if (!normalized.startsWith('ws://') && !normalized.startsWith('wss://') &&
@@ -195,8 +201,11 @@ struct Index {
           this.errorMessage = '';
           // After connecting, join group if a group secret is provided
           if (this.groupSecret.trim().length > 0) {
-            const deviceId: string = PreferencesUtil.getMobileDeviceId(getContext(this));
-            WebSocketService.joinGroup(this.groupSecret.trim(), deviceId, 'HarmonyOS Device');
+            const hostContext: Context | undefined = this.getUIContext().getHostContext();
+            if (hostContext !== undefined) {
+              const deviceId: string = PreferencesUtil.getMobileDeviceId(hostContext);
+              WebSocketService.joinGroup(this.groupSecret.trim(), deviceId, 'HarmonyOS Device');
+            }
           }
           this.maybeNavigateOnConnected();
         } else if (state === ConnectionState.DISCONNECTED) {
@@ -375,7 +384,11 @@ struct Index {
         .borderColor(AppColors.ACCENT)
         .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
         .onClick(() => {
-          this.getUIContext().getRouter().pushUrl({ url: 'pages/ScanPage' });
+          try {
+            this.getUIContext().getRouter().pushUrl({ url: 'pages/ScanPage' });
+          } catch (_e) {
+            // Ignore navigation errors
+          }
         })
         .margin({ bottom: 32 })
 

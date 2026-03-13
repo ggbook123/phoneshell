@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "PhoneShell"
+    },
+    {
+      "name": "camera_permission_reason",
+      "value": "用于扫描服务器二维码进行连接"
     }
   ]
 }

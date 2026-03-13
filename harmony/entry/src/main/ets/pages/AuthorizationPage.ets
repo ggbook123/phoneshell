@@ -16,14 +16,21 @@ struct AuthorizationPage {
   @State responseText: string = '';
   private messageListenerId: number = -1;
 
+  private normalizeString(value: Object | undefined | null, fallback: string = ''): string {
+    if (typeof value === 'string') {
+      return value;
+    }
+    return fallback;
+  }
+
   aboutToAppear(): void {
     // Get params passed from navigation
     const params: Record<string, Object> = this.getUIContext().getRouter().getParams() as Record<string, Object>;
     if (params !== null && params !== undefined) {
-      this.requestId = (params['requestId'] as string) || '';
-      this.action = (params['action'] as string) || '';
-      this.requesterName = (params['requesterName'] as string) || '';
-      this.description = (params['description'] as string) || '';
+      this.requestId = this.normalizeString(params['requestId']);
+      this.action = this.normalizeString(params['action']);
+      this.requesterName = this.normalizeString(params['requesterName']);
+      this.description = this.normalizeString(params['description']);
     }
     this.activatePage();
   }
@@ -37,10 +44,10 @@ struct AuthorizationPage {
       this.messageListenerId = WebSocketService.addOnMessage((type: string, data: Record<string, Object>) => {
         // Listen for additional auth requests (queue them or replace)
         if (type === 'auth.request') {
-          this.requestId = (data['requestId'] as string) || '';
-          this.action = (data['action'] as string) || '';
-          this.requesterName = (data['requesterName'] as string) || '';
-          this.description = (data['description'] as string) || '';
+          this.requestId = this.normalizeString(data['requestId']);
+          this.action = this.normalizeString(data['action']);
+          this.requesterName = this.normalizeString(data['requesterName']);
+          this.description = this.normalizeString(data['description']);
           this.hasResponded = false;
           this.responseText = '';
         }
@@ -82,6 +89,8 @@ struct AuthorizationPage {
       return '更换服务器';
     } else if (this.action === 'group.kick') {
       return '踢出成员';
+    } else if (this.action === 'mobile.unbind') {
+      return '解绑手机';
     } else if (this.action === 'group.secret.rotate') {
       return '轮换群组密钥';
     } else if (this.action === 'panel.login') {

@@ -104,6 +104,7 @@ public sealed class RelayServer : IDisposable
         foreach (var client in _clients.Values)
         {
             try { client.WebSocket.Abort(); } catch { }
+            client.Dispose();
         }
         _clients.Clear();
         _devices.Clear();
@@ -222,14 +223,16 @@ public sealed class RelayServer : IDisposable
             Data = data
         });
 
+        var tasks = new List<Task>();
         foreach (var client in _clients.Values)
         {
             if (client.SubscribedDeviceId == deviceId &&
                 string.Equals(client.SubscribedSessionId, sessionId, StringComparison.Ordinal))
             {
-                await SendAsync(client, msg);
+                tasks.Add(SendAsync(client, msg));
             }
         }
+        await Task.WhenAll(tasks);
     }
 
     /// <summary>
@@ -392,11 +395,12 @@ public sealed class RelayServer : IDisposable
 
     private async Task AcceptClientsLoopAsync(CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested && _httpListener is not null)
+        var listener = _httpListener;
+        while (!ct.IsCancellationRequested && listener is not null)
         {
             try
             {
-                var context = await _httpListener.GetContextAsync();
+                var context = await listener.GetContextAsync();
                 var path = NormalizeRequestPath(context.Request.Url?.AbsolutePath);
                 if (context.Request.IsWebSocketRequest)
                 {
@@ -547,6 +551,7 @@ public sealed class RelayServer : IDisposable
             }
 
             _clients.TryRemove(client.ClientId, out _);
+            client.Dispose();
             Log?.Invoke($"Client disconnected: {client.ClientId}");
         }
     }
@@ -570,6 +575,10 @@ public sealed class RelayServer : IDisposable
 
             case GroupKickMessage kick:
                 await HandleGroupKick(client, kick);
+                break;
+
+            case DeviceUnregisterMessage unreg:
+                await HandleDeviceUnregister(client, unreg);
                 break;
 
             case MobileBindRequestMessage bindReq:
@@ -1155,6 +1164,105 @@ public sealed class RelayServer : IDisposable
         Log?.Invoke($"Group member kicked: {kick.DeviceId}");
     }
 
+    private async Task HandleDeviceUnregister(ConnectedClient client, DeviceUnregisterMessage unreg)
+    {
+        var targetDeviceId = unreg.DeviceId?.Trim();
+        if (string.IsNullOrWhiteSpace(targetDeviceId))
+            return;
+
+        if (_group is null)
+        {
+            // Only allow self-unregister when no group exists
+            if (!string.Equals(client.RegisteredDeviceId, targetDeviceId, StringComparison.Ordinal))
+            {
+                await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+                {
+                    Code = "permission_denied",
+                    Message = "Only the device itself can unregister."
+                }));
+                return;
+            }
+
+            _devices.TryRemove(targetDeviceId, out _);
+            NotifyDeviceListChanged();
+            Log?.Invoke($"Device unregistered: {targetDeviceId}");
+            return;
+        }
+
+        var isSelf = string.Equals(client.RegisteredDeviceId, targetDeviceId, StringComparison.Ordinal);
+        var isMobile = client.MemberRole == MemberRole.Mobile;
+        var isServer = string.Equals(client.RegisteredDeviceId, _group.ServerDeviceId, StringComparison.Ordinal);
+
+        if (!isSelf && !isMobile && !isServer)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "permission_denied",
+                Message = "Only the bound mobile or server can unbind devices."
+            }));
+            return;
+        }
+
+        // If unbinding the server device, treat as mobile unbind
+        if (string.Equals(targetDeviceId, _group.ServerDeviceId, StringComparison.Ordinal))
+        {
+            if (!isMobile)
+            {
+                await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+                {
+                    Code = "permission_denied",
+                    Message = "Only the bound mobile can unbind the server device."
+                }));
+                return;
+            }
+
+            await HandleMobileUnbind(client, new MobileUnbindMessage { GroupId = _group.GroupId });
+            return;
+        }
+
+        // If unbinding the bound mobile, reuse mobile unbind flow
+        if (!string.IsNullOrWhiteSpace(_group.BoundMobileId) &&
+            string.Equals(targetDeviceId, _group.BoundMobileId, StringComparison.Ordinal))
+        {
+            await HandleMobileUnbind(client, new MobileUnbindMessage { GroupId = _group.GroupId });
+            return;
+        }
+
+        var removed = _group.Members.RemoveAll(m => m.DeviceId == targetDeviceId) > 0;
+        _groupStore?.SaveGroup(_group);
+
+        var targetClient = _clients.Values.FirstOrDefault(c =>
+            string.Equals(c.RegisteredDeviceId, targetDeviceId, StringComparison.Ordinal));
+        if (targetClient is not null)
+        {
+            await SendAsync(targetClient, MessageSerializer.Serialize(new DeviceUnregisterMessage
+            {
+                DeviceId = targetDeviceId
+            }));
+            try { targetClient.WebSocket.Abort(); } catch { }
+        }
+
+        _devices.TryRemove(targetDeviceId, out _);
+        NotifyDeviceListChanged();
+
+        if (removed)
+        {
+            await BroadcastToAllAsync(MessageSerializer.Serialize(new GroupMemberLeftMessage
+            {
+                DeviceId = targetDeviceId
+            }));
+
+            var memberList = BuildGroupMemberInfoList();
+            await BroadcastToAllAsync(MessageSerializer.Serialize(new GroupMemberListMessage
+            {
+                Members = memberList
+            }));
+            GroupMemberListChanged?.Invoke(memberList);
+        }
+
+        Log?.Invoke($"Device unbound: {targetDeviceId}");
+    }
+
     private async Task HandleMobileBindRequest(ConnectedClient client, MobileBindRequestMessage req)
     {
         if (_group is null) return;
@@ -1216,6 +1324,10 @@ public sealed class RelayServer : IDisposable
     {
         if (_group is null) return;
 
+        var boundMobileId = _group.BoundMobileId;
+        if (string.IsNullOrWhiteSpace(boundMobileId))
+            return;
+
         // Only the bound mobile or server can unbind
         if (client.MemberRole != MemberRole.Mobile && client.RegisteredDeviceId != _group.ServerDeviceId)
         {
@@ -1228,12 +1340,31 @@ public sealed class RelayServer : IDisposable
         }
 
         _group.BoundMobileId = null;
-        // Change mobile member role back to Member
-        var mobileMember = _group.Members.FirstOrDefault(m => m.Role == MemberRole.Mobile);
-        if (mobileMember is not null)
-            mobileMember.Role = MemberRole.Member;
+        _group.Members.RemoveAll(m => m.DeviceId == boundMobileId);
 
         _groupStore?.SaveGroup(_group);
+
+        _panelAccessTokens.Clear();
+        _panelLoginSessions.Clear();
+
+        // Notify the bound mobile to clear its local binding
+        var boundClient = _clients.Values.FirstOrDefault(c => c.RegisteredDeviceId == boundMobileId);
+        if (boundClient is not null)
+        {
+            await SendAsync(boundClient, MessageSerializer.Serialize(new DeviceUnregisterMessage
+            {
+                DeviceId = boundMobileId
+            }));
+            try { boundClient.WebSocket.Abort(); } catch { }
+        }
+
+        _devices.TryRemove(boundMobileId, out _);
+        NotifyDeviceListChanged();
+
+        await BroadcastToAllAsync(MessageSerializer.Serialize(new GroupMemberLeftMessage
+        {
+            DeviceId = boundMobileId
+        }));
 
         // Broadcast updated member list
         var memberList = BuildGroupMemberInfoList();
@@ -1243,7 +1374,7 @@ public sealed class RelayServer : IDisposable
         }));
 
         GroupMemberListChanged?.Invoke(memberList);
-        Log?.Invoke("Mobile unbound from group");
+        Log?.Invoke($"Mobile unbound from group: {boundMobileId}");
     }
 
     private void HandleAuthResponse(ConnectedClient client, AuthResponseMessage resp)
@@ -1390,19 +1521,23 @@ public sealed class RelayServer : IDisposable
 
     private async Task BroadcastToOthersAsync(ConnectedClient sender, string message)
     {
+        var tasks = new List<Task>();
         foreach (var c in _clients.Values)
         {
             if (c.ClientId != sender.ClientId)
-                await SendAsync(c, message);
+                tasks.Add(SendAsync(c, message));
         }
+        await Task.WhenAll(tasks);
     }
 
     private async Task BroadcastToAllAsync(string message)
     {
+        var tasks = new List<Task>();
         foreach (var c in _clients.Values)
         {
-            await SendAsync(c, message);
+            tasks.Add(SendAsync(c, message));
         }
+        await Task.WhenAll(tasks);
     }
 
     /// <summary>
@@ -1590,14 +1725,12 @@ public sealed class RelayServer : IDisposable
         };
     }
 
-    private object BuildPanelPairingPayload()
+    private object BuildPanelPairingPayload(HttpListenerRequest request)
     {
-        // Every fresh page load calls this — invalidate all previous panel tokens
-        // to enforce "scan every time" requirement
-        _panelAccessTokens.Clear();
-
         var group = _group;
-        var serverUrl = _reachableWebSocketUrls.FirstOrDefault() ?? string.Empty;
+        var serverUrl = ResolvePanelServerUrl(request) ??
+                        _reachableWebSocketUrls.FirstOrDefault() ??
+                        string.Empty;
         var boundMobileId = group?.BoundMobileId;
         var hasBoundMobile = !string.IsNullOrWhiteSpace(boundMobileId);
         var boundMobileOnline = false;
@@ -1607,7 +1740,7 @@ public sealed class RelayServer : IDisposable
         }
 
         // Only return bind QR when no mobile is bound yet
-        var qrPayload = hasBoundMobile ? string.Empty : (GetPanelQrPayload() ?? string.Empty);
+        var qrPayload = hasBoundMobile ? string.Empty : (GetPanelQrPayload(request) ?? string.Empty);
 
         return new
         {
@@ -1621,12 +1754,13 @@ public sealed class RelayServer : IDisposable
         };
     }
 
-    private string? GetPanelQrPayload()
+    private string? GetPanelQrPayload(HttpListenerRequest request)
     {
         if (_group is null)
             return null;
 
-        var serverUrl = _reachableWebSocketUrls.FirstOrDefault();
+        var serverUrl = ResolvePanelServerUrl(request) ??
+                        _reachableWebSocketUrls.FirstOrDefault();
         if (string.IsNullOrWhiteSpace(serverUrl))
             return null;
 
@@ -1642,12 +1776,11 @@ public sealed class RelayServer : IDisposable
     {
         CleanupExpiredPanelAuth();
 
-        // Invalidate ALL existing panel access tokens — every page load must re-scan
-        _panelAccessTokens.Clear();
-
         var requestId = Guid.NewGuid().ToString("N");
         var token = GeneratePanelToken();
         var requesterAddress = request.RemoteEndPoint?.Address?.ToString();
+        var serverUrl = ResolvePanelServerUrl(request) ??
+                        _reachableWebSocketUrls.FirstOrDefault();
 
         var hasBoundMobile = !string.IsNullOrWhiteSpace(_group?.BoundMobileId);
 
@@ -1659,20 +1792,18 @@ public sealed class RelayServer : IDisposable
             CreatedAtUtc = DateTimeOffset.UtcNow,
             ExpiresAtUtc = DateTimeOffset.UtcNow.Add(_panelLoginTtl),
             RequesterAddress = requesterAddress,
-            Message = hasBoundMobile ? "Waiting for mobile scan." : "Waiting for mobile binding."
+            Message = hasBoundMobile ? "Waiting for mobile scan." : "Waiting for mobile binding.",
+            ServerUrl = serverUrl
         };
         _panelLoginSessions[requestId] = session;
 
         // Build login QR payload for already-bound case
         string? loginQrPayload = null;
-        if (hasBoundMobile && _group is not null)
+        if (hasBoundMobile && _group is not null && !string.IsNullOrWhiteSpace(serverUrl))
         {
-            var serverUrl = _reachableWebSocketUrls.FirstOrDefault();
-            if (!string.IsNullOrWhiteSpace(serverUrl))
-            {
-                var builder = new QrPayloadBuilder();
-                loginQrPayload = builder.BuildPanelLogin(serverUrl, _group.GroupId, requestId);
-            }
+            var builder = new QrPayloadBuilder();
+            loginQrPayload = builder.BuildPanelLogin(serverUrl, _group.GroupId, requestId);
+            session.LoginQrPayload = loginQrPayload;
         }
 
         // For unbound case, don't dispatch immediately — wait for bind flow
@@ -1706,12 +1837,16 @@ public sealed class RelayServer : IDisposable
         string? loginQrPayload = null;
         if (session.Status == PanelLoginState.AwaitingScan && _group is not null)
         {
-            var serverUrl = _reachableWebSocketUrls.FirstOrDefault();
-            if (!string.IsNullOrWhiteSpace(serverUrl))
+            if (string.IsNullOrWhiteSpace(session.LoginQrPayload))
             {
-                var builder = new QrPayloadBuilder();
-                loginQrPayload = builder.BuildPanelLogin(serverUrl, _group.GroupId, session.RequestId);
+                var serverUrl = session.ServerUrl ?? _reachableWebSocketUrls.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(serverUrl))
+                {
+                    var builder = new QrPayloadBuilder();
+                    session.LoginQrPayload = builder.BuildPanelLogin(serverUrl, _group.GroupId, session.RequestId);
+                }
             }
+            loginQrPayload = session.LoginQrPayload;
         }
 
         return new
@@ -1959,6 +2094,80 @@ public sealed class RelayServer : IDisposable
         return false;
     }
 
+    private static string? ResolvePanelServerUrl(HttpListenerRequest request)
+    {
+        var forwarded = ParseForwardedHeader(request.Headers["Forwarded"]);
+        var proto = FirstHeaderValue(request.Headers["X-Forwarded-Proto"]) ?? forwarded.Proto;
+        var host = FirstHeaderValue(request.Headers["X-Forwarded-Host"]) ?? forwarded.Host;
+        var port = FirstHeaderValue(request.Headers["X-Forwarded-Port"]);
+
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            var origin = FirstHeaderValue(request.Headers["Origin"]) ??
+                         FirstHeaderValue(request.Headers["Referer"]);
+            if (!string.IsNullOrWhiteSpace(origin) &&
+                Uri.TryCreate(origin, UriKind.Absolute, out var originUri))
+            {
+                host = originUri.Authority;
+                if (string.IsNullOrWhiteSpace(proto))
+                    proto = originUri.Scheme;
+            }
+        }
+
+        host ??= request.Headers["Host"] ?? request.Url?.Authority;
+
+        if (!string.IsNullOrWhiteSpace(port) &&
+            !string.IsNullOrWhiteSpace(host) &&
+            !host.Contains(':'))
+        {
+            host = $"{host}:{port}";
+        }
+
+        if (string.IsNullOrWhiteSpace(host))
+            return null;
+
+        if (string.IsNullOrWhiteSpace(proto))
+            proto = request.IsSecureConnection ? "https" : "http";
+
+        var scheme = proto.Trim().ToLowerInvariant();
+        var wsScheme = scheme is "https" or "wss" ? "wss" : "ws";
+        return $"{wsScheme}://{host}/ws/";
+    }
+
+    private static string? FirstHeaderValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+        var first = value.Split(',', 2)[0].Trim();
+        return string.IsNullOrWhiteSpace(first) ? null : first;
+    }
+
+    private static (string? Proto, string? Host) ParseForwardedHeader(string? header)
+    {
+        if (string.IsNullOrWhiteSpace(header))
+            return (null, null);
+
+        var first = header.Split(',', 2)[0];
+        string? proto = null;
+        string? host = null;
+
+        foreach (var part in first.Split(';'))
+        {
+            var kv = part.Split('=', 2);
+            if (kv.Length != 2)
+                continue;
+
+            var key = kv[0].Trim().ToLowerInvariant();
+            var value = kv[1].Trim().Trim('"');
+            if (key == "proto")
+                proto = value;
+            else if (key == "host")
+                host = value;
+        }
+
+        return (proto, host);
+    }
+
     private static string PanelLoginStateToString(PanelLoginState state) => state switch
     {
         PanelLoginState.AwaitingScan => "awaiting_scan",
@@ -2082,7 +2291,7 @@ public sealed class RelayServer : IDisposable
         public bool IsLocal { get; init; }
     }
 
-    private sealed class ConnectedClient
+    private sealed class ConnectedClient : IDisposable
     {
         public string ClientId { get; init; } = string.Empty;
         public WebSocket WebSocket { get; init; } = null!;
@@ -2091,6 +2300,11 @@ public sealed class RelayServer : IDisposable
         public string? SubscribedSessionId { get; set; }
         public MemberRole MemberRole { get; set; } = MemberRole.Member;
         public SemaphoreSlim SendLock { get; } = new(1, 1);
+
+        public void Dispose()
+        {
+            SendLock.Dispose();
+        }
     }
 
     private sealed class PendingAuth
@@ -2109,6 +2323,8 @@ public sealed class RelayServer : IDisposable
         public DateTimeOffset ExpiresAtUtc { get; set; }
         public string? RequesterAddress { get; init; }
         public string? Message { get; set; }
+        public string? ServerUrl { get; set; }
+        public string? LoginQrPayload { get; set; }
     }
 
     private sealed class PanelAccessToken

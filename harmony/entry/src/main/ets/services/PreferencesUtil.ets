@@ -8,6 +8,7 @@ const MAX_HISTORY_ITEMS: number = 10;
 class PreferencesUtilClass {
   private prefs: preferences.Preferences | null = null;
   private cachedMobileDeviceId: string = '';
+  private pendingDeviceId: string = '';
 
   async init(context: Context): Promise<void> {
     try {
@@ -16,10 +17,16 @@ class PreferencesUtilClass {
         const savedId: string = await this.prefs.get(StorageKeys.MOBILE_DEVICE_ID, '') as string;
         if (savedId.length > 0) {
           this.cachedMobileDeviceId = savedId;
+        } else if (this.pendingDeviceId.length > 0) {
+          // Persist the device ID that was generated before init() completed
+          this.cachedMobileDeviceId = this.pendingDeviceId;
+          await this.prefs.put(StorageKeys.MOBILE_DEVICE_ID, this.pendingDeviceId);
+          await this.prefs.flush();
         }
       } catch (_e) {
         // Ignore read errors
       }
+      this.pendingDeviceId = '';
     } catch (e) {
       // Ignore init errors
     }
@@ -138,6 +145,7 @@ class PreferencesUtilClass {
     const timePart: string = Date.now().toString(36);
     const randPart: string = Math.random().toString(36).substring(2, 8);
     this.cachedMobileDeviceId = `mobile-${timePart}-${randPart}`;
+    this.pendingDeviceId = this.cachedMobileDeviceId;
     this.setString(StorageKeys.MOBILE_DEVICE_ID, this.cachedMobileDeviceId);
     return this.cachedMobileDeviceId;
   }

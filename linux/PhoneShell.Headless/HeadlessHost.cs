@@ -17,6 +17,8 @@ public sealed class HeadlessHost : IDisposable
 {
     private readonly HeadlessConfig _config;
     private readonly string _baseDirectory;
+    private readonly string? _configPath;
+    private readonly object _configSync = new();
     private readonly IShellLocator _shellLocator;
     private readonly DeviceIdentityStore _identityStore;
     private readonly GroupStore _groupStore;
@@ -27,6 +29,7 @@ public sealed class HeadlessHost : IDisposable
 
     // Multi-session terminal management
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
+    private readonly ConcurrentDictionary<string, Task> _outputSendChains = new();
     private int _sessionCounter;
 
     /// <summary>
@@ -43,10 +46,11 @@ public sealed class HeadlessHost : IDisposable
 
     public string DeviceId { get; private set; } = string.Empty;
 
-    public HeadlessHost(HeadlessConfig config, string baseDirectory)
+    public HeadlessHost(HeadlessConfig config, string baseDirectory, string? configPath = null)
     {
         _config = config;
         _baseDirectory = baseDirectory;
+        _configPath = string.IsNullOrWhiteSpace(configPath) ? null : configPath;
         _shellLocator = TerminalPlatformFactory.CreateShellLocator();
         _identityStore = new DeviceIdentityStore(baseDirectory);
         _groupStore = new GroupStore(baseDirectory);
@@ -105,10 +109,9 @@ public sealed class HeadlessHost : IDisposable
 
             await _relayServer.StartAsync(_config.Port, _baseDirectory, _cts.Token);
 
-            if (_config.Modules.Terminal)
-            {
-                _relayServer.RegisterLocalDevice(DeviceId, displayName, os, shells);
-            }
+            // Always register the local device so the group is initialized,
+            // even when running in relay-only mode.
+            _relayServer.RegisterLocalDevice(DeviceId, displayName, os, shells);
 
             // Patch: add /panel/ and /api/ prefixes to HttpListener
             // The core DLL only registers /ws/ prefix, so /panel and /api paths
@@ -201,6 +204,7 @@ public sealed class HeadlessHost : IDisposable
                 Log($"[relay-client] Joined group {accepted.GroupId} ({accepted.Members.Count} members)");
             _relayClient.GroupJoinRejected += reason =>
                 Log($"[relay-client] Group join rejected: {reason}");
+            _relayClient.DeviceUnbound += OnRelayClientDeviceUnbound;
 
             // Handle server migration: this device is selected as the new server
             _relayClient.ServerChangeRequested += async (groupId, groupSecret) =>
@@ -245,9 +249,13 @@ public sealed class HeadlessHost : IDisposable
                         Log($"[relay-server] Server role activated on port {_config.Port}");
                     }
 
-                    _config.Modules.RelayServer = true;
-                    _config.Modules.RelayClient = false;
-                    _config.GroupSecret = groupSecret;
+                    UpdateConfig(cfg =>
+                    {
+                        cfg.Modules.RelayServer = true;
+                        cfg.Modules.RelayClient = false;
+                        cfg.GroupSecret = groupSecret;
+                        cfg.RelayUrl = string.Empty;
+                    });
 
                     var newServerUrl = _relayServer.ReachableWebSocketUrls.FirstOrDefault() ??
                                        $"ws://localhost:{_config.Port}/ws/";
@@ -272,13 +280,24 @@ public sealed class HeadlessHost : IDisposable
                         _relayClient?.Disconnect();
                         _relayClient?.Dispose();
                         _relayClient = null;
-                        _config.Modules.RelayServer = true;
-                        _config.Modules.RelayClient = false;
-                        _config.GroupSecret = newSecret;
+                        UpdateConfig(cfg =>
+                        {
+                            cfg.Modules.RelayServer = true;
+                            cfg.Modules.RelayClient = false;
+                            cfg.GroupSecret = newSecret;
+                            cfg.RelayUrl = string.Empty;
+                        });
                         return;
                     }
 
                     _relayClient?.Disconnect();
+                    UpdateConfig(cfg =>
+                    {
+                        cfg.Modules.RelayServer = false;
+                        cfg.Modules.RelayClient = true;
+                        cfg.RelayUrl = newUrl;
+                        cfg.GroupSecret = newSecret;
+                    });
                     _relayClient!.GroupSecret = newSecret;
                     await _relayClient.ConnectAsync(newUrl, _cts?.Token ?? CancellationToken.None);
                 });
@@ -287,7 +306,7 @@ public sealed class HeadlessHost : IDisposable
             // Handle secret rotation
             _relayClient.GroupSecretRotated += newSecret =>
             {
-                _config.GroupSecret = newSecret;
+                UpdateConfig(cfg => cfg.GroupSecret = newSecret);
                 Log($"[relay-client] Group secret updated to {newSecret[..Math.Min(8, newSecret.Length)]}...");
             };
 
@@ -336,6 +355,7 @@ public sealed class HeadlessHost : IDisposable
             catch (Exception ex) { Log($"Error disposing session {sessionId}: {ex.Message}"); }
         }
         _sessions.Clear();
+        _outputSendChains.Clear();
 
         _relayClient?.Dispose();
         _relayClient = null;
@@ -408,17 +428,10 @@ public sealed class HeadlessHost : IDisposable
         // Wire output to relay broadcast
         manager.OutputReceived += data =>
         {
-            _ = Task.Run(async () =>
+            EnqueueOutput(sessionId, async () =>
             {
-                try
-                {
-                    if (_relayServer is not null)
-                        await _relayServer.BroadcastLocalTerminalOutputAsync(deviceId, sessionId, data);
-                }
-                catch (Exception ex)
-                {
-                    Log($"Error broadcasting output for {sessionId}: {ex.Message}");
-                }
+                if (_relayServer is not null)
+                    await _relayServer.BroadcastLocalTerminalOutputAsync(deviceId, sessionId, data);
             });
         };
 
@@ -442,6 +455,7 @@ public sealed class HeadlessHost : IDisposable
         if (_sessions.TryRemove(sessionId, out var managed))
         {
             managed.Manager.Dispose();
+            RemoveOutputChain(sessionId);
             Log($"Terminal session ended: {sessionId}");
         }
     }
@@ -457,17 +471,10 @@ public sealed class HeadlessHost : IDisposable
             // Wire output to relay client
             manager.OutputReceived += data =>
             {
-                _ = Task.Run(async () =>
+                EnqueueOutput(sessionId, async () =>
                 {
-                    try
-                    {
-                        if (_relayClient is not null)
-                            await _relayClient.SendTerminalOutputAsync(DeviceId, sessionId, data);
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"Error sending output for {sessionId}: {ex.Message}");
-                    }
+                    if (_relayClient is not null)
+                        await _relayClient.SendTerminalOutputAsync(DeviceId, sessionId, data);
                 });
             };
 
@@ -502,8 +509,26 @@ public sealed class HeadlessHost : IDisposable
         if (_sessions.TryRemove(sessionId, out var managed))
         {
             managed.Manager.Dispose();
+            RemoveOutputChain(sessionId);
             Log($"Terminal session closed by remote: {sessionId}");
         }
+    }
+
+    private void OnRelayClientDeviceUnbound()
+    {
+        Log("[relay-client] Device unbound by mobile. Clearing group secret and disconnecting.");
+
+        try
+        {
+            _groupStore.ClearMembership();
+        }
+        catch (Exception ex)
+        {
+            Log($"[relay-client] Clear membership failed: {ex.Message}");
+        }
+
+        UpdateConfig(cfg => cfg.GroupSecret = string.Empty);
+        _relayClient?.Disconnect();
     }
 
     private void OnServerMigrationCommitted(string newUrl, string newSecret)
@@ -522,10 +547,13 @@ public sealed class HeadlessHost : IDisposable
 
                 _groupStore.ClearGroup();
 
-                _config.Modules.RelayServer = false;
-                _config.Modules.RelayClient = true;
-                _config.RelayUrl = newUrl;
-                _config.GroupSecret = newSecret;
+                UpdateConfig(cfg =>
+                {
+                    cfg.Modules.RelayServer = false;
+                    cfg.Modules.RelayClient = true;
+                    cfg.RelayUrl = newUrl;
+                    cfg.GroupSecret = newSecret;
+                });
 
                 var shells = _config.Modules.Terminal
                     ? _shellLocator.GetAvailableShells().Select(s => s.DisplayName).ToList()
@@ -551,9 +579,10 @@ public sealed class HeadlessHost : IDisposable
                     Log($"[relay-client] Joined group {accepted.GroupId} ({accepted.Members.Count} members)");
                 _relayClient.GroupJoinRejected += reason =>
                     Log($"[relay-client] Group join rejected: {reason}");
+                _relayClient.DeviceUnbound += OnRelayClientDeviceUnbound;
                 _relayClient.GroupSecretRotated += secret =>
                 {
-                    _config.GroupSecret = secret;
+                    UpdateConfig(cfg => cfg.GroupSecret = secret);
                     Log($"[relay-client] Group secret updated to {secret[..Math.Min(8, secret.Length)]}...");
                 };
 
@@ -597,6 +626,14 @@ public sealed class HeadlessHost : IDisposable
                             Log($"[relay-server] Server role activated on port {_config.Port}");
                         }
 
+                        UpdateConfig(cfg =>
+                        {
+                            cfg.Modules.RelayServer = true;
+                            cfg.Modules.RelayClient = false;
+                            cfg.GroupSecret = groupSecret;
+                            cfg.RelayUrl = string.Empty;
+                        });
+
                         var newServerUrl = _relayServer.ReachableWebSocketUrls.FirstOrDefault() ??
                                            $"ws://localhost:{_config.Port}/ws/";
                         await _relayClient.SendServerChangePrepareAsync(groupId, groupSecret, newServerUrl);
@@ -618,13 +655,24 @@ public sealed class HeadlessHost : IDisposable
                             _relayClient?.Disconnect();
                             _relayClient?.Dispose();
                             _relayClient = null;
-                            _config.Modules.RelayServer = true;
-                            _config.Modules.RelayClient = false;
-                            _config.GroupSecret = secret;
+                            UpdateConfig(cfg =>
+                            {
+                                cfg.Modules.RelayServer = true;
+                                cfg.Modules.RelayClient = false;
+                                cfg.GroupSecret = secret;
+                                cfg.RelayUrl = string.Empty;
+                            });
                             return;
                         }
 
                         _relayClient?.Disconnect();
+                        UpdateConfig(cfg =>
+                        {
+                            cfg.Modules.RelayServer = false;
+                            cfg.Modules.RelayClient = true;
+                            cfg.RelayUrl = url;
+                            cfg.GroupSecret = secret;
+                        });
                         _relayClient!.GroupSecret = secret;
                         await _relayClient.ConnectAsync(url, _cts?.Token ?? CancellationToken.None);
                     });
@@ -637,6 +685,62 @@ public sealed class HeadlessHost : IDisposable
                 Log($"[relay-server] Migration switch failed: {ex.Message}");
             }
         });
+    }
+
+    // --- Config persistence ---
+
+    private void UpdateConfig(Action<HeadlessConfig> update)
+    {
+        if (_configPath is null)
+        {
+            update(_config);
+            return;
+        }
+
+        lock (_configSync)
+        {
+            update(_config);
+            try
+            {
+                _config.Save(_configPath);
+            }
+            catch (Exception ex)
+            {
+                Log($"[config] Warning: failed to save config: {ex.Message}");
+            }
+        }
+    }
+
+    // --- Output ordering ---
+
+    private void EnqueueOutput(string sessionId, Func<Task> sendAsync)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+            return;
+
+        _outputSendChains.AddOrUpdate(sessionId,
+            _ => SafeSendAsync(sendAsync),
+            (_, previous) => previous.ContinueWith(_ => SafeSendAsync(sendAsync), TaskScheduler.Default).Unwrap());
+    }
+
+    private async Task SafeSendAsync(Func<Task> sendAsync)
+    {
+        try
+        {
+            await sendAsync();
+        }
+        catch (Exception ex)
+        {
+            Log($"Output send failed: {ex.Message}");
+        }
+    }
+
+    private void RemoveOutputChain(string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+            return;
+
+        _outputSendChains.TryRemove(sessionId, out _);
     }
 
     // --- Logging ---
@@ -675,9 +779,86 @@ public sealed class HeadlessHost : IDisposable
         var builder = new UriBuilder(uri)
         {
             Scheme = uri.Scheme.Equals("wss", StringComparison.OrdinalIgnoreCase) ? "https" : "http",
-            Path = "/panel"
+            Path = "/panel/"
         };
         return builder.Uri.AbsoluteUri;
+    }
+
+    private static string BuildPublicWebSocketUrl(string publicHost, int port)
+    {
+        var trimmed = publicHost.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return string.Empty;
+
+        // If caller provided a full URI, normalize to ws/wss and force /ws/ path.
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var absolute))
+        {
+            var scheme = absolute.Scheme.ToLowerInvariant();
+            var wsScheme = scheme switch
+            {
+                "http" => "ws",
+                "https" => "wss",
+                "ws" => "ws",
+                "wss" => "wss",
+                _ => "ws"
+            };
+
+            var builder = new UriBuilder(absolute)
+            {
+                Scheme = wsScheme,
+                Path = "/ws/",
+                Query = string.Empty,
+                Fragment = string.Empty
+            };
+            return builder.Uri.AbsoluteUri;
+        }
+
+        // Treat as host[:port] (supports IPv6). If port not provided, use config port.
+        var host = NormalizeHostForWebSocket(trimmed, port);
+        return $"ws://{host}/ws/";
+    }
+
+    private static string NormalizeHostForWebSocket(string host, int port)
+    {
+        var trimmed = host.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return host;
+
+        var hasPort = HostHasPort(trimmed);
+        var normalized = NormalizeBracketedHost(trimmed);
+        if (!hasPort)
+            return $"{normalized}:{port}";
+
+        return normalized;
+    }
+
+    private static bool HostHasPort(string host)
+    {
+        if (host.StartsWith("["))
+        {
+            var end = host.IndexOf(']');
+            return end >= 0 && end + 1 < host.Length && host[end + 1] == ':';
+        }
+
+        var firstColon = host.IndexOf(':');
+        if (firstColon < 0)
+            return false;
+
+        // Single colon => host:port, multiple colons => IPv6 without brackets.
+        return host.IndexOf(':', firstColon + 1) < 0;
+    }
+
+    private static string NormalizeBracketedHost(string host)
+    {
+        if (host.StartsWith("["))
+            return host;
+
+        var firstColon = host.IndexOf(':');
+        if (firstColon < 0)
+            return host;
+
+        // Multiple colons => IPv6, wrap in brackets.
+        return host.IndexOf(':', firstColon + 1) >= 0 ? $"[{host}]" : host;
     }
 
     /// <summary>
@@ -686,12 +867,9 @@ public sealed class HeadlessHost : IDisposable
     /// </summary>
     private static void PatchReachableUrls(RelayServer server, string publicHost, int port)
     {
-        // Support "host:port" format for reverse proxy scenarios (e.g. "43.140.37.188:9090")
-        string publicUrl;
-        if (publicHost.Contains(':'))
-            publicUrl = $"ws://{publicHost}/ws/";
-        else
-            publicUrl = $"ws://{publicHost}:{port}/ws/";
+        var publicUrl = BuildPublicWebSocketUrl(publicHost, port);
+        if (string.IsNullOrWhiteSpace(publicUrl))
+            return;
 
         // Try to find and replace the backing list/field for ReachableWebSocketUrls
         var serverType = typeof(RelayServer);

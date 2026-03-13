@@ -12,7 +12,9 @@ struct GroupManagePage {
   @State groupMembers: Array<GroupMemberInfo> = [];
   @State groupId: string = '';
   @State isGroupJoined: boolean = false;
+  @State showUnbindDialog: boolean = false;
   private messageListenerId: number = -1;
+  private stateListenerId: number = -1;
 
   aboutToAppear(): void {
     this.activatePage();
@@ -35,6 +37,14 @@ struct GroupManagePage {
     this.isGroupJoined = WebSocketService.getIsGroupJoined();
     this.groupMembers = WebSocketService.getCachedGroupMembers();
 
+    if (this.stateListenerId === -1) {
+      this.stateListenerId = WebSocketService.addOnStateChange((state: ConnectionState) => {
+        if (state === ConnectionState.DISCONNECTED) {
+          this.getUIContext().getRouter().back();
+        }
+      });
+    }
+
     if (this.messageListenerId === -1) {
       this.messageListenerId = WebSocketService.addOnMessage((type: string, data: Record<string, Object>) => {
         if (type === 'group.member.list' || type === 'group.member.joined' || type === 'group.member.left') {
@@ -49,6 +59,11 @@ struct GroupManagePage {
   }
 
   private deactivatePage(): void {
+    if (this.stateListenerId !== -1) {
+      WebSocketService.removeOnStateChange(this.stateListenerId);
+      this.stateListenerId = -1;
+    }
+
     if (this.messageListenerId !== -1) {
       WebSocketService.removeOnMessage(this.messageListenerId);
       this.messageListenerId = -1;
@@ -81,6 +96,36 @@ struct GroupManagePage {
       return '#FFA500';
     }
     return AppColors.TEXT_SECONDARY;
+  }
+
+  private isCurrentMobile(): boolean {
+    const currentDeviceId: string = WebSocketService.getMobileDeviceId();
+    if (currentDeviceId.length === 0) {
+      return false;
+    }
+    for (let i: number = 0; i < this.groupMembers.length; i++) {
+      const member: GroupMemberInfo = this.groupMembers[i];
+      if (member.deviceId === currentDeviceId) {
+        return member.role === 'Mobile';
+      }
+    }
+    return false;
+  }
+
+  private requestUnbind(): void {
+    this.showUnbindDialog = true;
+  }
+
+  private cancelUnbind(): void {
+    this.showUnbindDialog = false;
+  }
+
+  private confirmUnbind(): void {
+    this.showUnbindDialog = false;
+    if (this.groupId.length === 0) {
+      return;
+    }
+    WebSocketService.unbindMobile(this.groupId);
   }
 
   build() {
@@ -149,6 +194,25 @@ struct GroupManagePage {
           .borderRadius(AppSizes.BORDER_RADIUS_CARD)
           .margin({ top: 12, bottom: 12 })
           .alignItems(HorizontalAlign.Start)
+
+          if (this.isCurrentMobile()) {
+            Row() {
+              Button('解绑手机')
+                .height(30)
+                .fontSize(12)
+                .fontColor(AppColors.ERROR_RED)
+                .backgroundColor(Color.Transparent)
+                .borderWidth(1)
+                .borderColor(AppColors.ERROR_RED)
+                .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+                .onClick(() => {
+                  this.requestUnbind();
+                })
+            }
+            .width('100%')
+            .justifyContent(FlexAlign.End)
+            .margin({ bottom: 8 })
+          }
 
           // Member count
           Text(`${AppStrings.GROUP_MEMBERS_TITLE} (${this.groupMembers.length})`)
@@ -243,6 +307,62 @@ struct GroupManagePage {
           bottom: 12
         })
         .layoutWeight(1)
+      }
+
+      if (this.showUnbindDialog) {
+        Column() {
+          Column() {
+            Text('解绑确认')
+              .fontSize(18)
+              .fontColor(AppColors.TEXT_PRIMARY)
+              .fontWeight(FontWeight.Medium)
+              .margin({ bottom: 10 })
+
+            Text('解绑后本机将失去管理权限，需要重新扫码绑定。')
+              .fontSize(13)
+              .fontColor(AppColors.TEXT_SECONDARY)
+              .textAlign(TextAlign.Center)
+              .margin({ bottom: 18 })
+
+            Row({ space: 12 }) {
+              Button('取消')
+                .width(120)
+                .height(40)
+                .fontSize(AppSizes.FONT_SIZE_SMALL)
+                .fontColor(AppColors.TEXT_PRIMARY)
+                .backgroundColor(Color.Transparent)
+                .borderWidth(1)
+                .borderColor(AppColors.TEXT_SECONDARY)
+                .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+                .onClick(() => {
+                  this.cancelUnbind();
+                })
+
+              Button('确认解绑')
+                .width(120)
+                .height(40)
+                .fontSize(AppSizes.FONT_SIZE_SMALL)
+                .fontColor('#FFFFFF')
+                .backgroundColor(AppColors.ERROR_RED)
+                .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+                .onClick(() => {
+                  this.confirmUnbind();
+                })
+            }
+            .width('100%')
+            .justifyContent(FlexAlign.Center)
+          }
+          .width('100%')
+          .padding(24)
+          .backgroundColor(AppColors.CARD_BACKGROUND)
+          .borderRadius(16)
+          .alignItems(HorizontalAlign.Center)
+        }
+        .width('100%')
+        .height('100%')
+        .padding({ left: 24, right: 24 })
+        .backgroundColor('#90000000')
+        .justifyContent(FlexAlign.Center)
       }
     }
     .width('100%')

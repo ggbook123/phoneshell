@@ -50,6 +50,9 @@ public sealed class RelayClient : IDisposable
     /// <summary>Raised when the server sends a terminal close request.</summary>
     public event Action<string>? TerminalCloseRequested; // sessionId
 
+    /// <summary>Raised when this device is unbound by the server.</summary>
+    public event Action? DeviceUnbound;
+
     /// <summary>Raised when group join is accepted.</summary>
     public event Action<GroupJoinAcceptedMessage>? GroupJoined;
 
@@ -245,8 +248,7 @@ public sealed class RelayClient : IDisposable
                 break;
             }
 
-            if (result.MessageType == WebSocketMessageType.Text ||
-                (result.MessageType == WebSocketMessageType.Binary && messageBuffer.Length > 0))
+            if (result.MessageType == WebSocketMessageType.Text)
             {
                 messageBuffer.Write(buffer, 0, result.Count);
 
@@ -340,6 +342,14 @@ public sealed class RelayClient : IDisposable
 
             case TerminalClosedMessage closed:
                 TerminalClosedReceived?.Invoke(closed.DeviceId, closed.SessionId);
+                break;
+
+            case DeviceUnregisterMessage unregistered:
+                if (string.Equals(unregistered.DeviceId, DeviceId, StringComparison.Ordinal))
+                {
+                    Log?.Invoke("Device unbound by server");
+                    DeviceUnbound?.Invoke();
+                }
                 break;
 
             case ControlForceDisconnectMessage:

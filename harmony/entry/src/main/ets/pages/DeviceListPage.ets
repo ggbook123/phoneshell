@@ -1,8 +1,9 @@
 import { LengthMetrics } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AppColors, AppSizes, AppStrings, ConnectionState } from '../common/Constants';
+import { AppColors, AppSizes, AppStrings, ConnectionState, StorageKeys } from '../common/Constants';
 import { WebSocketService } from '../services/WebSocketService';
-import { DeviceInfo } from '../models/MessageTypes';
+import { PreferencesUtil } from '../services/PreferencesUtil';
+import { DeviceInfo, GroupMemberInfo } from '../models/MessageTypes';
 
 const DOMAIN = 0x0000;
 const PAGE_TAG = 'DeviceListPage';
@@ -26,6 +27,11 @@ struct DeviceListPage {
   @State devices: Array<DeviceInfo> = [];
   @State connectionState: ConnectionState = ConnectionState.CONNECTED;
   @State isRefreshing: boolean = false;
+  @State isGroupJoined: boolean = false;
+  @State groupMemberCount: number = 0;
+  @State showUnbindDialog: boolean = false;
+  @State pendingUnbindDeviceId: string = '';
+  @State pendingUnbindDisplayName: string = '';
   private stateListenerId: number = -1;
   private messageListenerId: number = -1;
 
@@ -66,6 +72,17 @@ struct DeviceListPage {
     return normalized;
   }
 
+  private getServerDeviceId(): string {
+    const members: Array<GroupMemberInfo> = WebSocketService.getCachedGroupMembers();
+    for (let i: number = 0; i < members.length; i++) {
+      const member: GroupMemberInfo = members[i];
+      if (member.role === 'Server') {
+        return this.normalizeString(member.deviceId);
+      }
+    }
+    return '';
+  }
+
   aboutToAppear(): void {
     this.activatePage();
   }
@@ -86,6 +103,8 @@ struct DeviceListPage {
     const shouldRequestDevices: boolean = this.stateListenerId === -1 || this.messageListenerId === -1;
     this.connectionState = WebSocketService.getConnectionState();
     this.devices = WebSocketService.getCachedDevices();
+    this.isGroupJoined = WebSocketService.getIsGroupJoined();
+    this.groupMemberCount = WebSocketService.getCachedGroupMembers().length;
 
     if (this.stateListenerId === -1) {
       this.stateListenerId = WebSocketService.addOnStateChange((state: ConnectionState) => {
@@ -115,10 +134,19 @@ struct DeviceListPage {
             requesterName: requesterName,
             description: description
           };
-          this.getUIContext().getRouter().pushUrl({
-            url: 'pages/AuthorizationPage',
-            params: params
-          });
+          try {
+            this.getUIContext().getRouter().pushUrl({
+              url: 'pages/AuthorizationPage',
+              params: params
+            });
+          } catch (_e) {
+            // Ignore navigation errors
+          }
+        } else if (type === 'group.join.accepted') {
+          this.isGroupJoined = true;
+          this.groupMemberCount = WebSocketService.getCachedGroupMembers().length;
+        } else if (type === 'group.member.joined' || type === 'group.member.left' || type === 'group.member.list') {
+          this.groupMemberCount = WebSocketService.getCachedGroupMembers().length;
         }
       });
     }
@@ -161,10 +189,51 @@ struct DeviceListPage {
       displayName: this.getDeviceDisplayName(device),
       availableShells: this.getAvailableShells(device)
     };
-    this.getUIContext().getRouter().pushUrl({
-      url: 'pages/SessionListPage',
-      params: params
-    });
+    try {
+      this.getUIContext().getRouter().pushUrl({
+        url: 'pages/SessionListPage',
+        params: params
+      });
+    } catch (_e) {
+      // Ignore navigation errors
+    }
+  }
+
+  private requestUnbind(device: DeviceInfo): void {
+    const deviceId: string = this.getDeviceId(device);
+    if (deviceId.length === 0) {
+      return;
+    }
+    this.pendingUnbindDeviceId = deviceId;
+    this.pendingUnbindDisplayName = this.getDeviceDisplayName(device);
+    this.showUnbindDialog = true;
+  }
+
+  private cancelUnbind(): void {
+    this.showUnbindDialog = false;
+    this.pendingUnbindDeviceId = '';
+    this.pendingUnbindDisplayName = '';
+  }
+
+  private confirmUnbind(): void {
+    const deviceId: string = this.normalizeString(this.pendingUnbindDeviceId);
+    this.showUnbindDialog = false;
+    this.pendingUnbindDeviceId = '';
+    this.pendingUnbindDisplayName = '';
+    if (deviceId.length === 0) {
+      return;
+    }
+    WebSocketService.unregisterDevice(deviceId);
+
+    const serverDeviceId: string = this.getServerDeviceId();
+    if (serverDeviceId.length > 0 && deviceId === serverDeviceId) {
+      PreferencesUtil.setString(StorageKeys.GROUP_SECRET, '');
+      WebSocketService.resetGroupState();
+      WebSocketService.disconnect();
+      return;
+    }
+
+    this.refreshDevices();
   }
 
   private getOsIcon(os: string): string {
@@ -219,9 +288,9 @@ struct DeviceListPage {
       .alignItems(VerticalAlign.Center)
 
       // Group management bar (shown when group is joined)
-      if (WebSocketService.getIsGroupJoined()) {
+      if (this.isGroupJoined) {
         Row() {
-          Text(`${AppStrings.GROUP_STATUS_JOINED} · ${WebSocketService.getCachedGroupMembers().length} 成员`)
+          Text(`${AppStrings.GROUP_STATUS_JOINED} · ${this.groupMemberCount} 成员`)
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.ACCENT)
             .layoutWeight(1)
@@ -235,7 +304,11 @@ struct DeviceListPage {
             .borderColor(AppColors.ACCENT)
             .borderRadius(AppSizes.BORDER_RADIUS_TAG)
             .onClick(() => {
-              this.getUIContext().getRouter().pushUrl({ url: 'pages/GroupManagePage' });
+              try {
+                this.getUIContext().getRouter().pushUrl({ url: 'pages/GroupManagePage' });
+              } catch (_e) {
+                // Ignore navigation errors
+              }
             })
         }
         .width('100%')
@@ -299,6 +372,62 @@ struct DeviceListPage {
         })
         .layoutWeight(1)
       }
+
+      if (this.showUnbindDialog) {
+        Column() {
+          Column() {
+            Text('解绑确认')
+              .fontSize(18)
+              .fontColor(AppColors.TEXT_PRIMARY)
+              .fontWeight(FontWeight.Medium)
+              .margin({ bottom: 10 })
+
+            Text(`确认解绑设备 "${this.pendingUnbindDisplayName}" 吗？解绑后需要重新扫码绑定。`)
+              .fontSize(13)
+              .fontColor(AppColors.TEXT_SECONDARY)
+              .textAlign(TextAlign.Center)
+              .margin({ bottom: 18 })
+
+            Row({ space: 12 }) {
+              Button('取消')
+                .width(120)
+                .height(40)
+                .fontSize(AppSizes.FONT_SIZE_SMALL)
+                .fontColor(AppColors.TEXT_PRIMARY)
+                .backgroundColor(Color.Transparent)
+                .borderWidth(1)
+                .borderColor(AppColors.TEXT_SECONDARY)
+                .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+                .onClick(() => {
+                  this.cancelUnbind();
+                })
+
+              Button('确认解绑')
+                .width(120)
+                .height(40)
+                .fontSize(AppSizes.FONT_SIZE_SMALL)
+                .fontColor('#FFFFFF')
+                .backgroundColor(AppColors.ERROR_RED)
+                .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+                .onClick(() => {
+                  this.confirmUnbind();
+                })
+            }
+            .width('100%')
+            .justifyContent(FlexAlign.Center)
+          }
+          .width('100%')
+          .padding(24)
+          .backgroundColor(AppColors.CARD_BACKGROUND)
+          .borderRadius(16)
+          .alignItems(HorizontalAlign.Center)
+        }
+        .width('100%')
+        .height('100%')
+        .padding({ left: 24, right: 24 })
+        .backgroundColor('#90000000')
+        .justifyContent(FlexAlign.Center)
+      }
     }
     .width('100%')
     .height('100%')
@@ -358,6 +487,25 @@ struct DeviceListPage {
           }, (shell: string, index: number) => `${shell}_${index}`)
         }
         .width('100%')
+        .margin({ top: 12 })
+      }
+
+      if (this.connectionState === ConnectionState.CONNECTED) {
+        Row() {
+          Button('解绑')
+            .height(28)
+            .fontSize(12)
+            .fontColor(AppColors.ERROR_RED)
+            .backgroundColor(Color.Transparent)
+            .borderWidth(1)
+            .borderColor(AppColors.ERROR_RED)
+            .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+            .onClick(() => {
+              this.requestUnbind(device);
+            })
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.End)
         .margin({ top: 12 })
       }
     }

@@ -191,6 +191,12 @@ struct TerminalPage {
       WebSocketService.removeOnMessage(this.messageListenerId);
       this.messageListenerId = -1;
     }
+
+    // Reset bridge callbacks to no-op to prevent stale references (Bug #9)
+    this.terminalBridge.onReadyCallback = (_cols: number, _rows: number) => {};
+    this.terminalBridge.onResizeCallback = (_cols: number, _rows: number) => {};
+    this.terminalBridge.onInputCallback = (_data: string) => {};
+    this.terminalBridge.onInteractionCallback = () => {};
   }
 
   private enqueueTerminalOutput(data: string): void {

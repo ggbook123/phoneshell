@@ -106,7 +106,11 @@ struct SessionListPage {
               resolvedSessionId, resolvedDeviceId);
             if (resolvedDeviceId === this.deviceId) {
               WebSocketService.setActiveSession(resolvedDeviceId, resolvedSessionId);
-              this.getUIContext().getRouter().pushUrl({ url: 'pages/TerminalPage' });
+              try {
+                this.getUIContext().getRouter().pushUrl({ url: 'pages/TerminalPage' });
+              } catch (_e) {
+                // Ignore navigation errors
+              }
             }
           }
         } else if (type === 'error') {
@@ -177,7 +181,11 @@ struct SessionListPage {
     // Set active session and navigate to terminal
     WebSocketService.setActiveSession(this.deviceId, session.sessionId);
     // Send resize to indicate we're connecting to existing session
-    this.getUIContext().getRouter().pushUrl({ url: 'pages/TerminalPage' });
+    try {
+      this.getUIContext().getRouter().pushUrl({ url: 'pages/TerminalPage' });
+    } catch (_e) {
+      // Ignore navigation errors
+    }
   }
 
   private onNewSession(): void {

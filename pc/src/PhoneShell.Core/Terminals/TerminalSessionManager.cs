@@ -36,6 +36,8 @@ public sealed class TerminalSessionManager : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        if (_session is not null)
+            _session.OutputReady -= OnOutputReady;
         _session?.Dispose();
         _session = null;
     }
