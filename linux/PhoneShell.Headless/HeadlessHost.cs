@@ -30,6 +30,7 @@ public sealed class HeadlessHost : IDisposable
     // Multi-session terminal management
     private readonly ConcurrentDictionary<string, ManagedSession> _sessions = new();
     private readonly ConcurrentDictionary<string, Task> _outputSendChains = new();
+    private readonly ConcurrentDictionary<string, RawOutputBuffer> _rawOutputBuffers = new();
     private int _sessionCounter;
 
     /// <summary>
@@ -105,6 +106,7 @@ public sealed class HeadlessHost : IDisposable
             _relayServer.LocalTerminalSessionEnded += OnLocalTerminalSessionEnded;
             _relayServer.LocalTerminalOpenRequested += OnLocalTerminalOpenRequested;
             _relayServer.LocalSessionListProvider += GetSessionList;
+            _relayServer.LocalTerminalSnapshotProvider = GetTerminalSnapshot;
             _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
 
             await _relayServer.StartAsync(_config.Port, _baseDirectory, _cts.Token);
@@ -356,6 +358,7 @@ public sealed class HeadlessHost : IDisposable
         }
         _sessions.Clear();
         _outputSendChains.Clear();
+        _rawOutputBuffers.Clear();
 
         _relayClient?.Dispose();
         _relayClient = null;
@@ -425,9 +428,14 @@ public sealed class HeadlessHost : IDisposable
     {
         var (sessionId, manager) = CreateTerminalSession(shellId);
 
-        // Wire output to relay broadcast
+        // Create raw output buffer for snapshot support
+        var rawBuffer = new RawOutputBuffer();
+        _rawOutputBuffers[sessionId] = rawBuffer;
+
+        // Wire output to buffer + relay broadcast
         manager.OutputReceived += data =>
         {
+            rawBuffer.Append(data);
             EnqueueOutput(sessionId, async () =>
             {
                 if (_relayServer is not null)
@@ -456,6 +464,7 @@ public sealed class HeadlessHost : IDisposable
         {
             managed.Manager.Dispose();
             RemoveOutputChain(sessionId);
+            _rawOutputBuffers.TryRemove(sessionId, out _);
             Log($"Terminal session ended: {sessionId}");
         }
     }
@@ -907,6 +916,51 @@ public sealed class HeadlessHost : IDisposable
             {
                 field.SetValue(server, new List<string> { publicUrl });
                 return;
+            }
+        }
+    }
+
+    // --- Terminal snapshot support ---
+
+    private Task<string> GetTerminalSnapshot(string sessionId)
+    {
+        if (_rawOutputBuffers.TryGetValue(sessionId, out var buffer))
+            return Task.FromResult(buffer.GetSnapshot());
+        return Task.FromResult(string.Empty);
+    }
+
+    /// <summary>
+    /// Ring buffer that keeps the most recent raw terminal output (with ANSI codes)
+    /// so that clients re-subscribing to a session can receive a snapshot.
+    /// </summary>
+    private sealed class RawOutputBuffer
+    {
+        private readonly object _lock = new();
+        private readonly Queue<string> _chunks = new();
+        private int _totalLength;
+        private const int MaxLength = 65536; // 64 KB
+
+        public void Append(string data)
+        {
+            if (string.IsNullOrEmpty(data)) return;
+            lock (_lock)
+            {
+                _chunks.Enqueue(data);
+                _totalLength += data.Length;
+                while (_totalLength > MaxLength && _chunks.Count > 1)
+                {
+                    var old = _chunks.Dequeue();
+                    _totalLength -= old.Length;
+                }
+            }
+        }
+
+        public string GetSnapshot()
+        {
+            lock (_lock)
+            {
+                if (_chunks.Count == 0) return string.Empty;
+                return string.Concat(_chunks);
             }
         }
     }

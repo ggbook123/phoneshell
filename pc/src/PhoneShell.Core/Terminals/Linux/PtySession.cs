@@ -3,13 +3,12 @@ using System.Runtime.InteropServices;
 namespace PhoneShell.Core.Terminals.Linux;
 
 /// <summary>
-/// Linux PTY terminal session using forkpty().
-/// Equivalent of ConPtySession for Linux.
+/// Linux PTY terminal session using a native helper library (libptyhelper.so)
+/// to perform the forkpty()+execvp() sequence entirely in native code.
 ///
-/// NOTE: forkpty() calls fork() internally. In a managed .NET runtime, the child process
-/// after fork has only the calling thread; the GC/threadpool/finalizer are in undefined state.
-/// We minimize managed code in the child (only execvp + _exit) to reduce risk.
-/// If this proves unstable, consider using a native helper library for the fork+exec sequence.
+/// This avoids the SIGSEGV crash caused by calling fork() inside the multi-threaded
+/// .NET runtime, where the child process inherits a broken GC/threadpool state.
+/// The native helper ensures only pure C code runs between fork() and execvp().
 /// </summary>
 public sealed class PtySession : ITerminalSession
 {
@@ -22,17 +21,17 @@ public sealed class PtySession : ITerminalSession
 
     static PtySession()
     {
-        // Register a DLL import resolver to find forkpty in the correct library.
-        // On glibc-based Linux (Debian, Ubuntu, CentOS, etc.) forkpty is in libutil.
-        // On musl-based Linux (Alpine) it is in libc itself.
         NativeLibrary.SetDllImportResolver(typeof(PtySession).Assembly, (name, assembly, path) =>
         {
-            if (name == "libutil")
+            if (name == "libptyhelper")
             {
-                // Try libutil first (glibc), fall back to libc (musl/Alpine)
-                if (NativeLibrary.TryLoad("libutil", assembly, path, out var handle))
+                // Try loading from the application directory first
+                var appDir = AppContext.BaseDirectory;
+                var helperPath = Path.Combine(appDir, "libptyhelper.so");
+                if (NativeLibrary.TryLoad(helperPath, out var handle))
                     return handle;
-                if (NativeLibrary.TryLoad("libc", assembly, path, out handle))
+                // Fall back to system search
+                if (NativeLibrary.TryLoad("libptyhelper", assembly, path, out handle))
                     return handle;
             }
             return IntPtr.Zero;
@@ -41,41 +40,30 @@ public sealed class PtySession : ITerminalSession
 
     public void Start(string executable, string arguments, int cols, int rows)
     {
-        var winSize = new NativeMethods.WinSize
-        {
-            ws_col = (ushort)cols,
-            ws_row = (ushort)rows,
-            ws_xpixel = 0,
-            ws_ypixel = 0
-        };
+        var argv = string.IsNullOrWhiteSpace(arguments)
+            ? new[] { executable, null! }
+            : BuildArgv(executable, arguments);
 
         int masterFd;
-        var pid = NativeMethods.ForkPty(out masterFd, IntPtr.Zero, IntPtr.Zero, ref winSize);
+        int childPid;
+        var result = NativeMethods.PtySpawn(executable, argv, cols, rows,
+            out masterFd, out childPid);
 
-        if (pid < 0)
+        if (result != 0)
         {
             var errno = Marshal.GetLastWin32Error();
-            throw new InvalidOperationException($"forkpty() failed with errno {errno}");
+            throw new InvalidOperationException(
+                $"pty_spawn() failed with errno {errno}");
         }
 
-        if (pid == 0)
-        {
-            // Child process — exec the shell immediately.
-            // Minimize managed code here; the .NET runtime is in an undefined state after fork.
-            var argv = string.IsNullOrWhiteSpace(arguments)
-                ? new[] { executable, null! }
-                : BuildArgv(executable, arguments);
-
-            NativeMethods.Execvp(executable, argv);
-            // If execvp returns, it failed
-            NativeMethods.Exit(1);
-        }
-
-        // Parent process
         _masterFd = masterFd;
-        _childPid = pid;
+        _childPid = childPid;
 
-        _readThread = new Thread(ReadOutputLoop) { IsBackground = true, Name = "PTY-Read" };
+        _readThread = new Thread(ReadOutputLoop)
+        {
+            IsBackground = true,
+            Name = "PTY-Read"
+        };
         _readThread.Start();
     }
 
@@ -192,19 +180,15 @@ public sealed class PtySession : ITerminalSession
             public ushort ws_ypixel;
         }
 
-        // forkpty lives in libutil on glibc, libc on musl.
-        // The DLL import resolver in the static constructor handles the fallback.
-        [DllImport("libutil", EntryPoint = "forkpty", SetLastError = true)]
-        internal static extern int ForkPty(
+        // Native helper — does forkpty+execvp entirely in C code.
+        [DllImport("libptyhelper", EntryPoint = "pty_spawn", SetLastError = true)]
+        internal static extern int PtySpawn(
+            [MarshalAs(UnmanagedType.LPStr)] string executable,
+            [MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.LPStr)] string[] argv,
+            int cols,
+            int rows,
             out int masterFd,
-            IntPtr name,
-            IntPtr termios,
-            ref WinSize winSize);
-
-        [DllImport("libc", EntryPoint = "execvp", SetLastError = true)]
-        internal static extern int Execvp(
-            [MarshalAs(UnmanagedType.LPStr)] string file,
-            [MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.LPStr)] string[] argv);
+            out int childPid);
 
         [DllImport("libc", EntryPoint = "read", SetLastError = true)]
         internal static extern int Read(int fd, byte[] buf, int count);
@@ -233,8 +217,5 @@ public sealed class PtySession : ITerminalSession
 
         [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
         internal static extern int Kill(int pid, int signal);
-
-        [DllImport("libc", EntryPoint = "_exit")]
-        internal static extern void Exit(int status);
     }
 }

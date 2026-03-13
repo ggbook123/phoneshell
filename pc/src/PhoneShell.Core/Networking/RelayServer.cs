@@ -530,12 +530,13 @@ public sealed class RelayServer : IDisposable
                 NotifyDeviceListChanged();
                 Log?.Invoke($"Device unregistered: {client.RegisteredDeviceId}");
 
-                // If the disconnecting client is the bound mobile, invalidate all panel tokens
+                // If the disconnecting client is the bound mobile, only clear pending login sessions.
+                // Panel access tokens remain valid — mobile may reconnect later and tokens have their own TTL.
+                // Tokens are fully invalidated only when the mobile is explicitly unbound.
                 if (_group is not null && client.RegisteredDeviceId == _group.BoundMobileId)
                 {
-                    _panelAccessTokens.Clear();
                     _panelLoginSessions.Clear();
-                    Log?.Invoke("Bound mobile disconnected — all panel tokens invalidated");
+                    Log?.Invoke("Bound mobile disconnected — pending login sessions cleared (panel tokens preserved)");
                 }
 
                 // Broadcast group member left (device goes offline, stays in persistent list)
@@ -788,12 +789,36 @@ public sealed class RelayServer : IDisposable
             case TerminalResizeMessage resize:
                 if (_devices.TryGetValue(resize.DeviceId, out var resizeTarget))
                 {
+                    var prevSession = client.SubscribedSessionId;
                     client.SubscribedDeviceId = resize.DeviceId;
                     client.SubscribedSessionId = resize.SessionId;
 
                     if (resizeTarget.IsLocal)
                     {
                         InvokeLocalTerminalResize(client, resize);
+
+                        // Send terminal snapshot when client (re-)subscribes to a session
+                        if (prevSession != resize.SessionId && LocalTerminalSnapshotProvider is not null)
+                        {
+                            try
+                            {
+                                var snapshot = await LocalTerminalSnapshotProvider(resize.SessionId);
+                                if (!string.IsNullOrWhiteSpace(snapshot))
+                                {
+                                    await SendAsync(client, MessageSerializer.Serialize(
+                                        new TerminalOutputMessage
+                                        {
+                                            DeviceId = resize.DeviceId,
+                                            SessionId = resize.SessionId,
+                                            Data = snapshot
+                                        }));
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Log?.Invoke($"Terminal snapshot on resubscribe failed: {ex.Message}");
+                            }
+                        }
                     }
                     else if (resizeTarget.ClientId is not null &&
                              _clients.TryGetValue(resizeTarget.ClientId, out var resizeClient))

@@ -1,0 +1,15 @@
+[Unit]
+Description=PhoneShell Remote Terminal Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/phoneshell
+ExecStart=/usr/bin/node dist/index.js --config /etc/phoneshell/config.json
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

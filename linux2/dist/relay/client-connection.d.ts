@@ -1,0 +1,13 @@
+import WebSocket from 'ws';
+import type { MemberRole } from '../protocol/messages.js';
+export interface ClientConnection {
+    clientId: string;
+    ws: WebSocket;
+    registeredDeviceId?: string;
+    subscribedDeviceId?: string;
+    subscribedSessionId?: string;
+    memberRole: MemberRole;
+    sendQueue: Promise<void>;
+}
+export declare function createClientConnection(ws: WebSocket): ClientConnection;
+export declare function sendToClient(client: ClientConnection, message: string): Promise<void>;
