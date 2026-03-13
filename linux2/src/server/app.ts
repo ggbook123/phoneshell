@@ -59,15 +59,32 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     getLocalTerminalSnapshot: (sessionId) => terminalManager.getSnapshot(sessionId),
   });
 
-  // Wire terminal output to relay broadcast
-  terminalManager.onOutput = (sessionId, data) => {
-    enqueueOutput(sessionId, () => relay.broadcastLocalTerminalOutput(deviceId, sessionId, data));
-  };
-  terminalManager.onExit = (sessionId) => {
-    relay.broadcastLocalTerminalClosed(deviceId, sessionId);
-    relay.broadcastLocalSessionListChanged(deviceId);
-    outputChains.delete(sessionId);
-  };
+  // Wire terminal output: relay (standalone) vs client mode
+  function wireTerminalOutputToRelay(): void {
+    terminalManager.onOutput = (sessionId, data) => {
+      enqueueOutput(sessionId, () => relay.broadcastLocalTerminalOutput(deviceId, sessionId, data));
+    };
+    terminalManager.onExit = (sessionId) => {
+      relay.broadcastLocalTerminalClosed(deviceId, sessionId);
+      relay.broadcastLocalSessionListChanged(deviceId);
+      outputChains.delete(sessionId);
+    };
+  }
+
+  function wireTerminalOutputToClient(): void {
+    terminalManager.onOutput = (sessionId, data) => {
+      enqueueOutput(sessionId, async () => {
+        relayClient?.sendTerminalOutput(deviceId, sessionId, data);
+      });
+    };
+    terminalManager.onExit = (sessionId) => {
+      relayClient?.sendTerminalClosed(deviceId, sessionId);
+      relayClient?.sendSessionList(deviceId, terminalManager.getSessionList());
+      outputChains.delete(sessionId);
+    };
+  }
+
+  wireTerminalOutputToRelay();
 
   // Set auth token
   const effectiveToken = config.groupSecret || config.relayAuthToken;
@@ -77,6 +94,25 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
   relay.initGroup(groupStore, deviceId, displayName, os, availableShells);
   relay.registerLocalDevice(deviceId, displayName, os, availableShells);
   relay.start();
+
+  // Mode manager for standalone ↔ client transitions
+  const modeManager = new ModeManager();
+  modeManager.setLogger((msg) => log(`[mode] ${msg}`));
+  modeManager.initialize('standalone');
+
+  let relayClient: RelayClient | null = null;
+
+  function transitionBackToStandalone(): void {
+    if (relayClient) {
+      relayClient.disconnect();
+      relayClient = null;
+    }
+    modeManager.transitionToStandalone();
+    relay.start();
+    relay.registerLocalDevice(deviceId, displayName, os, availableShells);
+    wireTerminalOutputToRelay();
+    log('Transitioned back to standalone mode');
+  }
 
   // Resolve server URL from request headers (reverse proxy support)
   function resolveServerUrl(req: http.IncomingMessage): string {
@@ -155,8 +191,40 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
             return;
           }
           log(`[invite] Received invite: relay=${invite.relayUrl} code=${invite.inviteCode}`);
-          // TODO: Trigger mode-manager transition to client and connect via relay-client
-          // For now, return accepted and the mode-manager integration will handle it
+
+          if (!modeManager.transitionToClient(invite.relayUrl, invite.inviteCode)) {
+            writeJson(res, 409, { type: 'error', code: 'not_standalone', message: 'Device is not in standalone mode.' });
+            return;
+          }
+
+          // Stop relay server, switch to client mode
+          relay.stop();
+
+          relayClient = new RelayClient();
+          relayClient.setLogger((msg) => log(`[relay-client] ${msg}`));
+          relayClient.setCallbacks({
+            onLocalTerminalInput: (sessionId, data) => terminalManager.writeInput(sessionId, data),
+            onLocalTerminalResize: (sessionId, cols, rows) => terminalManager.resize(sessionId, cols, rows),
+            onLocalTerminalSessionEnded: (sessionId) => {
+              terminalManager.closeSession(sessionId);
+              outputChains.delete(sessionId);
+            },
+            onLocalTerminalOpen: async (_devId, shellId) => terminalManager.createSession(shellId),
+            getLocalSessionList: () => terminalManager.getSessionList(),
+            getLocalTerminalSnapshot: (sessionId) => terminalManager.getSnapshot(sessionId),
+            onKicked: (reason) => {
+              log(`Kicked from group: ${reason}`);
+              transitionBackToStandalone();
+            },
+            onGroupDissolved: (reason) => {
+              log(`Group dissolved: ${reason}`);
+              transitionBackToStandalone();
+            },
+          });
+
+          wireTerminalOutputToClient();
+          relayClient.connect(invite.relayUrl, deviceId, displayName, os, availableShells, invite.inviteCode);
+
           writeJson(res, 200, { status: 'accepted', relayUrl: invite.relayUrl });
         } catch {
           writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'Invalid JSON body.' });
@@ -357,6 +425,13 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
 
     if (pathname !== '/ws' && pathname !== '/ws/') {
+      socket.destroy();
+      return;
+    }
+
+    // Reject WS connections when not in standalone/relay mode
+    if (modeManager.isClient()) {
+      socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
       socket.destroy();
       return;
     }

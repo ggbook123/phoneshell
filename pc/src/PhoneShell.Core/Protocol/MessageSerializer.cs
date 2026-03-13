@@ -83,6 +83,16 @@ public static class MessageSerializer
             "group.secret.rotate.done" => Deserialize<GroupSecretRotateDoneMessage>(json),
             "panel.login.scan" => Deserialize<PanelLoginScanMessage>(json),
             "error" => Deserialize<ErrorMessage>(json),
+            "relay.designate" => Deserialize<RelayDesignateMessage>(json),
+            "relay.designated" => Deserialize<RelayDesignatedMessage>(json),
+            "invite.create.request" => Deserialize<InviteCreateRequestMessage>(json),
+            "invite.create.response" => Deserialize<InviteCreateResponseMessage>(json),
+            "device.settings.update" => Deserialize<DeviceSettingsUpdateMessage>(json),
+            "device.settings.updated" => Deserialize<DeviceSettingsUpdatedMessage>(json),
+            "device.kicked" => Deserialize<DeviceKickedMessage>(json),
+            "group.dissolve" => Deserialize<GroupDissolveMessage>(json),
+            "group.dissolved" => Deserialize<GroupDissolvedMessage>(json),
+            "panel.disconnected" => Deserialize<PanelDisconnectedMessage>(json),
             _ => null
         };
     }

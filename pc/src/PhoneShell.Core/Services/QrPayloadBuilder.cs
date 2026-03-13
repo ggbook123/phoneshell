@@ -13,6 +13,19 @@ public sealed class QrPayloadBuilder
     }
 
     /// <summary>
+    /// Build a QR payload for standalone mode: phone scans to connect directly.
+    /// phoneshell://connect?http=...&ws=...&deviceId=...&displayName=...
+    /// </summary>
+    public string BuildStandalone(string httpUrl, string wsUrl, string deviceId, string displayName)
+    {
+        var http = Uri.EscapeDataString(httpUrl);
+        var ws = Uri.EscapeDataString(wsUrl);
+        var id = Uri.EscapeDataString(deviceId);
+        var name = Uri.EscapeDataString(displayName);
+        return $"phoneshell://connect?http={http}&ws={ws}&deviceId={id}&displayName={name}";
+    }
+
+    /// <summary>
     /// Build a QR payload for mobile binding that includes server address and group secret.
     /// Scanning this QR code allows the phone to connect + join group + bind as mobile admin.
     /// </summary>

@@ -14,6 +14,7 @@ public sealed class DeviceRegisterMessage
     public string DisplayName { get; init; } = string.Empty;
     public string Os { get; init; } = string.Empty;
     public List<string> AvailableShells { get; init; } = new();
+    public string Mode { get; init; } = "standalone";
 }
 
 public sealed class DeviceUnregisterMessage
@@ -149,6 +150,7 @@ public sealed class GroupJoinRequestMessage
 {
     public string Type => "group.join.request";
     public string GroupSecret { get; init; } = string.Empty;
+    public string InviteCode { get; init; } = string.Empty;
     public string DeviceId { get; init; } = string.Empty;
     public string DisplayName { get; init; } = string.Empty;
     public string Os { get; init; } = string.Empty;
@@ -272,6 +274,80 @@ public sealed class ErrorMessage
     public string Type => "error";
     public string Code { get; init; } = string.Empty;
     public string Message { get; init; } = string.Empty;
+}
+
+// --- Relay designation ---
+
+public sealed class RelayDesignateMessage
+{
+    public string Type => "relay.designate";
+}
+
+public sealed class RelayDesignatedMessage
+{
+    public string Type => "relay.designated";
+    public string RelayUrl { get; init; } = string.Empty;
+    public string GroupId { get; init; } = string.Empty;
+}
+
+// --- Invite system ---
+
+public sealed class InviteCreateRequestMessage
+{
+    public string Type => "invite.create.request";
+}
+
+public sealed class InviteCreateResponseMessage
+{
+    public string Type => "invite.create.response";
+    public string InviteCode { get; init; } = string.Empty;
+    public string RelayUrl { get; init; } = string.Empty;
+    public string ExpiresAt { get; init; } = string.Empty;
+}
+
+// --- Device settings ---
+
+public sealed class DeviceSettingsUpdateMessage
+{
+    public string Type => "device.settings.update";
+    public string DeviceId { get; init; } = string.Empty;
+    public string DisplayName { get; init; } = string.Empty;
+}
+
+public sealed class DeviceSettingsUpdatedMessage
+{
+    public string Type => "device.settings.updated";
+    public string DeviceId { get; init; } = string.Empty;
+    public string DisplayName { get; init; } = string.Empty;
+}
+
+// --- Device kicked ---
+
+public sealed class DeviceKickedMessage
+{
+    public string Type => "device.kicked";
+    public string Reason { get; init; } = string.Empty;
+}
+
+// --- Group dissolve ---
+
+public sealed class GroupDissolveMessage
+{
+    public string Type => "group.dissolve";
+}
+
+public sealed class GroupDissolvedMessage
+{
+    public string Type => "group.dissolved";
+    public string Reason { get; init; } = string.Empty;
+}
+
+// --- Panel disconnect notification ---
+
+public sealed class PanelDisconnectedMessage
+{
+    public string Type => "panel.disconnected";
+    public string ClientId { get; init; } = string.Empty;
 }
 
 // --- Server migration ---

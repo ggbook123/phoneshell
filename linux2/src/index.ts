@@ -13,7 +13,7 @@ Options:
   --config <path>         Config file path (default: /etc/phoneshell/config.json)
   --name <name>           Device display name
   --port <port>           Listen port (default: 19090)
-  --mode <server|client>  Operating mode
+  --mode <mode>           Operating mode: standalone (default), server, client
   --group-secret <secret> Group secret for authentication
   --public-host <host>    Public hostname (for NAT traversal)
   --relay <url>           Relay server URL (client mode)
@@ -32,6 +32,11 @@ Environment Variables:
 `);
   process.exit(0);
 }
+
+// Log startup mode
+const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
+console.log(`[${ts}] PhoneShell starting in ${config.mode} mode`);
+console.log(`[${ts}]   Modules: terminal=${config.modules.terminal}, relay-server=${config.modules.relayServer}, relay-client=${config.modules.relayClient}, web-panel=${config.modules.webPanel}`);
 
 const app = createApp(config);
 

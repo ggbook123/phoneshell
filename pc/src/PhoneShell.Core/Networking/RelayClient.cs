@@ -80,6 +80,24 @@ public sealed class RelayClient : IDisposable
     /// <summary>Raised when the group secret has been rotated.</summary>
     public event Action<string>? GroupSecretRotated; // newSecret
 
+    /// <summary>Raised when this device receives a relay.designated response.</summary>
+    public event Action<string, string>? RelayDesignated; // relayUrl, groupId
+
+    /// <summary>Raised when an invite code is created in response to invite.create.request.</summary>
+    public event Action<string, string>? InviteCreated; // inviteCode, relayUrl
+
+    /// <summary>Raised when a device's display name is updated.</summary>
+    public event Action<string, string>? DeviceSettingsUpdated; // deviceId, displayName
+
+    /// <summary>Raised when this device is kicked from the group.</summary>
+    public event Action<string>? DeviceKicked; // reason
+
+    /// <summary>Raised when the group is dissolved.</summary>
+    public event Action<string>? GroupDissolved; // reason
+
+    /// <summary>Raised when a web panel disconnects.</summary>
+    public event Action<string>? PanelDisconnected; // clientId
+
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
     /// <summary>
@@ -376,6 +394,36 @@ public sealed class RelayClient : IDisposable
                 Log?.Invoke($"Group secret rotated to {rotated.NewSecret[..Math.Min(8, rotated.NewSecret.Length)]}...");
                 GroupSecretRotated?.Invoke(rotated.NewSecret);
                 break;
+
+            case RelayDesignatedMessage designated:
+                Log?.Invoke($"Relay designated: url={designated.RelayUrl} groupId={designated.GroupId}");
+                RelayDesignated?.Invoke(designated.RelayUrl, designated.GroupId);
+                break;
+
+            case InviteCreateResponseMessage inviteResponse:
+                Log?.Invoke($"Invite code created: {inviteResponse.InviteCode}");
+                InviteCreated?.Invoke(inviteResponse.InviteCode, inviteResponse.RelayUrl);
+                break;
+
+            case DeviceSettingsUpdatedMessage settingsUpdated:
+                Log?.Invoke($"Device settings updated: {settingsUpdated.DeviceId} → {settingsUpdated.DisplayName}");
+                DeviceSettingsUpdated?.Invoke(settingsUpdated.DeviceId, settingsUpdated.DisplayName);
+                break;
+
+            case DeviceKickedMessage kicked:
+                Log?.Invoke($"Device kicked from group: {kicked.Reason}");
+                DeviceKicked?.Invoke(kicked.Reason);
+                break;
+
+            case GroupDissolvedMessage dissolved:
+                Log?.Invoke($"Group dissolved: {dissolved.Reason}");
+                GroupDissolved?.Invoke(dissolved.Reason);
+                break;
+
+            case PanelDisconnectedMessage panelDisconnected:
+                Log?.Invoke($"Panel disconnected: {panelDisconnected.ClientId}");
+                PanelDisconnected?.Invoke(panelDisconnected.ClientId);
+                break;
         }
     }
 
@@ -424,6 +472,45 @@ public sealed class RelayClient : IDisposable
         {
             DeviceId = deviceId,
             SessionId = sessionId
+        });
+        await SendAsync(msg);
+    }
+
+    /// <summary>Request an invite code from the relay server.</summary>
+    public async Task SendInviteCreateRequestAsync()
+    {
+        var msg = MessageSerializer.Serialize(new InviteCreateRequestMessage());
+        await SendAsync(msg);
+    }
+
+    /// <summary>Update a device's display name via the relay server.</summary>
+    public async Task SendDeviceSettingsUpdateAsync(string deviceId, string displayName)
+    {
+        var msg = MessageSerializer.Serialize(new DeviceSettingsUpdateMessage
+        {
+            DeviceId = deviceId,
+            DisplayName = displayName
+        });
+        await SendAsync(msg);
+    }
+
+    /// <summary>Dissolve the current group.</summary>
+    public async Task SendGroupDissolveAsync()
+    {
+        var msg = MessageSerializer.Serialize(new GroupDissolveMessage());
+        await SendAsync(msg);
+    }
+
+    /// <summary>Join a group using an invite code instead of a group secret.</summary>
+    public async Task SendGroupJoinWithInviteAsync(string inviteCode)
+    {
+        var msg = MessageSerializer.Serialize(new GroupJoinRequestMessage
+        {
+            InviteCode = inviteCode,
+            DeviceId = DeviceId,
+            DisplayName = DisplayName,
+            Os = Os,
+            AvailableShells = AvailableShells
         });
         await SendAsync(msg);
     }

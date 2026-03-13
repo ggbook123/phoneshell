@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Text;
 using PhoneShell.Core.Networking;
 using PhoneShell.Core.Models;
@@ -109,6 +110,10 @@ public sealed class HeadlessHost : IDisposable
             _relayServer.LocalTerminalSnapshotProvider = GetTerminalSnapshot;
             _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
 
+            // Register custom HTTP handlers for standalone mode APIs
+            _relayServer.CustomHttpHandler = (context, path) =>
+                HandleStandaloneHttpAsync(context, path, DeviceId, displayName, os, shells);
+
             await _relayServer.StartAsync(_config.Port, _baseDirectory, _cts.Token);
 
             // Always register the local device so the group is initialized,
@@ -177,6 +182,25 @@ public sealed class HeadlessHost : IDisposable
                 Log($"Relay WebSocket: {wsUrl}");
                 Log($"Relay health: {BuildHttpEndpointUrl(wsUrl, "healthz")}");
                 Log($"Relay status: {BuildHttpEndpointUrl(wsUrl, "status")}");
+            }
+
+            // Standalone mode: display QR URL for phone to scan directly
+            var isStandalone = string.IsNullOrWhiteSpace(_config.GroupSecret)
+                            && string.IsNullOrWhiteSpace(_config.RelayUrl);
+            if (isStandalone && _relayServer.ReachableWebSocketUrls.Any())
+            {
+                var wsUrl = _relayServer.ReachableWebSocketUrls.First();
+                var httpUrl = wsUrl.Replace("ws://", "http://").Replace("wss://", "https://")
+                    .TrimEnd('/').Replace("/ws", "");
+                var qrBuilder = new QrPayloadBuilder();
+                var standaloneQr = qrBuilder.BuildStandalone(httpUrl, wsUrl, DeviceId, displayName);
+                Log("");
+                Log("=== STANDALONE MODE ===");
+                Log($"Scan this QR code with PhoneShell mobile app:");
+                Log($"  {standaloneQr}");
+                Log($"  API: {httpUrl}/api/standalone/info");
+                Log("========================");
+                Log("");
             }
         }
 
@@ -423,7 +447,7 @@ public sealed class HeadlessHost : IDisposable
 
     // --- Relay Server event handlers (when this node is the hub) ---
 
-    private async Task<(string SessionId, int Cols, int Rows)> OnLocalTerminalOpenRequested(
+    private Task<(string SessionId, int Cols, int Rows)> OnLocalTerminalOpenRequested(
         string deviceId, string shellId)
     {
         var (sessionId, manager) = CreateTerminalSession(shellId);
@@ -443,7 +467,7 @@ public sealed class HeadlessHost : IDisposable
             });
         };
 
-        return (sessionId, _config.DefaultCols, _config.DefaultRows);
+        return Task.FromResult((sessionId, _config.DefaultCols, _config.DefaultRows));
     }
 
     private void OnLocalTerminalInput(string sessionId, string data)
@@ -927,6 +951,228 @@ public sealed class HeadlessHost : IDisposable
         if (_rawOutputBuffers.TryGetValue(sessionId, out var buffer))
             return Task.FromResult(buffer.GetSnapshot());
         return Task.FromResult(string.Empty);
+    }
+
+    // --- Standalone mode HTTP handlers ---
+
+    /// <summary>
+    /// Handles /api/invite and /api/standalone/* endpoints for standalone mode.
+    /// </summary>
+    private async Task<bool> HandleStandaloneHttpAsync(
+        HttpListenerContext context, string path,
+        string deviceId, string displayName, string os, List<string> shells)
+    {
+        // POST /api/invite — receive invite to join a group (standalone → client transition)
+        if (path == "/api/invite" && context.Request.HttpMethod == "POST")
+        {
+            try
+            {
+                using var reader = new System.IO.StreamReader(context.Request.InputStream, Encoding.UTF8);
+                var body = await reader.ReadToEndAsync();
+                var invite = System.Text.Json.JsonSerializer.Deserialize<InvitePayload>(body, _jsonOptions);
+
+                if (invite is null || string.IsNullOrWhiteSpace(invite.RelayUrl) ||
+                    string.IsNullOrWhiteSpace(invite.InviteCode))
+                {
+                    await WriteStandaloneJsonAsync(context.Response, 400, new
+                    {
+                        type = "error", code = "bad_request",
+                        message = "relayUrl and inviteCode are required."
+                    });
+                    return true;
+                }
+
+                Log($"[standalone] Received invite: relay={invite.RelayUrl} code={invite.InviteCode}");
+
+                // Transition from standalone to client mode
+                _ = Task.Run(() => TransitionToClient(invite.RelayUrl, invite.InviteCode,
+                    invite.GroupId ?? "", deviceId, displayName, os, shells));
+
+                await WriteStandaloneJsonAsync(context.Response, 200, new
+                {
+                    status = "accepted", relayUrl = invite.RelayUrl
+                });
+            }
+            catch (Exception ex)
+            {
+                Log($"[standalone] Invite error: {ex.Message}");
+                await WriteStandaloneJsonAsync(context.Response, 400, new
+                {
+                    type = "error", code = "bad_request", message = "Invalid JSON body."
+                });
+            }
+            return true;
+        }
+
+        // GET /api/standalone/info — return device info for phone connection
+        if (path == "/api/standalone/info" && context.Request.HttpMethod == "GET")
+        {
+            var wsUrl = _relayServer?.ReachableWebSocketUrls.FirstOrDefault() ?? "";
+            var httpUrl = wsUrl.Replace("ws://", "http://").Replace("wss://", "https://")
+                .TrimEnd('/').Replace("/ws", "");
+
+            await WriteStandaloneJsonAsync(context.Response, 200, new
+            {
+                deviceId, displayName, os, availableShells = shells,
+                httpUrl, wsUrl
+            });
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Transition this device from standalone/server mode to client mode.
+    /// Stops the relay server and connects to the specified relay URL.
+    /// </summary>
+    private async void TransitionToClient(
+        string relayUrl, string inviteCode, string groupId,
+        string deviceId, string displayName, string os, List<string> shells)
+    {
+        try
+        {
+            Log($"[standalone] Transitioning to client mode: {relayUrl}");
+
+            // Stop current relay server
+            if (_relayServer is not null)
+            {
+                _relayServer.ServerMigrationCommitted -= OnServerMigrationCommitted;
+                _relayServer.Dispose();
+                _relayServer = null;
+            }
+
+            // Update config
+            UpdateConfig(cfg =>
+            {
+                cfg.Modules.RelayServer = false;
+                cfg.Modules.RelayClient = true;
+                cfg.RelayUrl = relayUrl;
+            });
+
+            // Create relay client and join with invite code
+            _relayClient?.Dispose();
+            _relayClient = new RelayClient
+            {
+                DeviceId = deviceId,
+                DisplayName = displayName,
+                Os = os,
+                AvailableShells = shells
+            };
+            _relayClient.Log += msg => Log($"[relay-client] {msg}");
+            _relayClient.TerminalInputReceived += OnRelayClientTerminalInput;
+            _relayClient.TerminalOpenRequested += OnRelayClientTerminalOpen;
+            _relayClient.TerminalResizeRequested += OnRelayClientTerminalResize;
+            _relayClient.TerminalCloseRequested += OnRelayClientTerminalClose;
+            _relayClient.GroupJoined += accepted =>
+            {
+                Log($"[relay-client] Joined group {accepted.GroupId} via invite");
+                UpdateConfig(cfg => cfg.GroupSecret = _relayClient.GroupSecret);
+            };
+            _relayClient.GroupJoinRejected += reason =>
+                Log($"[relay-client] Group join rejected: {reason}");
+            _relayClient.DeviceUnbound += OnRelayClientDeviceUnbound;
+            _relayClient.DeviceKicked += reason =>
+            {
+                Log($"[relay-client] Kicked from group: {reason}");
+                TransitionBackToStandalone(deviceId, displayName, os, shells);
+            };
+            _relayClient.GroupDissolved += reason =>
+            {
+                Log($"[relay-client] Group dissolved: {reason}");
+                TransitionBackToStandalone(deviceId, displayName, os, shells);
+            };
+
+            await _relayClient.ConnectAsync(relayUrl, _cts?.Token ?? CancellationToken.None);
+
+            // Send group join with invite code
+            await _relayClient.SendGroupJoinWithInviteAsync(inviteCode);
+
+            Log($"[standalone] Transition to client complete");
+        }
+        catch (Exception ex)
+        {
+            Log($"[standalone] Transition to client failed: {ex.Message}");
+            // Try to recover back to standalone
+            TransitionBackToStandalone(deviceId, displayName, os, shells);
+        }
+    }
+
+    /// <summary>
+    /// Transition back to standalone mode after being kicked/dissolved/error.
+    /// </summary>
+    private async void TransitionBackToStandalone(
+        string deviceId, string displayName, string os, List<string> shells)
+    {
+        try
+        {
+            Log("[standalone] Transitioning back to standalone mode");
+
+            _relayClient?.Dispose();
+            _relayClient = null;
+
+            UpdateConfig(cfg =>
+            {
+                cfg.Modules.RelayServer = true;
+                cfg.Modules.RelayClient = false;
+                cfg.RelayUrl = string.Empty;
+                cfg.GroupSecret = string.Empty;
+            });
+
+            // Restart relay server
+            var effectiveToken = !string.IsNullOrWhiteSpace(_config.GroupSecret)
+                ? _config.GroupSecret
+                : _config.RelayAuthToken;
+
+            _relayServer = new RelayServer
+            {
+                AuthToken = effectiveToken,
+                WebPanelEnabled = _config.Modules.WebPanel
+            };
+            _relayServer.Log += msg => Log($"[relay-server] {msg}");
+            _relayServer.LocalTerminalInputReceived += OnLocalTerminalInput;
+            _relayServer.LocalTerminalResizeReceived += OnLocalTerminalResize;
+            _relayServer.LocalTerminalSessionEnded += OnLocalTerminalSessionEnded;
+            _relayServer.LocalTerminalOpenRequested += OnLocalTerminalOpenRequested;
+            _relayServer.LocalSessionListProvider += GetSessionList;
+            _relayServer.LocalTerminalSnapshotProvider = GetTerminalSnapshot;
+            _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
+            _relayServer.CustomHttpHandler = (context, path) =>
+                HandleStandaloneHttpAsync(context, path, deviceId, displayName, os, shells);
+            _relayServer.RegisterLocalDevice(deviceId, displayName, os, shells);
+
+            await _relayServer.StartAsync(_config.Port, _baseDirectory, _cts?.Token ?? CancellationToken.None);
+            Log($"[standalone] Relay server restarted on port {_config.Port}");
+        }
+        catch (Exception ex)
+        {
+            Log($"[standalone] Failed to restart in standalone mode: {ex.Message}");
+        }
+    }
+
+    private static readonly System.Text.Json.JsonSerializerOptions _jsonOptions = new()
+    {
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true
+    };
+
+    private sealed class InvitePayload
+    {
+        public string RelayUrl { get; set; } = string.Empty;
+        public string InviteCode { get; set; } = string.Empty;
+        public string? GroupId { get; set; }
+    }
+
+    private static async Task WriteStandaloneJsonAsync(HttpListenerResponse response, int statusCode, object data)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(data, _jsonOptions);
+        var bytes = Encoding.UTF8.GetBytes(json);
+        response.StatusCode = statusCode;
+        response.ContentType = "application/json; charset=utf-8";
+        response.ContentLength64 = bytes.Length;
+        response.AddHeader("Access-Control-Allow-Origin", "*");
+        await response.OutputStream.WriteAsync(bytes);
+        response.Close();
     }
 
     /// <summary>

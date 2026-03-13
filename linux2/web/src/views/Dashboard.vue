@@ -17,7 +17,12 @@
             <li v-for="device in devices" :key="device.deviceId"
                 :class="{ active: selectedDeviceId === device.deviceId }"
                 @click="selectDevice(device.deviceId)">
-              <span class="device-name">{{ device.displayName }}</span>
+              <span class="device-name">
+                {{ device.displayName }}
+                <span v-if="device.role" :class="['mode-badge', `mode-${(device.role || '').toLowerCase()}`]">
+                  {{ device.role }}
+                </span>
+              </span>
               <span class="device-os">{{ device.os }}</span>
             </li>
           </ul>
@@ -80,6 +85,7 @@ interface DeviceInfo {
   os: string;
   isOnline: boolean;
   availableShells: string[];
+  role?: string; // "Server", "Member", "Mobile"
 }
 
 interface SessionInfo {
@@ -105,6 +111,20 @@ onMounted(async () => {
       headers: { 'Authorization': `Bearer ${props.token}` },
     });
     devices.value = await res.json();
+    // Fetch group info to get member roles
+    try {
+      const groupRes = await fetch('/api/group', {
+        headers: { 'Authorization': `Bearer ${props.token}` },
+      });
+      if (groupRes.ok) {
+        const groupData = await groupRes.json();
+        const members: Array<{deviceId: string; role: string}> = groupData.members || [];
+        for (const member of members) {
+          const device = devices.value.find(d => d.deviceId === member.deviceId);
+          if (device) device.role = member.role;
+        }
+      }
+    } catch {}
     if (devices.value.length > 0) {
       selectDevice(devices.value[0].deviceId);
     }
@@ -113,6 +133,22 @@ onMounted(async () => {
   // WebSocket message handlers
   ws.on('device.list', (msg: any) => {
     devices.value = msg.devices;
+  });
+
+  ws.on('group.member.list', (msg: any) => {
+    const members: Array<{deviceId: string; role: string}> = msg.members || [];
+    for (const member of members) {
+      const device = devices.value.find(d => d.deviceId === member.deviceId);
+      if (device) device.role = member.role;
+    }
+  });
+
+  ws.on('group.member.joined', (msg: any) => {
+    const member = msg.member;
+    if (member) {
+      const device = devices.value.find(d => d.deviceId === member.deviceId);
+      if (device) device.role = member.role;
+    }
   });
 
   ws.on('session.list', (msg: any) => {
@@ -221,6 +257,13 @@ header h1 { font-size: 1.2rem; color: #00d4ff; }
 .device-list li.active, .session-list li.active { background: #0f3460; color: #00d4ff; }
 .device-name { display: block; }
 .device-os { display: block; font-size: 0.75rem; color: #666; }
+.mode-badge {
+  display: inline-block; font-size: 0.65rem; padding: 1px 5px; border-radius: 3px;
+  margin-left: 6px; vertical-align: middle; font-weight: 600;
+}
+.mode-server { background: #00d4ff; color: #000; }
+.mode-member { background: #2a2a4e; color: #888; }
+.mode-mobile { background: #2ecc71; color: #000; }
 .empty-hint { font-size: 0.8rem; color: #555; }
 .terminal-area { flex: 1; display: flex; background: #000; }
 .terminal-placeholder {

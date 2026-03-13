@@ -30,6 +30,8 @@ struct DeviceManagePage {
   @State settingsDisplayName: string = '';
   @State settingsOs: string = '';
   @State settingsEditName: string = '';
+  @State settingsRole: string = '';
+  @State settingsIsGroupDevice: boolean = false;
 
   // Auth dialog
   @State showAuthDialog: boolean = false;
@@ -174,6 +176,16 @@ struct DeviceManagePage {
     this.settingsDisplayName = device.displayName;
     this.settingsOs = device.os;
     this.settingsEditName = device.displayName;
+
+    // Determine role from group members if in group mode
+    this.settingsIsGroupDevice = this.currentMode === DeviceMode.GROUP;
+    if (this.settingsIsGroupDevice) {
+      const member: GroupMemberInfo | undefined = this.findGroupMember(device.deviceId);
+      this.settingsRole = member !== undefined ? member.role : 'Member';
+    } else {
+      this.settingsRole = '单连';
+    }
+
     this.showSettingsSheet = true;
   }
 
@@ -482,6 +494,14 @@ struct DeviceManagePage {
     .borderRadius(AppSizes.BORDER_RADIUS_CARD)
     .opacity(device.isOnline ? 1.0 : 0.5)
     .onClick(() => { this.onDeviceClick(device); })
+    .gesture(
+      LongPressGesture({ repeat: false, duration: 600 })
+        .onAction(() => {
+          if (device.isOnline && this.selectedTab === 0) {
+            this.moveDeviceToGroup(device);
+          }
+        })
+    )
   }
 
   @Builder
@@ -530,6 +550,20 @@ struct DeviceManagePage {
             .fontColor(AppColors.TEXT_PRIMARY)
         }
         .width('100%')
+        .margin({ bottom: 12 })
+
+        // Role info
+        Row() {
+          Text('角色:')
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor(AppColors.TEXT_SECONDARY)
+            .width(48)
+
+          Text(this.getRoleLabel(this.settingsRole))
+            .fontSize(AppSizes.FONT_SIZE_BODY)
+            .fontColor(this.settingsRole === 'Server' ? AppColors.ACCENT : AppColors.TEXT_PRIMARY)
+        }
+        .width('100%')
         .margin({ bottom: 20 })
 
         // Rename button
@@ -554,6 +588,19 @@ struct DeviceManagePage {
             .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
             .margin({ bottom: 8 })
             .onClick(() => { this.kickDeviceFromGroup(); })
+
+          // Designate as relay server (group mode, non-server devices only)
+          if (this.settingsRole !== 'Server') {
+            Button('指定为服务器')
+              .width('100%')
+              .height(44)
+              .fontSize(AppSizes.FONT_SIZE_BODY)
+              .fontColor('#FFFFFF')
+              .backgroundColor('#0F3460')
+              .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+              .margin({ bottom: 8 })
+              .onClick(() => { this.designateAsServer(); })
+          }
         }
 
         // Disconnect (single mode only)
@@ -683,6 +730,38 @@ struct DeviceManagePage {
         ConnectionManager.designateRelay(singleDevices[i].deviceId);
         return;
       }
+    }
+  }
+
+  private findGroupMember(deviceId: string): GroupMemberInfo | undefined {
+    for (let i: number = 0; i < this.groupMembers.length; i++) {
+      if (this.groupMembers[i].deviceId === deviceId) {
+        return this.groupMembers[i];
+      }
+    }
+    return undefined;
+  }
+
+  private getRoleLabel(role: string): string {
+    if (role === 'Server') return '服务器';
+    if (role === 'Member') return '成员';
+    if (role === 'Mobile') return '手机';
+    if (role === '单连') return '单连';
+    return role;
+  }
+
+  private designateAsServer(): void {
+    ConnectionManager.designateRelay(this.settingsDeviceId);
+    this.closeSettingsSheet();
+  }
+
+  private moveDeviceToGroup(device: DeviceInfo): void {
+    if (!ConnectionManager.isInGroup()) {
+      // No group yet — create group with this device as relay
+      ConnectionManager.designateRelay(device.deviceId);
+    } else {
+      // Group exists — invite this device via HTTP POST /api/invite
+      ConnectionManager.inviteToGroup(device.deviceId);
     }
   }
 }

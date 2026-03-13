@@ -179,6 +179,12 @@ public sealed class HeadlessConfig
                         Modules.RelayServer = false;
                         Modules.RelayClient = true;
                     }
+                    else if (mode == "standalone")
+                    {
+                        // Standalone: run local server, no group auth required
+                        Modules.RelayServer = true;
+                        Modules.RelayClient = false;
+                    }
                     break;
                 case "--enable-terminal":
                     Modules.Terminal = true;
@@ -256,6 +262,11 @@ public sealed class HeadlessConfig
         {
             Modules.RelayServer = false;
             Modules.RelayClient = true;
+        }
+        else if (modeValue == "standalone")
+        {
+            Modules.RelayServer = true;
+            Modules.RelayClient = false;
         }
     }
 

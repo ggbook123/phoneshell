@@ -40,6 +40,14 @@ public sealed class RelayServer : IDisposable
     public event Action<List<GroupMemberInfo>>? GroupMemberListChanged;
     public Func<string, Task<string>>? LocalTerminalSnapshotProvider { get; set; } // sessionId -> snapshot
     public Func<string, (int Cols, int Rows)>? LocalTerminalSizeProvider { get; set; } // sessionId -> size
+
+    /// <summary>
+    /// Custom HTTP request handler. Return true if the request was handled.
+    /// Called before the built-in relay HTTP handler for paths not recognized by the relay.
+    /// Signature: (HttpListenerContext context, string path) => Task&lt;bool&gt;
+    /// </summary>
+    public Func<HttpListenerContext, string, Task<bool>>? CustomHttpHandler { get; set; }
+
     public string AuthToken { get; set; } = string.Empty;
     public bool WebPanelEnabled { get; set; }
 
@@ -1658,6 +1666,20 @@ public sealed class RelayServer : IDisposable
 
     private async Task HandleHttpRequestAsync(HttpListenerContext context, string path)
     {
+        // Custom HTTP handler (for standalone mode endpoints like /api/invite, /api/standalone/info)
+        if (CustomHttpHandler is not null)
+        {
+            try
+            {
+                if (await CustomHttpHandler(context, path))
+                    return;
+            }
+            catch (Exception ex)
+            {
+                Log?.Invoke($"Custom HTTP handler error: {ex.Message}");
+            }
+        }
+
         // Web panel routes (served before relay API routes)
         if (_webPanelModule is not null && _webPanelModule.CanHandle(path))
         {

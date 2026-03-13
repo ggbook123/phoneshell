@@ -18,7 +18,7 @@ namespace PhoneShell.Headless;
 ///   --port &lt;port&gt;             Relay server listen port (default: 9090)
 ///   --relay &lt;url&gt;             Relay server URL to connect to
 ///   --relay-token &lt;token&gt;     Shared relay bearer token
-///   --mode &lt;server|client&gt;    Quick mode switch
+///   --mode &lt;standalone|server|client&gt;    Operating mode (default: standalone)
 ///   --setup                    Interactive first-time setup
 ///   --admin                    Admin management console
 ///
@@ -316,7 +316,7 @@ public static class Program
         Console.WriteLine("  --relay-token <token>     Shared relay bearer token (legacy)");
         Console.WriteLine("  --group-secret <key>      Group secret for group-based auth");
         Console.WriteLine("  --public-host <host:port> Public address for NAT/reverse proxy");
-        Console.WriteLine("  --mode <server|client>    Quick mode switch");
+        Console.WriteLine("  --mode <mode>             Operating mode: standalone (default), server, client");
         Console.WriteLine("  --setup                   Interactive first-time setup");
         Console.WriteLine("  --admin                   Admin management console");
         Console.WriteLine("  --help, -h                Show this help");

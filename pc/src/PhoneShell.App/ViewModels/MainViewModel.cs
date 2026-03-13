@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -267,6 +268,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _relayReachableAddresses = string.Empty;
     private RelayServer? _relayServer;
     private RelayClient? _relayClient;
+    private bool _isStandaloneMode;
 
     // Group fields
     private string _groupSecret = string.Empty;
@@ -1069,6 +1071,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             QrPayload = _payloadBuilder.BuildGroupBind(
                 PrimaryRelayAddress, group.GroupId, group.GroupSecret, serverDeviceId);
         }
+        else if (_isStandaloneMode && _relayServer is not null && !string.IsNullOrEmpty(PrimaryRelayAddress))
+        {
+            var wsUrl = PrimaryRelayAddress;
+            var httpUrl = wsUrl.Replace("ws://", "http://").Replace("wss://", "https://")
+                .TrimEnd('/').Replace("/ws", "");
+            QrPayload = _payloadBuilder.BuildStandalone(httpUrl, wsUrl, _identity.DeviceId, _identity.DisplayName);
+        }
         else
         {
             QrPayload = _payloadBuilder.Build(_identity);
@@ -1329,6 +1338,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayClient.TerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
                 _relayClient.TerminalOutputReceived += OnRemoteTerminalOutputReceived;
                 _relayClient.TerminalClosedReceived += OnRemoteTerminalClosedReceived;
+                _relayClient.RelayDesignated += OnRelayDesignated;
+                _relayClient.InviteCreated += OnInviteCreated;
+                _relayClient.DeviceSettingsUpdated += OnDeviceSettingsUpdated;
+                _relayClient.DeviceKicked += OnDeviceKicked;
+                _relayClient.GroupDissolved += OnGroupDissolved;
+                _relayClient.PanelDisconnected += OnPanelDisconnected;
 
                 _ = _relayClient.ConnectAsync(url);
 
@@ -1338,7 +1353,42 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
             else
             {
-                ServerStatus = "Enter a relay server address or enable relay mode";
+                // Standalone mode: start local WS server without group secret, show connect QR
+                _isStandaloneMode = true;
+                _relayServer = new RelayServer();
+                _relayServer.Log += OnNetworkLog;
+                _relayServer.LocalTerminalInputReceived += OnRemoteTerminalInput;
+                _relayServer.LocalTerminalResizeReceived += OnRemoteTerminalResize;
+                _relayServer.LocalTerminalSessionEnded += OnRemoteTerminalSessionEnded;
+                _relayServer.LocalTerminalOpenRequested += OnRemoteTerminalOpenRequested;
+                _relayServer.LocalTerminalSnapshotProvider = CaptureTabTerminalViewAsync;
+                _relayServer.LocalTerminalSizeProvider = GetTabTerminalSize;
+                _relayServer.LocalSessionListProvider = GetLocalSessionList;
+                _relayServer.GroupMemberListChanged += OnGroupMemberListChanged;
+                _relayServer.RemoteTerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
+                _relayServer.RemoteTerminalOutputReceived += OnRemoteTerminalOutputReceived;
+                _relayServer.RemoteTerminalClosedReceived += OnRemoteTerminalClosedReceived;
+                _relayServer.ServerMigrationCommitted += OnServerMigrationCommitted;
+
+                // No AuthToken — standalone mode does not require authentication
+                _relayServer.CustomHttpHandler = (context, path) =>
+                    HandleStandaloneHttpAsync(context, path);
+
+                await _relayServer.StartAsync(ServerPort, AppContext.BaseDirectory);
+
+                // Patch HttpListener to add /api/ prefixes so standalone endpoints are reachable
+                PatchHttpListenerApiPrefixes(_relayServer);
+
+                var shellIds = AvailableShells.Select(s => s.Id).ToList();
+                _relayServer.RegisterLocalDevice(_identity.DeviceId, _identity.DisplayName, "Windows", shellIds);
+
+                PrimaryRelayAddress = _relayServer.ReachableWebSocketUrls.FirstOrDefault() ??
+                                      RelayAddressHelper.GetLocalhostWebSocketUrl(ServerPort);
+                RefreshQr();
+
+                IsServerRunning = true;
+                ServerStatus = "Standalone mode. Scan QR to connect.";
+                ConnectionStatus = "Waiting for phone...";
             }
         }
         catch (Exception ex)
@@ -1386,11 +1436,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayClient.TerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
             _relayClient.TerminalOutputReceived -= OnRemoteTerminalOutputReceived;
             _relayClient.TerminalClosedReceived -= OnRemoteTerminalClosedReceived;
+            _relayClient.RelayDesignated -= OnRelayDesignated;
+            _relayClient.InviteCreated -= OnInviteCreated;
+            _relayClient.DeviceSettingsUpdated -= OnDeviceSettingsUpdated;
+            _relayClient.DeviceKicked -= OnDeviceKicked;
+            _relayClient.GroupDissolved -= OnGroupDissolved;
+            _relayClient.PanelDisconnected -= OnPanelDisconnected;
             _relayClient.Dispose();
             _relayClient = null;
         }
 
         RestoreDesktopTerminalViewport();
+        _isStandaloneMode = false;
         IsServerRunning = false;
         IsGroupJoined = false;
         GroupMembers.Clear();
@@ -1537,6 +1594,69 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _dispatcher.InvokeAsync(async () =>
         {
             await SwitchToClientAsync(newUrl, newSecret, _relayServer?.Group?.GroupId);
+        });
+    }
+
+    // --- New multi-device architecture event handlers ---
+
+    private void OnRelayDesignated(string relayUrl, string groupId)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            OnNetworkLog($"This device designated as relay server: url={relayUrl}, groupId={groupId}");
+            GroupStatus = "Designated as relay server";
+        });
+    }
+
+    private void OnInviteCreated(string inviteCode, string relayUrl)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            OnNetworkLog($"Invite code created: {inviteCode} for relay={relayUrl}");
+        });
+    }
+
+    private void OnDeviceSettingsUpdated(string deviceId, string displayName)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            var member = GroupMembers.FirstOrDefault(m => m.DeviceId == deviceId);
+            if (member is not null)
+            {
+                member.DisplayName = displayName;
+                OnGroupMemberListChanged(GroupMembers.ToList());
+            }
+            OnNetworkLog($"Device settings updated: {deviceId} → {displayName}");
+        });
+    }
+
+    private void OnDeviceKicked(string reason)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            OnNetworkLog($"Kicked from group: {reason}");
+            StopNetwork();
+            GroupStatus = $"Kicked: {reason}";
+            ServerStatus = "Kicked from group. Returning to standalone.";
+        });
+    }
+
+    private void OnGroupDissolved(string reason)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            OnNetworkLog($"Group dissolved: {reason}");
+            StopNetwork();
+            GroupStatus = $"Group dissolved: {reason}";
+            ServerStatus = "Group dissolved. Returning to standalone.";
+        });
+    }
+
+    private void OnPanelDisconnected(string clientId)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            OnNetworkLog($"Web panel disconnected: {clientId}");
         });
     }
 
@@ -2275,6 +2395,262 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             // Ignore file write errors
         }
+    }
+
+    // --- Standalone mode ---
+
+    private static readonly System.Text.Json.JsonSerializerOptions _standaloneJsonOptions = new()
+    {
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true
+    };
+
+    private sealed class InvitePayload
+    {
+        public string RelayUrl { get; set; } = string.Empty;
+        public string InviteCode { get; set; } = string.Empty;
+        public string? GroupId { get; set; }
+    }
+
+    /// <summary>
+    /// Patch the internal HttpListener to add /api/ prefixes so standalone endpoints
+    /// (/api/invite, /api/standalone/info) are reachable.
+    /// </summary>
+    private void PatchHttpListenerApiPrefixes(RelayServer server)
+    {
+        try
+        {
+            var listenerField = typeof(RelayServer).GetField("_httpListener",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            if (listenerField?.GetValue(server) is HttpListener listener)
+            {
+                var existingPrefixes = listener.Prefixes.ToList();
+                foreach (var prefix in existingPrefixes)
+                {
+                    var apiPrefix = prefix.Replace("/ws/", "/api/");
+                    if (!listener.Prefixes.Contains(apiPrefix))
+                    {
+                        listener.Prefixes.Add(apiPrefix);
+                        OnNetworkLog($"[standalone] Added HTTP prefix: {apiPrefix}");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            OnNetworkLog($"[standalone] Warning: failed to patch HTTP prefixes: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Handles /api/invite and /api/standalone/info endpoints for standalone mode.
+    /// </summary>
+    private async Task<bool> HandleStandaloneHttpAsync(HttpListenerContext context, string path)
+    {
+        // POST /api/invite — receive invite to join a group (standalone → client transition)
+        if (path == "/api/invite" && context.Request.HttpMethod == "POST")
+        {
+            try
+            {
+                using var reader = new System.IO.StreamReader(context.Request.InputStream, Encoding.UTF8);
+                var body = await reader.ReadToEndAsync();
+                var invite = System.Text.Json.JsonSerializer.Deserialize<InvitePayload>(body, _standaloneJsonOptions);
+
+                if (invite is null || string.IsNullOrWhiteSpace(invite.RelayUrl) ||
+                    string.IsNullOrWhiteSpace(invite.InviteCode))
+                {
+                    await WriteStandaloneJsonAsync(context.Response, 400, new
+                    {
+                        type = "error", code = "bad_request",
+                        message = "relayUrl and inviteCode are required."
+                    });
+                    return true;
+                }
+
+                OnNetworkLog($"[standalone] Received invite: relay={invite.RelayUrl} code={invite.InviteCode}");
+
+                var relayUrl = invite.RelayUrl;
+                var inviteCode = invite.InviteCode;
+                var groupId = invite.GroupId ?? "";
+                _ = Task.Run(() => _dispatcher.InvokeAsync(() => TransitionToClientAsync(relayUrl, inviteCode, groupId)));
+
+                await WriteStandaloneJsonAsync(context.Response, 200, new
+                {
+                    status = "accepted", relayUrl = invite.RelayUrl
+                });
+            }
+            catch (Exception ex)
+            {
+                OnNetworkLog($"[standalone] Invite error: {ex.Message}");
+                await WriteStandaloneJsonAsync(context.Response, 400, new
+                {
+                    type = "error", code = "bad_request", message = "Invalid JSON body."
+                });
+            }
+            return true;
+        }
+
+        // GET /api/standalone/info — return device info for phone connection
+        if (path == "/api/standalone/info" && context.Request.HttpMethod == "GET")
+        {
+            var wsUrl = _relayServer?.ReachableWebSocketUrls.FirstOrDefault() ?? "";
+            var httpUrl = wsUrl.Replace("ws://", "http://").Replace("wss://", "https://")
+                .TrimEnd('/').Replace("/ws", "");
+
+            await WriteStandaloneJsonAsync(context.Response, 200, new
+            {
+                deviceId = _identity.DeviceId,
+                displayName = _identity.DisplayName,
+                os = "Windows",
+                availableShells = AvailableShells.Select(s => s.Id).ToList(),
+                httpUrl,
+                wsUrl
+            });
+            return true;
+        }
+
+        return false;
+    }
+
+    private static async Task WriteStandaloneJsonAsync(HttpListenerResponse response, int statusCode, object data)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(data, _standaloneJsonOptions);
+        var bytes = Encoding.UTF8.GetBytes(json);
+        response.StatusCode = statusCode;
+        response.ContentType = "application/json; charset=utf-8";
+        response.ContentLength64 = bytes.Length;
+        response.AddHeader("Access-Control-Allow-Origin", "*");
+        await response.OutputStream.WriteAsync(bytes);
+        response.Close();
+    }
+
+    /// <summary>
+    /// Transition from standalone mode to client mode after receiving an invite.
+    /// Stops the local RelayServer and connects as a RelayClient to the specified relay.
+    /// Must be called on the UI thread.
+    /// </summary>
+    private async Task TransitionToClientAsync(string relayUrl, string inviteCode, string groupId)
+    {
+        try
+        {
+            OnNetworkLog($"[standalone] Transitioning to client mode: {relayUrl}");
+
+            // Stop current relay server (partial StopNetwork — keep UI running)
+            if (_relayServer is not null)
+            {
+                _relayServer.Log -= OnNetworkLog;
+                _relayServer.LocalTerminalInputReceived -= OnRemoteTerminalInput;
+                _relayServer.LocalTerminalResizeReceived -= OnRemoteTerminalResize;
+                _relayServer.LocalTerminalSessionEnded -= OnRemoteTerminalSessionEnded;
+                _relayServer.LocalTerminalOpenRequested -= OnRemoteTerminalOpenRequested;
+                _relayServer.LocalTerminalSnapshotProvider = null;
+                _relayServer.LocalTerminalSizeProvider = null;
+                _relayServer.LocalSessionListProvider = null;
+                _relayServer.GroupMemberListChanged -= OnGroupMemberListChanged;
+                _relayServer.RemoteTerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
+                _relayServer.RemoteTerminalOutputReceived -= OnRemoteTerminalOutputReceived;
+                _relayServer.RemoteTerminalClosedReceived -= OnRemoteTerminalClosedReceived;
+                _relayServer.ServerMigrationCommitted -= OnServerMigrationCommitted;
+                _relayServer.Dispose();
+                _relayServer = null;
+            }
+
+            _isStandaloneMode = false;
+
+            // Create relay client
+            _relayClient = new RelayClient
+            {
+                DeviceId = _identity.DeviceId,
+                DisplayName = _identity.DisplayName,
+                Os = "Windows",
+                AvailableShells = AvailableShells.Select(s => s.Id).ToList()
+            };
+            _relayClient.Log += OnNetworkLog;
+            _relayClient.ConnectionStateChanged += OnClientConnectionStateChanged;
+            _relayClient.TerminalInputReceived += OnRemoteTerminalInput;
+            _relayClient.TerminalResizeRequested += OnRemoteTerminalResize;
+            _relayClient.TerminalCloseRequested += OnRemoteTerminalCloseRequested;
+            _relayClient.GroupJoined += OnGroupJoined;
+            _relayClient.GroupJoinRejected += OnGroupJoinRejected;
+            _relayClient.GroupMemberChanged += OnGroupMemberListChanged;
+            _relayClient.ServerChanged += OnServerChanged;
+            _relayClient.ServerChangeRequested += OnServerChangeRequested;
+            _relayClient.GroupSecretRotated += OnGroupSecretRotated;
+            _relayClient.DeviceUnbound += OnDeviceUnbound;
+            _relayClient.TerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
+            _relayClient.TerminalOutputReceived += OnRemoteTerminalOutputReceived;
+            _relayClient.TerminalClosedReceived += OnRemoteTerminalClosedReceived;
+            _relayClient.RelayDesignated += OnRelayDesignated;
+            _relayClient.InviteCreated += OnInviteCreated;
+            _relayClient.DeviceSettingsUpdated += OnDeviceSettingsUpdated;
+            _relayClient.DeviceKicked += OnStandaloneClientKicked;
+            _relayClient.GroupDissolved += OnStandaloneClientDissolved;
+            _relayClient.PanelDisconnected += OnPanelDisconnected;
+
+            // Update settings to reflect client mode
+            RelayServerAddress = relayUrl;
+            IsRelayServer = false;
+            SaveServerSettings();
+
+            await _relayClient.ConnectAsync(relayUrl);
+            await _relayClient.SendGroupJoinWithInviteAsync(inviteCode);
+
+            ServerStatus = $"Transitioning to relay client: {relayUrl}";
+            ConnectionStatus = "Joining group via invite...";
+
+            OnNetworkLog("[standalone] Transition to client complete");
+        }
+        catch (Exception ex)
+        {
+            OnNetworkLog($"[standalone] Transition to client failed: {ex.Message}");
+            ServerStatus = $"Transition failed: {ex.Message}. Restarting standalone...";
+
+            // Clean up failed client
+            if (_relayClient is not null)
+            {
+                _relayClient.Dispose();
+                _relayClient = null;
+            }
+
+            // Restart in standalone mode
+            RelayServerAddress = string.Empty;
+            IsRelayServer = false;
+            IsServerRunning = false;
+            SaveServerSettings();
+            await StartNetworkAsync();
+        }
+    }
+
+    private void OnStandaloneClientKicked(string reason)
+    {
+        _dispatcher.InvokeAsync(async () =>
+        {
+            OnNetworkLog($"[standalone] Kicked from group: {reason}");
+            StopNetwork();
+            GroupStatus = $"Kicked: {reason}";
+            ServerStatus = "Kicked from group. Restarting standalone...";
+            // Restart in standalone mode
+            RelayServerAddress = string.Empty;
+            IsRelayServer = false;
+            SaveServerSettings();
+            await StartNetworkAsync();
+        });
+    }
+
+    private void OnStandaloneClientDissolved(string reason)
+    {
+        _dispatcher.InvokeAsync(async () =>
+        {
+            OnNetworkLog($"[standalone] Group dissolved: {reason}");
+            StopNetwork();
+            GroupStatus = $"Group dissolved: {reason}";
+            ServerStatus = "Group dissolved. Restarting standalone...";
+            // Restart in standalone mode
+            RelayServerAddress = string.Empty;
+            IsRelayServer = false;
+            SaveServerSettings();
+            await StartNetworkAsync();
+        });
     }
 
     private static List<string> ParseCommandBlocks(string response)
