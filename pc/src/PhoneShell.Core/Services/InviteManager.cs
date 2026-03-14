@@ -31,6 +31,19 @@ public sealed class InviteManager
     }
 
     /// <summary>
+    /// Check if an invite code is valid without consuming it.
+    /// </summary>
+    public bool IsValidInviteCode(string code)
+    {
+        CleanupExpired();
+
+        if (!_invites.TryGetValue(code, out var entry))
+            return false;
+
+        return DateTimeOffset.UtcNow <= entry.ExpiresAt;
+    }
+
+    /// <summary>
     /// Validate and consume a one-time invite code. Returns true if valid.
     /// </summary>
     public bool ConsumeInviteCode(string code)

@@ -164,6 +164,8 @@ public sealed class GroupJoinAcceptedMessage
     public List<GroupMemberInfo> Members { get; init; } = new();
     public string ServerDeviceId { get; init; } = string.Empty;
     public string? BoundMobileId { get; init; }
+    /// <summary>Group secret returned to invite-based joiners for reconnect auth.</summary>
+    public string? GroupSecret { get; init; }
 }
 
 public sealed class GroupJoinRejectedMessage

@@ -29,6 +29,9 @@ public sealed class RelayClient : IDisposable
     /// <summary>Group secret used for group-based authentication (replaces AuthToken when set).</summary>
     public string GroupSecret { get; set; } = string.Empty;
 
+    /// <summary>Invite code for one-time group join (used when joining via invite instead of group secret).</summary>
+    public string InviteCode { get; set; } = string.Empty;
+
     /// <summary>Group ID received after successful join.</summary>
     public string GroupId { get; private set; } = string.Empty;
 
@@ -193,15 +196,39 @@ public sealed class RelayClient : IDisposable
                     _ws.Options.SetRequestHeader("X-PhoneShell-Token", effectiveToken);
                 }
 
-                var uri = new Uri(_serverUrl);
+                // Build URI — append invite code as query param for WebSocket auth when no token
+                var connectUrl = _serverUrl;
+                if (string.IsNullOrWhiteSpace(effectiveToken) && !string.IsNullOrWhiteSpace(InviteCode))
+                {
+                    var separator = connectUrl.Contains('?') ? "&" : "?";
+                    connectUrl = $"{connectUrl}{separator}invite={Uri.EscapeDataString(InviteCode)}";
+                }
+
+                var uri = new Uri(connectUrl);
                 Log?.Invoke($"Connecting to {uri}...");
 
                 await _ws.ConnectAsync(uri, ct);
                 ConnectionStateChanged?.Invoke(true);
                 Log?.Invoke("Connected to relay server");
 
-                // If GroupSecret is set, use group join protocol; otherwise fall back to device.register
-                if (!string.IsNullOrWhiteSpace(GroupSecret))
+                // Determine which registration message to send after connect
+                if (!string.IsNullOrWhiteSpace(InviteCode))
+                {
+                    // Joining via invite code — send group.join.request with invite code
+                    var joinMsg = MessageSerializer.Serialize(new GroupJoinRequestMessage
+                    {
+                        InviteCode = InviteCode,
+                        DeviceId = DeviceId,
+                        DisplayName = DisplayName,
+                        Os = Os,
+                        AvailableShells = AvailableShells
+                    });
+                    await SendAsync(joinMsg);
+                    Log?.Invoke("Group join request sent (via invite code)");
+                    // Clear invite code after first use (it's one-time)
+                    InviteCode = string.Empty;
+                }
+                else if (!string.IsNullOrWhiteSpace(GroupSecret))
                 {
                     var joinMsg = MessageSerializer.Serialize(new GroupJoinRequestMessage
                     {
@@ -292,6 +319,9 @@ public sealed class RelayClient : IDisposable
             case GroupJoinAcceptedMessage accepted:
                 GroupId = accepted.GroupId;
                 GroupMembers = accepted.Members;
+                // Save group secret from invite-based join for reconnect auth
+                if (!string.IsNullOrWhiteSpace(accepted.GroupSecret))
+                    GroupSecret = accepted.GroupSecret;
                 GroupJoined?.Invoke(accepted);
                 GroupMemberChanged?.Invoke(accepted.Members);
                 Log?.Invoke($"Joined group {accepted.GroupId} ({accepted.Members.Count} members)");

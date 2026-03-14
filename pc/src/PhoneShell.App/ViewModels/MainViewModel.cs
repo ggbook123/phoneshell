@@ -1493,6 +1493,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             IsGroupJoined = true;
             GroupStatus = $"Joined group ({accepted.Members.Count} members)";
 
+            // Save group secret from invite-based join for reconnect
+            if (!string.IsNullOrWhiteSpace(accepted.GroupSecret))
+            {
+                GroupSecret = accepted.GroupSecret;
+                _serverSettings.GroupSecret = GroupSecret;
+                _serverSettingsStore.Save(_serverSettings);
+            }
+
             GroupMembers.Clear();
             foreach (var m in accepted.Members)
                 GroupMembers.Add(m);
@@ -2571,7 +2579,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 DeviceId = _identity.DeviceId,
                 DisplayName = _identity.DisplayName,
                 Os = "Windows",
-                AvailableShells = AvailableShells.Select(s => s.Id).ToList()
+                AvailableShells = AvailableShells.Select(s => s.Id).ToList(),
+                InviteCode = inviteCode
             };
             _relayClient.Log += OnNetworkLog;
             _relayClient.ConnectionStateChanged += OnClientConnectionStateChanged;
@@ -2600,8 +2609,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             IsRelayServer = false;
             SaveServerSettings();
 
-            await _relayClient.ConnectAsync(relayUrl);
-            await _relayClient.SendGroupJoinWithInviteAsync(inviteCode);
+            // Fire-and-forget: ConnectAsync blocks in its receive loop.
+            // The InviteCode is set on the client, so ConnectInternalAsync will
+            // automatically send group.join.request with the invite code after connecting.
+            _ = _relayClient.ConnectAsync(relayUrl);
 
             ServerStatus = $"Transitioning to relay client: {relayUrl}";
             ConnectionStatus = "Joining group via invite...";

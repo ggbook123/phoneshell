@@ -1082,6 +1082,9 @@ public sealed class RelayServer : IDisposable
             return;
         }
 
+        // Track whether this join was via invite code (to return secret for reconnect)
+        var joinedViaInvite = !TokensEqual(req.GroupSecret, _group.GroupSecret);
+
         // Determine role
         var role = MemberRole.Member;
 
@@ -1143,7 +1146,8 @@ public sealed class RelayServer : IDisposable
             GroupId = _group.GroupId,
             Members = memberList,
             ServerDeviceId = _group.ServerDeviceId,
-            BoundMobileId = _group.BoundMobileId
+            BoundMobileId = _group.BoundMobileId,
+            GroupSecret = joinedViaInvite ? _group.GroupSecret : null
         }));
 
         // Broadcast member joined to all other clients
@@ -2397,6 +2401,13 @@ public sealed class RelayServer : IDisposable
         {
             var trimmed = queryToken.Trim();
             return TokensEqual(trimmed, AuthToken) || IsPanelTokenAuthorized(trimmed);
+        }
+
+        // Support invite code via query string (for devices joining via invite)
+        var queryInvite = request.QueryString["invite"];
+        if (!string.IsNullOrWhiteSpace(queryInvite))
+        {
+            return _inviteManager.IsValidInviteCode(queryInvite.Trim());
         }
 
         return false;

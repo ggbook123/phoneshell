@@ -34,7 +34,17 @@ public sealed class GroupStore
             return null;
 
         var json = File.ReadAllText(_groupFilePath);
-        return JsonSerializer.Deserialize<GroupInfo>(json, _serializerOptions);
+        if (string.IsNullOrWhiteSpace(json))
+            return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<GroupInfo>(json, _serializerOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Save the server-side group info.</summary>
@@ -68,7 +78,17 @@ public sealed class GroupStore
             return null;
 
         var json = File.ReadAllText(_membershipFilePath);
-        return JsonSerializer.Deserialize<GroupMembership>(json, _serializerOptions);
+        if (string.IsNullOrWhiteSpace(json))
+            return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<GroupMembership>(json, _serializerOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Save the client-side group membership.</summary>

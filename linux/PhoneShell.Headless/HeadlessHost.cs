@@ -1057,7 +1057,8 @@ public sealed class HeadlessHost : IDisposable
                 DeviceId = deviceId,
                 DisplayName = displayName,
                 Os = os,
-                AvailableShells = shells
+                AvailableShells = shells,
+                InviteCode = inviteCode
             };
             _relayClient.Log += msg => Log($"[relay-client] {msg}");
             _relayClient.TerminalInputReceived += OnRelayClientTerminalInput;
@@ -1083,10 +1084,10 @@ public sealed class HeadlessHost : IDisposable
                 TransitionBackToStandalone(deviceId, displayName, os, shells);
             };
 
-            await _relayClient.ConnectAsync(relayUrl, _cts?.Token ?? CancellationToken.None);
-
-            // Send group join with invite code
-            await _relayClient.SendGroupJoinWithInviteAsync(inviteCode);
+            // Fire-and-forget: ConnectAsync blocks in its receive loop.
+            // The InviteCode is set on the client, so ConnectInternalAsync will
+            // automatically send group.join.request with the invite code after connecting.
+            _ = _relayClient.ConnectAsync(relayUrl, _cts?.Token ?? CancellationToken.None);
 
             Log($"[standalone] Transition to client complete");
         }
