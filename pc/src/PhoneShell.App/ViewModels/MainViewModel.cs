@@ -1273,6 +1273,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
                 await _relayServer.StartAsync(ServerPort, AppContext.BaseDirectory);
 
+                // Patch HttpListener to add /api/ prefixes so invite endpoint is reachable
+                PatchHttpListenerApiPrefixes(_relayServer);
+
                 // Register local device
                 var shellIds = AvailableShells.Select(s => s.Id).ToList();
                 _relayServer.RegisterLocalDevice(_identity.DeviceId, _identity.DisplayName, "Windows", shellIds);

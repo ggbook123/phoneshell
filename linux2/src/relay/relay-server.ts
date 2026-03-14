@@ -1023,7 +1023,10 @@ export class RelayServer {
       await sendToClient(client, serialize({ type: 'error' as const, code: 'no_group', message: 'No group exists on this server.' }));
       return;
     }
-    if (client.memberRole !== 'Mobile') {
+    // Allow invite creation by bound mobile (by role or by device ID match)
+    const isBoundMobile = client.memberRole === 'Mobile' ||
+      (this.group.boundMobileId && client.registeredDeviceId === this.group.boundMobileId);
+    if (!isBoundMobile) {
       await sendToClient(client, serialize({ type: 'error' as const, code: 'permission_denied', message: 'Only the bound mobile can create invites.' }));
       return;
     }
