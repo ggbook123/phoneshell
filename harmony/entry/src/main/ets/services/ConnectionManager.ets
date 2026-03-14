@@ -451,8 +451,12 @@ class ConnectionManagerClass {
 
   // --- Invite another device to group via HTTP POST ---
 
-  inviteToGroup(httpUrl: string, inviteCode: string, relayUrl: string): void {
-    if (httpUrl.length === 0 || inviteCode.length === 0 || relayUrl.length === 0) return;
+  inviteToGroup(httpUrl: string, inviteCode: string, relayUrl: string,
+    onResult?: (success: boolean, message: string) => void): void {
+    if (httpUrl.length === 0 || inviteCode.length === 0 || relayUrl.length === 0) {
+      if (onResult !== undefined) onResult(false, 'Missing parameters');
+      return;
+    }
 
     hilog.info(DOMAIN, TAG, 'inviteToGroup target=%{public}s', httpUrl);
 
@@ -468,11 +472,21 @@ class ConnectionManagerClass {
       method: http.RequestMethod.POST,
       header: { 'Content-Type': 'application/json' } as Record<string, string>,
       extraData: JSON.stringify(body)
-    }).then((_resp: http.HttpResponse) => {
-      hilog.info(DOMAIN, TAG, 'inviteToGroup success');
+    }).then((resp: http.HttpResponse) => {
+      const code: number = resp.responseCode;
+      hilog.info(DOMAIN, TAG, 'inviteToGroup response code=%{public}d', code);
+      if (code >= 200 && code < 300) {
+        hilog.info(DOMAIN, TAG, 'inviteToGroup success');
+        if (onResult !== undefined) onResult(true, '');
+      } else {
+        const msg: string = `HTTP ${code}`;
+        hilog.error(DOMAIN, TAG, 'inviteToGroup failed: %{public}s', msg);
+        if (onResult !== undefined) onResult(false, msg);
+      }
       httpRequest.destroy();
     }).catch((err: BusinessError) => {
       hilog.error(DOMAIN, TAG, 'inviteToGroup error %{public}s', err.message ?? '');
+      if (onResult !== undefined) onResult(false, err.message ?? 'Network error');
       httpRequest.destroy();
     });
   }

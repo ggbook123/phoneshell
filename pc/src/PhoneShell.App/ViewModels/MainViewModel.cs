@@ -1267,6 +1267,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 if (!string.IsNullOrWhiteSpace(GroupSecret))
                     _relayServer.AuthToken = GroupSecret;
 
+                // Allow relay server to accept invite requests (for joining another group)
+                _relayServer.CustomHttpHandler = (context, path) =>
+                    HandleInviteHttpAsync(context, path);
+
                 await _relayServer.StartAsync(ServerPort, AppContext.BaseDirectory);
 
                 // Register local device
@@ -2459,11 +2463,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// Handles /api/invite and /api/standalone/info endpoints for standalone mode.
+    /// Handles /api/invite endpoint for both relay server and standalone modes.
+    /// When this device receives an invite, it transitions to client mode and joins the specified group.
     /// </summary>
-    private async Task<bool> HandleStandaloneHttpAsync(HttpListenerContext context, string path)
+    private async Task<bool> HandleInviteHttpAsync(HttpListenerContext context, string path)
     {
-        // POST /api/invite — receive invite to join a group (standalone → client transition)
         if (path == "/api/invite" && context.Request.HttpMethod == "POST")
         {
             try
@@ -2483,21 +2487,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     return true;
                 }
 
-                OnNetworkLog($"[standalone] Received invite: relay={invite.RelayUrl} code={invite.InviteCode}");
+                OnNetworkLog($"[invite] Received invite: relay={invite.RelayUrl} code={invite.InviteCode}");
 
                 var relayUrl = invite.RelayUrl;
                 var inviteCode = invite.InviteCode;
                 var groupId = invite.GroupId ?? "";
-                _ = Task.Run(() => _dispatcher.InvokeAsync(() => TransitionToClientAsync(relayUrl, inviteCode, groupId)));
 
+                // Send response first, then transition (transition disposes the HTTP listener)
                 await WriteStandaloneJsonAsync(context.Response, 200, new
                 {
                     status = "accepted", relayUrl = invite.RelayUrl
                 });
+
+                _ = Task.Run(() => _dispatcher.InvokeAsync(() => TransitionToClientAsync(relayUrl, inviteCode, groupId)));
             }
             catch (Exception ex)
             {
-                OnNetworkLog($"[standalone] Invite error: {ex.Message}");
+                OnNetworkLog($"[invite] Error: {ex.Message}");
                 await WriteStandaloneJsonAsync(context.Response, 400, new
                 {
                     type = "error", code = "bad_request", message = "Invalid JSON body."
@@ -2505,6 +2511,29 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
             return true;
         }
+
+        // Handle OPTIONS for CORS preflight
+        if (path == "/api/invite" && context.Request.HttpMethod == "OPTIONS")
+        {
+            context.Response.AddHeader("Access-Control-Allow-Origin", "*");
+            context.Response.AddHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+            context.Response.AddHeader("Access-Control-Allow-Headers", "Content-Type");
+            context.Response.StatusCode = 204;
+            context.Response.Close();
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Handles /api/invite and /api/standalone/info endpoints for standalone mode.
+    /// </summary>
+    private async Task<bool> HandleStandaloneHttpAsync(HttpListenerContext context, string path)
+    {
+        // Delegate /api/invite to the shared invite handler
+        if (await HandleInviteHttpAsync(context, path))
+            return true;
 
         // GET /api/standalone/info — return device info for phone connection
         if (path == "/api/standalone/info" && context.Request.HttpMethod == "GET")
@@ -2572,6 +2601,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
 
             _isStandaloneMode = false;
+
+            // Clear old group data so AutoMode won't restore relay server mode on next start
+            _groupStore.ClearGroup();
 
             // Create relay client
             _relayClient = new RelayClient

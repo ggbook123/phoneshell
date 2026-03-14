@@ -5,118 +5,107 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Run
 
 ```bash
-# Windows WPF app
+# Windows WPF app (requires Windows 10/11 + .NET SDK 8.0+)
 dotnet build pc/PhoneShell.sln
 dotnet run --project pc/src/PhoneShell.App/PhoneShell.App.csproj
 
-# Linux/cross-platform headless
+# .NET Headless server (cross-platform, .NET 8.0+)
 dotnet build linux/PhoneShell.Linux.sln
-dotnet run --project linux/PhoneShell.Headless/PhoneShell.Headless.csproj -- --mode server --port 9000
+dotnet run --project linux/PhoneShell.Headless/PhoneShell.Headless.csproj -- --mode server --port 9090
 
-# Run tests
+# Node.js server rewrite (linux2/, requires Node.js 18+)
+cd linux2 && npm install && npm run dev        # dev with tsx
+cd linux2 && npm run build && npm start         # production
+
+# Node.js web panel (linux2/web/, Vue 3 + Vite → single HTML file)
+cd linux2/web && npm install && npm run build   # outputs to linux2/web/dist/
+
+# Run all tests (xunit)
 dotnet test pc/tests/PhoneShell.Core.Tests/PhoneShell.Core.Tests.csproj
-```
 
-Windows 10/11 with .NET SDK 8.0+ required for WPF app. Linux headless runs on any platform with .NET 8.0+. Unit tests use xunit.
+# Run a single test class or method
+dotnet test pc/tests/PhoneShell.Core.Tests/PhoneShell.Core.Tests.csproj --filter "FullyQualifiedName~MessageSerializerTests"
+dotnet test pc/tests/PhoneShell.Core.Tests/PhoneShell.Core.Tests.csproj --filter "FullyQualifiedName~GroupStoreTests.SomeMethodName"
+
+# Publish self-contained Linux binaries
+dotnet publish linux/PhoneShell.Headless/PhoneShell.Headless.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o linux/publish/linux-x64
+```
 
 ## Project Overview
 
-PhoneShell lets a phone remotely control terminal sessions (PowerShell, CMD, WSL, bash, etc.) on one or more PCs. One PC can be designated as a "relay server" (hub) that other PCs and mobile clients connect to. Mobile clients (HarmonyOS planned) connect through the relay server to access any registered PC's terminal.
+PhoneShell lets a phone remotely control terminal sessions (PowerShell, CMD, WSL, bash, etc.) on one or more PCs. One PC can be designated as a "relay server" (hub) that other PCs and mobile clients connect to. Mobile clients (HarmonyOS) connect through the relay server to access any registered PC's terminal.
 
-Requirements are in `项目需求.md`. HarmonyOS client code lives in `harmony/`.
+Requirements are in `项目需求.md`.
 
 ## Architecture
 
-Three-project structure: `PhoneShell.Core` (platform-agnostic class library) + `PhoneShell.App` (WPF UI shell) + `PhoneShell.Headless` (cross-platform console app).
+There are two independent server implementations, plus a shared Core library:
 
-### PhoneShell.Core (`pc/src/PhoneShell.Core/`, net8.0)
-Platform-independent core containing:
-- **Terminals/** — `ITerminalSession` / `IShellLocator` interfaces, `TerminalSessionManager`, `TerminalSnapshot` record, `TerminalPlatformFactory` (auto-selects platform implementations).
+### .NET stack: `pc/` + `linux/`
+
+Three-project structure sharing `PhoneShell.Core`:
+
+- **PhoneShell.Core** (`pc/src/PhoneShell.Core/`, net8.0) — Platform-agnostic class library. Contains terminal abstractions (`ITerminalSession`, `IShellLocator`), WebSocket protocol types (`Protocol/Messages.cs`, `MessageSerializer`), networking (`RelayServer`, `RelayClient`), services (`AiChatService`, `GroupStore`, `PermissionChecker`, `QrPayloadBuilder`), and models.
   - `Terminals/Windows/` — `ConPtySession` (Windows ConPTY), `WindowsShellLocator` (PowerShell/CMD/WSL/Git Bash).
   - `Terminals/Linux/` — `PtySession` (Linux PTY via forkpty P/Invoke), `LinuxShellLocator` (reads /etc/shells).
-- **Protocol/** — WebSocket message types (`Messages.cs`) and `MessageSerializer` for PC↔server↔mobile communication (device registration, terminal I/O, control ownership, group management, mobile binding, authorization).
-- **Networking/** — `RelayServer` (HttpListener + WebSocket server mode with group management) and `RelayClient` (ClientWebSocket client mode with auto-reconnect and group joining).
-- **Services/** — `AiChatService`, `AiSettingsStore`, `DeviceIdentityStore`, `GroupStore`, `PermissionChecker`, `QrPayloadBuilder`, `ServerSettingsStore`, `TerminalOutputBuffer`, `TerminalOutputStabilizer`, `VirtualScreen`.
-- **Models/** — `AiSettings`, `ChatMessage`, `ControlOwner`, `DeviceIdentity`, `GroupInfo` (GroupInfo, GroupMember, MemberRole, GroupMembership), `ServerSettings`.
+  - `TerminalPlatformFactory` auto-selects platform implementations via `RuntimeInformation.IsOSPlatform()`.
 
-### PhoneShell.App (`pc/src/PhoneShell.App/`, net8.0-windows, WPF)
-Windows-only UI shell containing:
-- `MainWindow.xaml/.cs` — Wires WebView2 (xterm.js), TerminalSessionManager, and ViewModel.
-- `ViewModels/MainViewModel.cs` — Central orchestrator. Owns AI chat loop, command parsing, shell selection, server settings, and all bindable state.
-- `Services/QrCodeService.cs` — QR code generation (depends on WPF BitmapImage).
-- `Services/TerminalSnapshotService.cs` — Captures xterm.js screen state via WebView2.
-- `Utilities/` — WPF helpers (RelayCommand, AsyncRelayCommand, ObservableObject, InvertBoolConverter).
+- **PhoneShell.App** (`pc/src/PhoneShell.App/`, net8.0-windows, WPF) — Windows-only UI shell. `MainWindow.xaml` wires WebView2 (xterm.js), `MainViewModel.cs` is the central orchestrator for AI chat, command parsing, shell selection, and server settings.
 
-### PhoneShell.Headless (`linux/PhoneShell.Headless/`, net8.0)
-Cross-platform headless console app (primarily for Linux servers, also works on Windows):
-- `Program.cs` — Entry point with CLI argument parsing, `--setup` interactive wizard, `--help`.
-- `HeadlessHost.cs` — Core orchestrator. Manages terminal sessions + relay networking without GUI. Conditionally starts modules based on config.
-- `HeadlessConfig.cs` — Configuration model with modular feature toggles and CLI override support.
+- **PhoneShell.Headless** (`linux/PhoneShell.Headless/`, net8.0) — Cross-platform headless console app. `HeadlessHost.cs` orchestrates terminal sessions + relay networking. Features are independently toggleable modules: `[terminal]`, `[relay-server]`, `[relay-client]`, `[web-panel]`, `[ai-chat]`. Toggle via CLI (`--enable-relay-server`, `--disable-terminal`) or `config.json` `"modules"` section.
 
-#### Module Architecture
-Headless features are independently toggleable via config or CLI flags:
-- **[terminal]** — PTY/ConPTY session management (default: enabled).
-- **[relay-server]** — WebSocket relay hub mode (default: disabled).
-- **[relay-client]** — Connect to existing relay server (default: enabled).
-- **[web-panel]** — Web management UI (TODO, default: disabled).
-- **[ai-chat]** — AI assistant integration (TODO, default: disabled).
+**Important build note:** The Headless `.csproj` references `PhoneShell.Core` via a pre-built DLL (`linux/publish/PhoneShell.Core.dll`), not a project reference. Building via `linux/PhoneShell.Linux.sln` handles both projects correctly. If building Headless standalone, you must first build Core and copy the DLL to `linux/publish/`.
 
-Toggle via CLI: `--enable-relay-server`, `--disable-terminal`, etc.
-Toggle via config.json `"modules"` section.
+### Node.js stack: `linux2/`
+
+TypeScript rewrite of the Linux server (`linux2/src/`) with a Vue 3 web management panel (`linux2/web/`). Uses `node-pty` for terminal sessions, `ws` for WebSocket relay, and mirrors the same JSON protocol as the .NET stack.
+
+The web panel is built as a single HTML file (via `vite-plugin-singlefile`) and embedded/served by the Node.js server.
+
+### HarmonyOS client: `harmony/`
+
+HarmonyOS (ArkTS) mobile client. Uses DevEco Studio for development. Connects to the relay server to view and control PC terminal sessions.
 
 ### Terminal pipeline
-`MainWindow` / `HeadlessHost` → `TerminalSessionManager` → `ITerminalSession` (ConPtySession on Windows, PtySession on Linux) → shell process. Output flows back through `OutputReceived` event → `TerminalOutputBuffer` → WebView2/xterm.js (WPF) or relay broadcast (Headless).
 
-`TerminalPlatformFactory` selects the correct `ITerminalSession` and `IShellLocator` implementation based on `RuntimeInformation.IsOSPlatform()`.
+Host app → `TerminalSessionManager` → `ITerminalSession` (ConPtySession / PtySession) → shell process. Output flows back through `OutputReceived` event → `TerminalOutputBuffer` → WebView2/xterm.js (WPF) or relay broadcast (Headless).
 
 ### AI chat pipeline
-User message → `AiChatService` (OpenAI-compatible API) → response parsed for `` ```command `` blocks → commands sent to terminal via `ExecuteTerminalCommand` delegate. Auto-exec loop repeats up to 10 steps.
 
-### Networking
-- **Relay Server mode:** PC starts WebSocket listener, accepts other PC and mobile connections, manages group membership via shared GroupSecret, forwards terminal I/O between clients. Supports mobile binding and authorization requests.
-- **Client mode:** PC connects to a relay server, joins group via `group.join.request` using GroupSecret, forwards I/O bidirectionally. Supports remote terminal events for PC-to-PC terminal access.
-- **Group system:** Devices join groups using a shared secret. The server creates and persists group data (`data/group.json`). Clients store minimal membership info (`data/group-membership.json`). GroupSecret replaces the legacy AuthToken for authentication.
-- **Mobile binding:** One mobile device can bind to a group as admin. Bound mobile receives authorization requests for sensitive operations (e.g., opening remote terminals, server migration, kicking members).
-- **Protocol:** JSON messages with `type` discriminator. See `Protocol/Messages.cs` for all message types including group.*, mobile.*, and auth.* messages.
+User message → `AiChatService` (OpenAI-compatible API) → response parsed for `` ```command `` fenced blocks → commands sent to terminal via `ExecuteTerminalCommand` delegate. Auto-exec loop repeats up to 10 steps.
+
+### Networking & group system
+
+- **Relay Server mode:** WebSocket listener (`HttpListener`), manages group membership via shared GroupSecret, forwards terminal I/O. Supports mobile binding and authorization requests.
+- **Client mode:** `ClientWebSocket` with auto-reconnect, joins group via `group.join.request` using GroupSecret.
+- **Protocol:** JSON messages with `type` discriminator (e.g., `group.*`, `mobile.*`, `auth.*`, `terminal.*`). See `pc/src/PhoneShell.Core/Protocol/Messages.cs`.
+- **Mobile binding:** One mobile device binds to a group as admin. Bound mobile receives authorization requests for sensitive operations (opening remote terminals, server migration, kicking members).
 
 ### Key threading concern
-`HttpClient.SendAsync` and `TerminalOutputStabilizer.WaitForStableOutputAsync` resume on thread pool threads. All `ObservableCollection` mutations and property changes after any `await` must go through `Dispatcher.InvokeAsync()` (WPF app only; headless has no UI thread).
 
-## Key Files
+`HttpClient.SendAsync` and `TerminalOutputStabilizer.WaitForStableOutputAsync` resume on thread pool threads. All `ObservableCollection` mutations and property changes after any `await` must go through `Dispatcher.InvokeAsync()` in WPF app. Headless has no UI thread constraint.
 
-- `Core/Terminals/ITerminalSession.cs` — Terminal session abstraction (Start, Write, Resize, OutputReady).
-- `Core/Terminals/IShellLocator.cs` — Shell detection abstraction (ShellInfo record, available shells list).
-- `Core/Terminals/TerminalPlatformFactory.cs` — Creates platform-appropriate session and shell locator.
-- `Core/Terminals/Windows/ConPtySession.cs` — Windows ConPTY implementation.
-- `Core/Terminals/Windows/WindowsShellLocator.cs` — Detects PowerShell, CMD, WSL distros, Git Bash.
-- `Core/Terminals/Linux/PtySession.cs` — Linux PTY implementation via forkpty() P/Invoke.
-- `Core/Terminals/Linux/LinuxShellLocator.cs` — Reads /etc/shells, detects bash/zsh/fish etc.
-- `Core/Networking/RelayServer.cs` — WebSocket server for hub mode with group management.
-- `Core/Networking/RelayClient.cs` — WebSocket client with auto-reconnect and group joining.
-- `Core/Protocol/Messages.cs` — All WebSocket message type definitions (device, terminal, group, mobile bind, auth).
-- `Core/Models/GroupInfo.cs` — Group data model (GroupInfo, GroupMember, MemberRole, GroupMembership).
-- `Core/Services/GroupStore.cs` — Group data persistence (server-side group.json, client-side group-membership.json).
-- `Core/Services/PermissionChecker.cs` — Determines if actions require mobile authorization.
-- `Core/Services/AiChatService.cs` — OpenAI-compatible chat with multi-shell awareness.
-- `App/ViewModels/MainViewModel.cs` — Central WPF orchestrator.
-- `App/MainWindow.xaml` — UI layout with Server Settings, Shell Selector, AI Chat, terminal.
-- `App/Assets/terminal.html` — xterm.js terminal UI loaded via WebView2.
-- `Headless/Program.cs` — Headless entry point with CLI and interactive setup.
-- `Headless/HeadlessHost.cs` — Headless orchestrator (terminal sessions + relay).
-- `Headless/HeadlessConfig.cs` — Config model with module toggles.
+## Configuration
+
+Headless server config priority (highest to lowest): CLI args → environment variables → `config.json`.
+
+Environment variables: `PHONESHELL_MODE`, `PHONESHELL_NAME`, `PHONESHELL_PUBLIC_HOST`, `PHONESHELL_PORT`, `PHONESHELL_RELAY_URL`, `PHONESHELL_RELAY_TOKEN`, `PHONESHELL_GROUP_SECRET`.
+
+Config file locations:
+- Windows: `data/` under the app base directory.
+- Linux headless: `~/.config/phoneshell/` (follows XDG_CONFIG_HOME).
+- Files: `device.json`, `ai-settings.json`, `server-settings.json`, `group.json`, `group-membership.json`, `config.json`.
 
 ## Coding Conventions
 
 - English identifiers, C#/.NET style: `PascalCase` for types/public members, `camelCase` for locals/parameters, `I` prefix for interfaces.
+- TypeScript code in `linux2/` follows standard TS conventions.
 - Documentation markdown files may be in Chinese (aligned with `项目需求.md`).
 - AI commands use `` ```command `` fenced blocks (parsed by regex in `ParseCommandBlocks`).
-- Runtime data paths:
-  - Windows: `data/` under the app base directory: `device.json`, `ai-settings.json`, `server-settings.json`, `group.json`, `group-membership.json`, `ai-debug.log`.
-  - Linux headless: `~/.config/phoneshell/` (follows XDG_CONFIG_HOME convention), same file names in `data/` subdirectory.
 
-## NuGet Dependencies
+## Key dependencies
 
-- `Microsoft.Web.WebView2` — WebView2 control for xterm.js terminal (WPF app only)
-- `QRCoder` — QR code generation for mobile pairing (WPF app only)
-
-Custom NuGet source configured in root `NuGet.Config` pointing to `.nuget/packages/`.
+- Custom NuGet source configured in root `NuGet.Config` pointing to `.nuget/packages/` (offline-first, all NuGet packages are vendored).
+- `Microsoft.Web.WebView2` — WebView2 for xterm.js terminal (WPF only).
+- `QRCoder` — QR code generation.
+- `node-pty` — PTY for Node.js server (linux2).

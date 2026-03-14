@@ -157,10 +157,18 @@ struct ScanPage {
         if (inviteCode.length > 0 && relayUrl.length > 0) {
           hilog.info(DOMAIN, PAGE_TAG, 'Got invite code, sending to device %{public}s', httpUrl);
           this.scanStatus = `正在发送邀请给 ${deviceName}...`;
-          ConnectionManager.inviteToGroup(httpUrl, inviteCode, relayUrl);
-          this.scanStatus = `已邀请 ${deviceName} 加入群组`;
-          this.cleanupListeners();
-          this.getUIContext().getRouter().back();
+          ConnectionManager.inviteToGroup(httpUrl, inviteCode, relayUrl,
+            (success: boolean, message: string) => {
+              if (success) {
+                this.scanStatus = `已邀请 ${deviceName} 加入群组`;
+                this.cleanupListeners();
+                this.getUIContext().getRouter().back();
+              } else {
+                this.parseError = `邀请发送失败: ${message}`;
+                this.scanStatus = '邀请失败';
+                this.cleanupListeners();
+              }
+            });
         }
       } else if (type === 'error') {
         const message: string = (data['message'] ?? '') as string;

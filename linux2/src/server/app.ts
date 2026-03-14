@@ -444,7 +444,8 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     }
 
     const token = extractToken(req) || url.searchParams.get('token') || undefined;
-    if (!relay.isAuthorized(token)) {
+    const inviteCode = url.searchParams.get('invite') || undefined;
+    if (!relay.isAuthorized(token) && !(inviteCode && relay.getInviteManager().isValidInviteCode(inviteCode))) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
