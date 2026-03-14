@@ -1,7 +1,7 @@
 import { LengthMetrics } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppColors, AppSizes, AppStrings, ConnectionState, DeviceMode } from '../common/Constants';
-import { ConnectionManager } from '../services/ConnectionManager';
+import { ConnectionManager, SingleDeviceRecord } from '../services/ConnectionManager';
 import { AuthManager, AuthPendingRequest } from '../services/AuthManager';
 import { DeviceInfo, GroupMemberInfo } from '../models/MessageTypes';
 
@@ -47,6 +47,8 @@ struct DeviceManagePage {
   private modeChangeCallbackId: number = -1;
   private messageCallbackId: number = -1;
   private authDialogCallbackId: number = -1;
+  private pendingInviteDeviceId: string = '';
+  private pendingInviteHttpUrl: string = '';
 
   aboutToAppear(): void {
     this.activatePage();
@@ -101,6 +103,12 @@ struct DeviceManagePage {
           const inviteCode: string = (data['inviteCode'] ?? '') as string;
           const relayUrl: string = (data['relayUrl'] ?? '') as string;
           hilog.info(DOMAIN, PAGE_TAG, 'Got invite code=%{public}s relay=%{public}s', inviteCode, relayUrl);
+          if (this.pendingInviteDeviceId.length > 0 && this.pendingInviteHttpUrl.length > 0) {
+            const httpUrl: string = this.pendingInviteHttpUrl;
+            this.pendingInviteDeviceId = '';
+            this.pendingInviteHttpUrl = '';
+            ConnectionManager.inviteToGroup(httpUrl, inviteCode, relayUrl);
+          }
         } else if (type === 'group.join.accepted') {
           this.groupId = ConnectionManager.getGroupId();
           this.groupMembers = ConnectionManager.getGroupMembers();
@@ -761,7 +769,15 @@ struct DeviceManagePage {
       ConnectionManager.designateRelay(device.deviceId);
     } else {
       // Group exists — invite this device via HTTP POST /api/invite
-      ConnectionManager.inviteToGroup(device.deviceId);
+      const record: SingleDeviceRecord | null = ConnectionManager.getSingleDeviceRecord(device.deviceId);
+      const httpUrl: string = record !== null ? record.httpUrl : '';
+      if (httpUrl.length === 0) {
+        hilog.error(DOMAIN, PAGE_TAG, 'inviteToGroup missing httpUrl for device=%{public}s', device.deviceId);
+        return;
+      }
+      this.pendingInviteDeviceId = device.deviceId;
+      this.pendingInviteHttpUrl = httpUrl;
+      ConnectionManager.requestInviteCode();
     }
   }
 }

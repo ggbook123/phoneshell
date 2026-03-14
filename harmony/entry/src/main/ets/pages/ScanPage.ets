@@ -16,9 +16,11 @@ struct ScanPage {
   @State scanStatus: string = '';
   @State isScanning: boolean = false;
   @State parseError: string = '';
-  @State showMigrationDialog: boolean = false;
-  @State migrationHint: string = '';
+  @State showInviteConfirmDialog: boolean = false;
+  @State inviteDeviceName: string = '';
   private pendingPanelLoginRequestId: string = '';
+  private pendingInviteHttpUrl: string = '';
+  private pendingInviteDeviceId: string = '';
   private messageListenerId: number = -1;
   private stateListenerId: number = -1;
 
@@ -112,6 +114,20 @@ struct ScanPage {
       return;
     }
 
+    // If phone is already in a group, invite this standalone device into the group
+    if (ConnectionManager.isInGroup()) {
+      if (httpUrl.length === 0) {
+        this.parseError = '该设备不支持邀请加入群组（缺少HTTP地址）';
+        return;
+      }
+      hilog.info(DOMAIN, PAGE_TAG, 'Already in group, inviting device %{public}s to group', deviceId);
+      this.inviteDeviceName = displayName;
+      this.pendingInviteHttpUrl = httpUrl;
+      this.pendingInviteDeviceId = deviceId;
+      this.showInviteConfirmDialog = true;
+      return;
+    }
+
     this.scanStatus = `正在连接 ${displayName}...`;
 
     // Use ConnectionManager to establish single connection
@@ -120,6 +136,42 @@ struct ScanPage {
     // Navigate back to device manage page
     this.scanStatus = `已添加设备 ${displayName}`;
     this.getUIContext().getRouter().back();
+  }
+
+  // --- Invite a standalone device into the current group ---
+  private inviteDeviceToGroup(): void {
+    this.showInviteConfirmDialog = false;
+    const httpUrl: string = this.pendingInviteHttpUrl;
+    const deviceName: string = this.inviteDeviceName;
+
+    if (httpUrl.length === 0) return;
+
+    this.scanStatus = `正在邀请 ${deviceName} 加入群组...`;
+
+    // Listen for invite.create.response
+    this.cleanupListeners();
+    this.messageListenerId = ConnectionManager.addOnMessage((type: string, data: Record<string, Object>) => {
+      if (type === 'invite.create.response') {
+        const inviteCode: string = (data['inviteCode'] ?? '') as string;
+        const relayUrl: string = (data['relayUrl'] ?? '') as string;
+        if (inviteCode.length > 0 && relayUrl.length > 0) {
+          hilog.info(DOMAIN, PAGE_TAG, 'Got invite code, sending to device %{public}s', httpUrl);
+          this.scanStatus = `正在发送邀请给 ${deviceName}...`;
+          ConnectionManager.inviteToGroup(httpUrl, inviteCode, relayUrl);
+          this.scanStatus = `已邀请 ${deviceName} 加入群组`;
+          this.cleanupListeners();
+          this.getUIContext().getRouter().back();
+        }
+      } else if (type === 'error') {
+        const message: string = (data['message'] ?? '') as string;
+        this.parseError = `邀请失败: ${message}`;
+        this.scanStatus = '邀请失败';
+        this.cleanupListeners();
+      }
+    });
+
+    // Request invite code from relay server
+    ConnectionManager.requestInviteCode();
   }
 
   // --- Group bind: connect to relay server and join group ---
@@ -135,6 +187,58 @@ struct ScanPage {
       return;
     }
 
+    // If already in a group, invite this device into the current group
+    if (ConnectionManager.isInGroup()) {
+      const currentGroupId: string = ConnectionManager.getGroupId();
+      if (currentGroupId === groupId) {
+        // Same group - already connected, just go back
+        this.scanStatus = '已在该群组中';
+        this.getUIContext().getRouter().back();
+        return;
+      }
+      // Different server's bind QR — invite that device into our group
+      const httpUrl: string = this.wsUrlToHttpUrl(server);
+      if (httpUrl.length === 0) {
+        this.parseError = '无法解析设备HTTP地址';
+        return;
+      }
+      hilog.info(DOMAIN, PAGE_TAG, 'Already in group, inviting bind-QR device to current group, httpUrl=%{public}s', httpUrl);
+      this.inviteDeviceName = params.get('serverDeviceId') ?? '新设备';
+      this.pendingInviteHttpUrl = httpUrl;
+      this.pendingInviteDeviceId = '';
+      this.showInviteConfirmDialog = true;
+      return;
+    }
+
+    await this.executeBindQr(server, groupId, groupSecret);
+  }
+
+  // Derive HTTP URL from WebSocket URL (ws://host:port/ws/ -> http://host:port)
+  private wsUrlToHttpUrl(wsUrl: string): string {
+    let url: string = wsUrl;
+    // Strip query string
+    const qIdx: number = url.indexOf('?');
+    if (qIdx >= 0) url = url.substring(0, qIdx);
+    // Convert protocol
+    if (url.startsWith('wss://')) {
+      url = 'https://' + url.substring(6);
+    } else if (url.startsWith('ws://')) {
+      url = 'http://' + url.substring(5);
+    }
+    // Remove trailing /ws/ path if present
+    if (url.endsWith('/ws/')) {
+      url = url.substring(0, url.length - 4);
+    } else if (url.endsWith('/ws')) {
+      url = url.substring(0, url.length - 3);
+    }
+    // Ensure trailing slash removed
+    if (url.endsWith('/')) {
+      url = url.substring(0, url.length - 1);
+    }
+    return url;
+  }
+
+  private async executeBindQr(server: string, groupId: string, groupSecret: string): Promise<void> {
     // Save settings
     await PreferencesUtil.setLastServerUrl(server);
     await PreferencesUtil.setString(StorageKeys.GROUP_SECRET, groupSecret);
@@ -152,9 +256,6 @@ struct ScanPage {
         this.cleanupListeners();
         this.scanStatus = '已加入群组';
         // Bind mobile
-        const hostContext: Context | undefined = this.getUIContext().getHostContext();
-        const mobileDeviceId: string = hostContext !== undefined
-          ? PreferencesUtil.getMobileDeviceId(hostContext) : '';
         ConnectionManager.sendMobileBindRequest(groupId);
         this.getUIContext().getRouter().back();
       } else if (type === 'group.join.rejected') {
@@ -191,17 +292,56 @@ struct ScanPage {
     this.scanStatus = '正在处理登录请求...';
     this.pendingPanelLoginRequestId = requestId;
 
+    // Listen for error responses from server
+    this.cleanupListeners();
+    this.messageListenerId = ConnectionManager.addOnMessage((type: string, data: Record<string, Object>) => {
+      if (type === 'error') {
+        const code: string = (data['code'] ?? '') as string;
+        const message: string = (data['message'] ?? '') as string;
+        hilog.error(DOMAIN, PAGE_TAG, 'login scan error: code=%{public}s msg=%{public}s', code, message);
+        if (code === 'not_bound_mobile') {
+          this.scanStatus = '登录失败：需要重新连接群组';
+          this.parseError = '手机未在群组中注册，请返回设备管理页等待自动重连';
+        } else if (code === 'login_session_not_found') {
+          this.scanStatus = '登录失败：登录会话已过期';
+          this.parseError = '请刷新网页重新获取二维码';
+        } else {
+          this.scanStatus = '登录失败';
+          this.parseError = message.length > 0 ? message : '未知错误';
+        }
+        this.cleanupListeners();
+      } else if (type === 'panel.login.approved') {
+        this.scanStatus = '网页登录已批准';
+        this.cleanupListeners();
+        this.getUIContext().getRouter().back();
+      }
+    });
+
+    // Check if connected to group and joined
+    if (!ConnectionManager.isInGroup()) {
+      this.scanStatus = '正在重新连接群组...';
+      // Wait for group rejoin (auto-rejoin on reconnect), then send
+      this.stateListenerId = ConnectionManager.addOnStateChange((state: ConnectionState, _deviceId: string) => {
+        if (state === ConnectionState.CONNECTED) {
+          // After reconnect, wait a moment for group.join.accepted
+          // The auto-rejoin logic will fire group.join.request
+        }
+      });
+      // Also listen for group.join.accepted to then send the login scan
+      const origMsgListener: number = this.messageListenerId;
+      const joinListenerId: number = ConnectionManager.addOnMessage((type: string, _data: Record<string, Object>) => {
+        if (type === 'group.join.accepted') {
+          ConnectionManager.removeOnMessage(joinListenerId);
+          this.scanStatus = '已重新连接，正在发送登录确认...';
+          ConnectionManager.sendPanelLoginScan(requestId);
+        }
+      });
+      return;
+    }
+
     // Send panel.login.scan through ConnectionManager
     ConnectionManager.sendPanelLoginScan(requestId);
-    this.scanStatus = '已发送登录确认，请在弹出的授权窗口中确认';
-  }
-
-  private confirmMigration(): void {
-    this.showMigrationDialog = false;
-  }
-
-  private cancelMigration(): void {
-    this.showMigrationDialog = false;
+    this.scanStatus = '已发送登录确认，等待服务器响应...';
   }
 
   private buildConnectUrlWithToken(baseUrl: string, groupSecret: string): string {
@@ -344,16 +484,16 @@ struct ScanPage {
       .height('100%')
       .backgroundColor(AppColors.BACKGROUND)
 
-      if (this.showMigrationDialog) {
+      if (this.showInviteConfirmDialog) {
         Column() {
           Column() {
-            Text('服务器迁移确认')
+            Text('邀请设备加入群组')
               .fontSize(18)
               .fontColor(AppColors.TEXT_PRIMARY)
               .fontWeight(FontWeight.Medium)
               .margin({ bottom: 10 })
 
-            Text(this.migrationHint)
+            Text(`是否将 ${this.inviteDeviceName} 邀请加入当前群组？`)
               .fontSize(13)
               .fontColor(AppColors.TEXT_SECONDARY)
               .textAlign(TextAlign.Center)
@@ -370,10 +510,10 @@ struct ScanPage {
                 .borderColor(AppColors.TEXT_SECONDARY)
                 .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
                 .onClick(() => {
-                  this.cancelMigration();
+                  this.showInviteConfirmDialog = false;
                 })
 
-              Button('设为服务器')
+              Button('邀请加入')
                 .width(140)
                 .height(40)
                 .fontSize(AppSizes.FONT_SIZE_SMALL)
@@ -381,7 +521,7 @@ struct ScanPage {
                 .backgroundColor(AppColors.ACCENT)
                 .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
                 .onClick(() => {
-                  this.confirmMigration();
+                  this.inviteDeviceToGroup();
                 })
             }
             .width('100%')

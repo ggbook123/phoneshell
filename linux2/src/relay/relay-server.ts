@@ -527,6 +527,8 @@ export class RelayServer {
       existing.displayName = req.displayName;
       existing.os = req.os;
       existing.availableShells = req.availableShells;
+      // Restore existing role (e.g. Mobile for bound phone on reconnect)
+      role = existing.role;
     } else {
       this.group.members.push({
         deviceId: req.deviceId, displayName: req.displayName, os: req.os,
@@ -1003,6 +1005,7 @@ export class RelayServer {
         type: 'relay.designated' as const,
         relayUrl: this.relayUrl,
         groupId: this.group.groupId,
+        groupSecret: this.group.groupSecret,
       }));
       this.log('Relay designation confirmed (already relay)');
       return;

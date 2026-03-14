@@ -288,6 +288,7 @@ public sealed class RelayDesignatedMessage
     public string Type => "relay.designated";
     public string RelayUrl { get; init; } = string.Empty;
     public string GroupId { get; init; } = string.Empty;
+    public string GroupSecret { get; init; } = string.Empty;
 }
 
 // --- Invite system ---

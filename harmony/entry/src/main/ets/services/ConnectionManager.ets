@@ -134,6 +134,7 @@ class ConnectionManagerClass {
   // Single-connection devices (standalone/single mode)
   private singleConnections: Map<string, DeviceConnection> = new Map();
   private singleDeviceInfos: Map<string, DeviceInfo> = new Map();
+  private singleDeviceHttpUrls: Map<string, string> = new Map();
   private singleMessageCallbackIds: Map<string, number> = new Map();
   private singleStateCallbackIds: Map<string, number> = new Map();
 
@@ -144,6 +145,7 @@ class ConnectionManagerClass {
   private groupDevices: Array<DeviceInfo> = [];
   private groupMembers: Array<GroupMemberInfo> = [];
   private groupId: string = '';
+  private groupSecret: string = '';
   private isGroupJoined: boolean = false;
 
   // Current mode
@@ -310,6 +312,7 @@ class ConnectionManagerClass {
       availableShells: []
     } as DeviceInfo;
     this.singleDeviceInfos.set(deviceId, info);
+    this.singleDeviceHttpUrls.set(deviceId, httpUrl);
 
     // Persist single device record
     this.saveSingleDevice(deviceId, displayName, wsUrl, httpUrl);
@@ -345,6 +348,7 @@ class ConnectionManagerClass {
     conn.disconnect();
     this.singleConnections.delete(deviceId);
     this.singleDeviceInfos.delete(deviceId);
+    this.singleDeviceHttpUrls.delete(deviceId);
 
     // Remove persisted record
     this.removeSingleDevice(deviceId);
@@ -371,6 +375,7 @@ class ConnectionManagerClass {
     hilog.info(DOMAIN, TAG, 'connectGroup url=%{public}s', wsUrl);
 
     this.groupId = groupId;
+    this.groupSecret = groupSecret;
     const conn: DeviceConnection = new DeviceConnection('group', 'Group Connection');
 
     this.groupMessageCallbackId = conn.addOnMessage((type: string, data: Record<string, Object>) => {
@@ -389,6 +394,7 @@ class ConnectionManagerClass {
     // Save group relay URL
     PreferencesUtil.setString(StorageKeys.GROUP_RELAY_URL, wsUrl);
     PreferencesUtil.setString(StorageKeys.GROUP_ID, groupId);
+    PreferencesUtil.setString(StorageKeys.GROUP_SECRET, groupSecret);
   }
 
   disconnectGroup(): void {
@@ -411,9 +417,11 @@ class ConnectionManagerClass {
     this.groupMembers = [];
     this.isGroupJoined = false;
     this.groupId = '';
+    this.groupSecret = '';
 
     PreferencesUtil.setString(StorageKeys.GROUP_RELAY_URL, '');
     PreferencesUtil.setString(StorageKeys.GROUP_ID, '');
+    PreferencesUtil.setString(StorageKeys.GROUP_SECRET, '');
 
     if (this._currentMode === DeviceMode.GROUP) {
       this._currentMode = this.singleConnections.size > 0 ? DeviceMode.SINGLE : DeviceMode.STANDALONE;
@@ -691,6 +699,7 @@ class ConnectionManagerClass {
     record.deviceId = deviceId;
     record.displayName = conn.displayName;
     record.wsUrl = conn.serverUrl;
+    record.httpUrl = this.singleDeviceHttpUrls.get(deviceId) ?? '';
     return record;
   }
 
@@ -772,8 +781,14 @@ class ConnectionManagerClass {
       // Device became a relay server - transition to group mode
       const relayUrl: string = (data['relayUrl'] ?? '') as string;
       const newGroupId: string = (data['groupId'] ?? '') as string;
+      const secret: string = (data['groupSecret'] ?? '') as string;
       if (relayUrl.length > 0) {
         hilog.info(DOMAIN, TAG, 'Device %{public}s designated as relay, url=%{public}s', deviceId, relayUrl);
+        // Store group secret for reconnect
+        if (secret.length > 0) {
+          this.groupSecret = secret;
+          PreferencesUtil.setString(StorageKeys.GROUP_SECRET, secret);
+        }
         // The single connection becomes the group connection
         this.promoteToGroupConnection(deviceId, relayUrl, newGroupId);
       }
@@ -828,14 +843,19 @@ class ConnectionManagerClass {
       this.groupId = ((data['groupId'] ?? '') as string);
       this.groupMembers = this.normalizeGroupMembers(data['members']);
       PreferencesUtil.setString(StorageKeys.GROUP_ID, this.groupId);
+      // Refresh device list after successful join
+      this.requestDeviceList();
     } else if (type === 'group.member.list') {
       this.groupMembers = this.normalizeGroupMembers(data['members']);
+      this.requestDeviceList();
     } else if (type === 'group.member.joined') {
       const member: GroupMemberInfo | null = this.normalizeGroupMember(data['member']);
       if (member !== null) this.groupMembers.push(member);
+      this.requestDeviceList();
     } else if (type === 'group.member.left') {
       const leftDeviceId: string = (data['deviceId'] ?? '') as string;
       this.groupMembers = this.groupMembers.filter((m: GroupMemberInfo) => m.deviceId !== leftDeviceId);
+      this.requestDeviceList();
     } else if (type === 'group.dissolved') {
       hilog.info(DOMAIN, TAG, 'Group dissolved');
       this.disconnectGroup();
@@ -864,13 +884,11 @@ class ConnectionManagerClass {
     hilog.info(DOMAIN, TAG, 'groupStateChange state=%{public}d', state);
 
     if (state === ConnectionState.CONNECTED && this.groupConnection !== null) {
-      // Auto join group + bind mobile
-      let joinMsg: GroupJoinRequestMsg = new GroupJoinRequestMsg();
-      joinMsg.groupSecret = ''; // Will be set by caller if needed
-      joinMsg.deviceId = this.mobileDeviceId;
-      joinMsg.displayName = 'HarmonyOS Phone';
-      joinMsg.os = 'HarmonyOS';
-      // Don't auto-send join; let caller manage via sendGroupJoinRequest
+      // Auto re-join group on reconnect using stored secret
+      if (this.groupSecret.length > 0) {
+        hilog.info(DOMAIN, TAG, 'Auto re-joining group after reconnect');
+        this.sendGroupJoinRequest(this.groupSecret);
+      }
     }
 
     this.emitStateChange(state, 'group');

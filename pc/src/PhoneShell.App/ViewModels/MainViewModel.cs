@@ -1620,12 +1620,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher.InvokeAsync(() =>
         {
-            var member = GroupMembers.FirstOrDefault(m => m.DeviceId == deviceId);
-            if (member is not null)
-            {
-                member.DisplayName = displayName;
-                OnGroupMemberListChanged(GroupMembers.ToList());
-            }
+            var members = GroupMembers
+                .Select(m => m.DeviceId == deviceId
+                    ? new GroupMemberInfo
+                    {
+                        DeviceId = m.DeviceId,
+                        DisplayName = displayName,
+                        Os = m.Os,
+                        Role = m.Role,
+                        IsOnline = m.IsOnline,
+                        AvailableShells = m.AvailableShells.ToList(),
+                    }
+                    : m)
+                .ToList();
+            OnGroupMemberListChanged(members);
             OnNetworkLog($"Device settings updated: {deviceId} → {displayName}");
         });
     }

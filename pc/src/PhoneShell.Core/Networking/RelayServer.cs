@@ -34,6 +34,7 @@ public sealed class RelayServer : IDisposable
     private WebPanelModule? _webPanelModule;
     private GroupInfo? _group;
     private GroupStore? _groupStore;
+    private readonly InviteManager _inviteManager = new();
 
     public event Action<string>? Log;
     public event Action<List<DeviceInfo>>? DeviceListChanged;
@@ -930,6 +931,22 @@ public sealed class RelayServer : IDisposable
                 // Forward to all clients (usually sent by server, not expected from client)
                 await BroadcastToOthersAsync(client, json);
                 break;
+
+            case InviteCreateRequestMessage:
+                await HandleInviteCreateRequest(client);
+                break;
+
+            case DeviceSettingsUpdateMessage settingsUpdate:
+                await HandleDeviceSettingsUpdate(client, settingsUpdate);
+                break;
+
+            case DeviceKickedMessage:
+                // device.kicked is sent by the server to a client, not expected from client
+                break;
+
+            case GroupDissolveMessage:
+                await HandleGroupDissolve(client);
+                break;
         }
     }
 
@@ -1054,12 +1071,13 @@ public sealed class RelayServer : IDisposable
             return;
         }
 
-        if (!TokensEqual(req.GroupSecret, _group.GroupSecret))
+        if (!TokensEqual(req.GroupSecret, _group.GroupSecret) &&
+            !(!string.IsNullOrEmpty(req.InviteCode) && _inviteManager.ConsumeInviteCode(req.InviteCode)))
         {
-            Log?.Invoke($"Group join rejected for {req.DisplayName} ({req.DeviceId}): invalid secret");
+            Log?.Invoke($"Group join rejected for {req.DisplayName} ({req.DeviceId}): invalid credentials");
             await SendAsync(client, MessageSerializer.Serialize(new GroupJoinRejectedMessage
             {
-                Reason = "Invalid group secret."
+                Reason = "Invalid group secret or invite code."
             }));
             return;
         }
@@ -1074,6 +1092,8 @@ public sealed class RelayServer : IDisposable
             existing.DisplayName = req.DisplayName;
             existing.Os = req.Os;
             existing.AvailableShells = req.AvailableShells;
+            // Restore existing role (e.g. Mobile for bound phone on reconnect)
+            role = existing.Role;
         }
         else
         {
@@ -1529,6 +1549,119 @@ public sealed class RelayServer : IDisposable
         });
         await BroadcastToAllAsync(doneMsg);
         Log?.Invoke($"Group secret rotated to {newSecret[..8]}...");
+    }
+
+    private async Task HandleInviteCreateRequest(ConnectedClient client)
+    {
+        if (_group is null)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "no_group",
+                Message = "No group exists on this server."
+            }));
+            return;
+        }
+
+        if (client.MemberRole != MemberRole.Mobile)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "permission_denied",
+                Message = "Only the bound mobile can create invites."
+            }));
+            return;
+        }
+
+        var (code, expiresAt) = _inviteManager.GenerateInviteCode();
+        var relayUrl = _reachableWebSocketUrls.FirstOrDefault() ?? string.Empty;
+
+        Log?.Invoke($"Invite code created: {code} (expires {expiresAt:O})");
+
+        await SendAsync(client, MessageSerializer.Serialize(new InviteCreateResponseMessage
+        {
+            InviteCode = code,
+            RelayUrl = relayUrl,
+            ExpiresAt = expiresAt.ToString("O")
+        }));
+    }
+
+    private async Task HandleDeviceSettingsUpdate(ConnectedClient client, DeviceSettingsUpdateMessage update)
+    {
+        if (_group is null) return;
+
+        if (client.MemberRole != MemberRole.Mobile)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "permission_denied",
+                Message = "Only the bound mobile can update device settings."
+            }));
+            return;
+        }
+
+        var member = _group.Members.FirstOrDefault(m => m.DeviceId == update.DeviceId);
+        if (member is not null)
+        {
+            member.DisplayName = update.DisplayName;
+            _groupStore?.SaveGroup(_group);
+        }
+
+        // Broadcast to all clients
+        var updatedMsg = MessageSerializer.Serialize(new DeviceSettingsUpdatedMessage
+        {
+            DeviceId = update.DeviceId,
+            DisplayName = update.DisplayName
+        });
+        await BroadcastToAllAsync(updatedMsg);
+
+        // Also update in-memory device info
+        if (_devices.TryGetValue(update.DeviceId, out var device))
+        {
+            device.DisplayName = update.DisplayName;
+            NotifyDeviceListChanged();
+        }
+
+        Log?.Invoke($"Device settings updated: {update.DeviceId} -> {update.DisplayName}");
+    }
+
+    private async Task HandleGroupDissolve(ConnectedClient client)
+    {
+        if (_group is null) return;
+
+        if (client.MemberRole != MemberRole.Mobile)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "permission_denied",
+                Message = "Only the bound mobile can dissolve the group."
+            }));
+            return;
+        }
+
+        Log?.Invoke("Group dissolving...");
+
+        // Broadcast dissolved to all clients
+        var dissolvedMsg = MessageSerializer.Serialize(new GroupDissolvedMessage
+        {
+            Reason = "Group dissolved by mobile admin."
+        });
+        await BroadcastToAllAsync(dissolvedMsg);
+
+        // Clear group data
+        _group = null;
+        _groupStore?.ClearGroup();
+        _inviteManager.ClearAll();
+        _panelLoginSessions.Clear();
+        _panelAccessTokens.Clear();
+
+        // Disconnect all remote clients
+        foreach (var c in _clients.Values)
+        {
+            try { c.WebSocket.Abort(); } catch { }
+        }
+
+        Log?.Invoke("Group dissolved");
     }
 
     /// <summary>Event raised when a server migration commit is broadcast.</summary>
@@ -2331,7 +2464,7 @@ public sealed class RelayServer : IDisposable
     private sealed class ConnectedDevice
     {
         public string DeviceId { get; init; } = string.Empty;
-        public string DisplayName { get; init; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
         public string Os { get; init; } = string.Empty;
         public List<string> AvailableShells { get; init; } = new();
         public string? ClientId { get; init; }

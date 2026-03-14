@@ -132,6 +132,7 @@ export interface RelayDesignatedMessage {
   type: 'relay.designated';
   relayUrl: string;
   groupId: string;
+  groupSecret: string;
 }
 
 // --- Invite system ---
