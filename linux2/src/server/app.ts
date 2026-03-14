@@ -141,7 +141,14 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
     const scheme = proto?.toLowerCase();
     const wsScheme = scheme === 'https' || scheme === 'wss' ? 'wss' : 'ws';
-    return `${wsScheme}://${host}/ws/`;
+    const serverUrl = `${wsScheme}://${host}/ws/`;
+    if (!config.publicHost) {
+      const hostOnly = host.split(':')[0]?.toLowerCase() || '';
+      if (hostOnly && hostOnly !== 'localhost' && hostOnly !== '127.0.0.1') {
+        relay.setRelayUrl(serverUrl);
+      }
+    }
+    return serverUrl;
   }
 
   // Serve panel HTML (inline singlefile)

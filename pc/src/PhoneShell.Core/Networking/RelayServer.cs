@@ -932,6 +932,10 @@ public sealed class RelayServer : IDisposable
                 await BroadcastToOthersAsync(client, json);
                 break;
 
+            case RelayDesignateMessage:
+                await HandleRelayDesignate(client);
+                break;
+
             case InviteCreateRequestMessage:
                 await HandleInviteCreateRequest(client);
                 break;
@@ -1553,6 +1557,38 @@ public sealed class RelayServer : IDisposable
         });
         await BroadcastToAllAsync(doneMsg);
         Log?.Invoke($"Group secret rotated to {newSecret[..8]}...");
+    }
+
+    private async Task HandleRelayDesignate(ConnectedClient client)
+    {
+        if (_group is null)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "no_group",
+                Message = "No group exists on this server."
+            }));
+            return;
+        }
+
+        var hasBoundMobile = !string.IsNullOrWhiteSpace(_group.BoundMobileId);
+        if (hasBoundMobile && client.MemberRole != MemberRole.Mobile)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "permission_denied",
+                Message = "Only the bound mobile can designate a relay."
+            }));
+            return;
+        }
+
+        var relayUrl = _reachableWebSocketUrls.FirstOrDefault() ?? string.Empty;
+        await SendAsync(client, MessageSerializer.Serialize(new RelayDesignatedMessage
+        {
+            RelayUrl = relayUrl,
+            GroupId = _group.GroupId,
+            GroupSecret = _group.GroupSecret
+        }));
     }
 
     private async Task HandleInviteCreateRequest(ConnectedClient client)

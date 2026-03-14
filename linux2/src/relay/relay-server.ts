@@ -994,8 +994,10 @@ export class RelayServer {
   // --- Relay designate handler ---
 
   private async handleRelayDesignate(client: ClientConnection): Promise<void> {
-    // Only the bound mobile can designate
-    if (client.memberRole !== 'Mobile') {
+    // Allow designation from the bound mobile. If no mobile is bound yet (single mode),
+    // allow the current client to designate so the phone can join the group.
+    const hasBoundMobile = !!this.group?.boundMobileId;
+    if (hasBoundMobile && client.memberRole !== 'Mobile') {
       await sendToClient(client, serialize({ type: 'error' as const, code: 'permission_denied', message: 'Only the bound mobile can designate a relay.' }));
       return;
     }

@@ -791,6 +791,12 @@ class ConnectionManagerClass {
         }
         // The single connection becomes the group connection
         this.promoteToGroupConnection(deviceId, relayUrl, newGroupId);
+        // Join the group immediately so the phone becomes the bound mobile admin
+        if (secret.length > 0) {
+          this.sendGroupJoinRequest(secret);
+        } else {
+          hilog.error(DOMAIN, TAG, 'relay.designated missing groupSecret, cannot join group');
+        }
       }
     } else if (type === 'auth.request') {
       this.handleAuthRequest(data);
