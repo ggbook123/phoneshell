@@ -25,6 +25,10 @@ export class RelayServer {
     setRelayUrl(url) { this.relayUrl = url; }
     getGroup() { return this.group; }
     getInviteManager() { return this.inviteManager; }
+    // Wrapper for sendToClient with logging
+    async send(client, message) {
+        return sendToClient(client, message, this.log);
+    }
     initGroup(groupStore, deviceId, displayName, os, availableShells) {
         this.groupStore = groupStore;
         this.group = groupStore.loadGroup();
@@ -61,18 +65,42 @@ export class RelayServer {
     registerLocalDevice(deviceId, displayName, os, availableShells) {
         this.devices.set(deviceId, { deviceId, displayName, os, availableShells, isLocal: true });
         this.log(`Local device registered: ${displayName} (${deviceId})`);
+        this.broadcastDeviceList();
     }
     start() {
         this.startedAtUtc = new Date();
     }
     getDeviceList() {
-        return Array.from(this.devices.values()).map(d => ({
-            deviceId: d.deviceId,
-            displayName: d.displayName,
-            os: d.os,
-            isOnline: true,
-            availableShells: d.availableShells,
-        }));
+        if (!this.group) {
+            return Array.from(this.devices.values()).map(d => ({
+                deviceId: d.deviceId,
+                displayName: d.displayName,
+                os: d.os,
+                isOnline: true,
+                availableShells: d.availableShells,
+            }));
+        }
+        const result = new Map();
+        for (const member of this.group.members) {
+            const isOnline = this.devices.has(member.deviceId);
+            result.set(member.deviceId, {
+                deviceId: member.deviceId,
+                displayName: member.displayName,
+                os: member.os,
+                isOnline,
+                availableShells: Array.isArray(member.availableShells) ? [...member.availableShells] : [],
+            });
+        }
+        for (const device of this.devices.values()) {
+            result.set(device.deviceId, {
+                deviceId: device.deviceId,
+                displayName: device.displayName,
+                os: device.os,
+                isOnline: true,
+                availableShells: device.availableShells,
+            });
+        }
+        return Array.from(result.values());
     }
     buildGroupMemberInfoList() {
         if (!this.group)
@@ -143,10 +171,15 @@ export class RelayServer {
         if (client.subscribedDeviceId && client.subscribedSessionId) {
             const device = this.devices.get(client.subscribedDeviceId);
             if (device?.isLocal) {
-                try {
-                    this.callbacks.onLocalTerminalSessionEnded?.(client.subscribedSessionId);
+                const hasOtherSubscribers = Array.from(this.clients.values()).some(c => c.clientId !== client.clientId &&
+                    c.subscribedDeviceId === client.subscribedDeviceId &&
+                    c.subscribedSessionId === client.subscribedSessionId);
+                if (!hasOtherSubscribers) {
+                    try {
+                        this.callbacks.onLocalTerminalSessionEnded?.(client.subscribedSessionId);
+                    }
+                    catch { }
                 }
-                catch { }
             }
         }
         // Clean up device registration
@@ -154,11 +187,11 @@ export class RelayServer {
             this.devices.delete(client.registeredDeviceId);
             this.log(`Device unregistered: ${client.registeredDeviceId}`);
             // Bug1 fix: mobile disconnect preserves BOTH login sessions and access tokens.
-            // Login sessions have their own expiry — clearing them here would break the
+            // Login sessions have their own expiry �?clearing them here would break the
             // web panel login flow when the phone briefly disconnects before scanning.
             // Only explicit unbind (mobile.unbind) calls tokenManager.clearAll().
             if (this.group && client.registeredDeviceId === this.group.boundMobileId) {
-                this.log('Bound mobile disconnected — tokens and login sessions preserved');
+                this.log('Bound mobile disconnected �?tokens and login sessions preserved');
             }
             // Broadcast group member left
             if (this.group) {
@@ -168,11 +201,12 @@ export class RelayServer {
         }
         this.clients.delete(client.clientId);
         this.log(`Client disconnected: ${client.clientId}`);
+        this.broadcastDeviceList();
         // Notify phone if a panel disconnected
         if (client.isPanelClient && this.group?.boundMobileId) {
             const mobileClient = this.findClientByDeviceId(this.group.boundMobileId);
             if (mobileClient) {
-                sendToClient(mobileClient, serialize({
+                this.send(mobileClient, serialize({
                     type: 'panel.disconnected',
                     clientId: client.clientId,
                 }));
@@ -217,11 +251,12 @@ export class RelayServer {
                 });
                 client.registeredDeviceId = reg.deviceId;
                 this.log(`Device registered: ${reg.displayName} (${reg.deviceId})`);
+                this.broadcastDeviceList();
                 break;
             }
             case 'device.list.request': {
                 const list = serialize({ type: 'device.list', devices: this.getDeviceList() });
-                await sendToClient(client, list);
+                await this.send(client, list);
                 break;
             }
             case 'session.list.request': {
@@ -232,14 +267,14 @@ export class RelayServer {
                     client.subscribedSessionId = undefined;
                     if (device.isLocal) {
                         const sessions = this.callbacks.getLocalSessionList?.() || [];
-                        await sendToClient(client, serialize({
+                        await this.send(client, serialize({
                             type: 'session.list', deviceId: req.deviceId, sessions,
                         }));
                     }
                     else if (device.clientId) {
                         const deviceClient = this.clients.get(device.clientId);
                         if (deviceClient)
-                            await sendToClient(deviceClient, json);
+                            await this.send(deviceClient, json);
                     }
                 }
                 break;
@@ -256,7 +291,7 @@ export class RelayServer {
                     else if (device.clientId) {
                         const dc = this.clients.get(device.clientId);
                         if (dc)
-                            await sendToClient(dc, json);
+                            await this.send(dc, json);
                     }
                 }
                 break;
@@ -268,7 +303,7 @@ export class RelayServer {
                     if (c.clientId !== client.clientId &&
                         c.subscribedDeviceId === output.deviceId &&
                         c.subscribedSessionId === output.sessionId) {
-                        await sendToClient(c, json);
+                        await this.send(c, json);
                     }
                 }
                 break;
@@ -285,7 +320,7 @@ export class RelayServer {
                     else if (target.clientId) {
                         const dc = this.clients.get(target.clientId);
                         if (dc)
-                            await sendToClient(dc, json);
+                            await this.send(dc, json);
                     }
                 }
                 break;
@@ -303,7 +338,7 @@ export class RelayServer {
                         if (prevSession !== resize.sessionId) {
                             const snapshot = this.callbacks.getLocalTerminalSnapshot?.(resize.sessionId);
                             if (snapshot) {
-                                await sendToClient(client, serialize({
+                                await this.send(client, serialize({
                                     type: 'terminal.output',
                                     deviceId: resize.deviceId, sessionId: resize.sessionId, data: snapshot,
                                 }));
@@ -313,7 +348,7 @@ export class RelayServer {
                     else if (target.clientId) {
                         const dc = this.clients.get(target.clientId);
                         if (dc)
-                            await sendToClient(dc, json);
+                            await this.send(dc, json);
                     }
                 }
                 break;
@@ -325,7 +360,7 @@ export class RelayServer {
                     client.subscribedDeviceId = close.deviceId;
                     client.subscribedSessionId = close.sessionId;
                     if (target.isLocal) {
-                        await sendToClient(client, serialize({
+                        await this.send(client, serialize({
                             type: 'terminal.closed', deviceId: close.deviceId, sessionId: close.sessionId,
                         }));
                         client.subscribedSessionId = undefined;
@@ -334,7 +369,7 @@ export class RelayServer {
                     else if (target.clientId) {
                         const dc = this.clients.get(target.clientId);
                         if (dc)
-                            await sendToClient(dc, json);
+                            await this.send(dc, json);
                     }
                 }
                 break;
@@ -345,7 +380,7 @@ export class RelayServer {
                 // Forward to all other clients
                 for (const c of this.clients.values()) {
                     if (c.clientId !== client.clientId)
-                        await sendToClient(c, json);
+                        await this.send(c, json);
                 }
                 break;
             case 'control.force_disconnect':
@@ -353,7 +388,7 @@ export class RelayServer {
             case 'control.grant':
                 for (const c of this.clients.values()) {
                     if (c.clientId !== client.clientId)
-                        await sendToClient(c, json);
+                        await this.send(c, json);
                 }
                 break;
             case 'group.server.change.request':
@@ -388,7 +423,7 @@ export class RelayServer {
     // --- Local terminal open ---
     async handleLocalTerminalOpen(client, open) {
         if (!this.callbacks.onLocalTerminalOpen) {
-            await sendToClient(client, serialize({
+            await this.send(client, serialize({
                 type: 'error', code: 'terminal.open.failed', message: 'Terminal not available',
             }));
             return;
@@ -396,14 +431,14 @@ export class RelayServer {
         try {
             const { sessionId, cols, rows } = await this.callbacks.onLocalTerminalOpen(open.deviceId, open.shellId);
             client.subscribedSessionId = sessionId;
-            await sendToClient(client, serialize({
+            await this.send(client, serialize({
                 type: 'terminal.opened',
                 deviceId: open.deviceId, sessionId, cols, rows,
             }));
             // Send initial snapshot
             const snapshot = this.callbacks.getLocalTerminalSnapshot?.(sessionId);
             if (snapshot) {
-                await sendToClient(client, serialize({
+                await this.send(client, serialize({
                     type: 'terminal.output',
                     deviceId: open.deviceId, sessionId, data: snapshot,
                 }));
@@ -411,7 +446,7 @@ export class RelayServer {
             this.log(`Local terminal opened for ${client.clientId}, session=${sessionId}`);
         }
         catch (err) {
-            await sendToClient(client, serialize({
+            await this.send(client, serialize({
                 type: 'error', code: 'terminal.open.failed', message: err.message,
             }));
         }
@@ -422,7 +457,7 @@ export class RelayServer {
         const promises = [];
         for (const client of this.clients.values()) {
             if (client.subscribedDeviceId === deviceId && client.subscribedSessionId === sessionId) {
-                promises.push(sendToClient(client, msg));
+                promises.push(this.send(client, msg));
             }
         }
         await Promise.all(promises);
@@ -432,7 +467,7 @@ export class RelayServer {
         for (const client of this.clients.values()) {
             if (client.subscribedDeviceId === deviceId && client.subscribedSessionId === sessionId) {
                 client.subscribedSessionId = undefined;
-                await sendToClient(client, msg);
+                await this.send(client, msg);
             }
         }
     }
@@ -440,29 +475,26 @@ export class RelayServer {
         const sessions = this.callbacks.getLocalSessionList?.() || [];
         const msg = serialize({ type: 'session.list', deviceId, sessions });
         for (const client of this.clients.values()) {
-            if (client.subscribedDeviceId === deviceId) {
-                await sendToClient(client, msg);
-            }
+            // Broadcast to all clients so session list stays fresh even before explicit subscribe.
+            await this.send(client, msg);
         }
     }
     // --- Group handlers ---
     async handleGroupJoinRequest(client, req) {
         if (!this.group) {
-            await sendToClient(client, serialize({ type: 'group.join.rejected', reason: 'No group exists on this server.' }));
+            await this.send(client, serialize({ type: 'group.join.rejected', reason: 'No group exists on this server.' }));
             return;
         }
         // Authenticate: inviteCode OR groupSecret
-        let authenticated = false;
-        if (req.inviteCode && this.inviteManager.consumeInviteCode(req.inviteCode)) {
-            authenticated = true;
+        const joinedViaInvite = !!req.inviteCode && this.inviteManager.consumeInviteCode(req.inviteCode);
+        const joinedViaSecret = !!req.groupSecret && this.tokenManager.tokensEqual(req.groupSecret, this.group.groupSecret);
+        const authenticated = joinedViaInvite || joinedViaSecret;
+        if (joinedViaInvite) {
             this.log(`Group join via invite code for ${req.displayName} (${req.deviceId})`);
-        }
-        else if (req.groupSecret && this.tokenManager.tokensEqual(req.groupSecret, this.group.groupSecret)) {
-            authenticated = true;
         }
         if (!authenticated) {
             this.log(`Group join rejected for ${req.displayName} (${req.deviceId}): invalid credentials`);
-            await sendToClient(client, serialize({ type: 'group.join.rejected', reason: 'Invalid group secret or invite code.' }));
+            await this.send(client, serialize({ type: 'group.join.rejected', reason: 'Invalid group secret or invite code.' }));
             return;
         }
         let role = 'Member';
@@ -471,6 +503,8 @@ export class RelayServer {
             existing.displayName = req.displayName;
             existing.os = req.os;
             existing.availableShells = req.availableShells;
+            // Restore existing role (e.g. Mobile for bound phone on reconnect)
+            role = existing.role;
         }
         else {
             this.group.members.push({
@@ -495,17 +529,19 @@ export class RelayServer {
         }
         this.groupStore?.saveGroup(this.group);
         const memberList = this.buildGroupMemberInfoList();
-        await sendToClient(client, serialize({
+        await this.send(client, serialize({
             type: 'group.join.accepted',
             groupId: this.group.groupId, members: memberList,
             serverDeviceId: this.group.serverDeviceId,
             boundMobileId: this.group.boundMobileId,
+            groupSecret: joinedViaInvite ? this.group.groupSecret : undefined,
         }));
         const joinedMember = memberList.find(m => m.deviceId === req.deviceId);
         if (joinedMember) {
             this.broadcastToOthers(client, serialize({ type: 'group.member.joined', member: joinedMember }));
         }
         this.log(`Group member joined: ${req.displayName} (${req.deviceId})`);
+        this.broadcastDeviceList();
         if (autoBindMobile) {
             this.log(`Mobile auto-bound: ${req.displayName} (${req.deviceId})`);
             this.tryDispatchPendingPanelLogins();
@@ -515,21 +551,23 @@ export class RelayServer {
         if (!this.group)
             return;
         if (client.memberRole !== 'Mobile') {
-            await sendToClient(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can kick members.' }));
+            await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can kick members.' }));
             return;
         }
         if (kick.deviceId === this.group.serverDeviceId) {
-            await sendToClient(client, serialize({ type: 'error', code: 'cannot_kick_server', message: 'Cannot kick the server device.' }));
+            await this.send(client, serialize({ type: 'error', code: 'cannot_kick_server', message: 'Cannot kick the server device.' }));
             return;
         }
         this.group.members = this.group.members.filter(m => m.deviceId !== kick.deviceId);
         this.groupStore?.saveGroup(this.group);
         const kickedClient = this.findClientByDeviceId(kick.deviceId);
         if (kickedClient) {
-            await sendToClient(kickedClient, serialize({ type: 'group.join.rejected', reason: 'You have been removed from the group.' }));
+            await this.send(kickedClient, serialize({ type: 'group.join.rejected', reason: 'You have been removed from the group.' }));
             kickedClient.ws.close();
         }
+        this.devices.delete(kick.deviceId);
         this.broadcastToAll(serialize({ type: 'group.member.left', deviceId: kick.deviceId }));
+        this.broadcastDeviceList();
         this.log(`Group member kicked: ${kick.deviceId}`);
     }
     async handleDeviceUnregister(client, unreg) {
@@ -538,22 +576,23 @@ export class RelayServer {
             return;
         if (!this.group) {
             if (client.registeredDeviceId !== targetDeviceId) {
-                await sendToClient(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the device itself can unregister.' }));
+                await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the device itself can unregister.' }));
                 return;
             }
             this.devices.delete(targetDeviceId);
+            this.broadcastDeviceList();
             return;
         }
         const isSelf = client.registeredDeviceId === targetDeviceId;
         const isMobile = client.memberRole === 'Mobile';
         const isServer = client.registeredDeviceId === this.group.serverDeviceId;
         if (!isSelf && !isMobile && !isServer) {
-            await sendToClient(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile or server can unbind devices.' }));
+            await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile or server can unbind devices.' }));
             return;
         }
         if (targetDeviceId === this.group.serverDeviceId) {
             if (!isMobile) {
-                await sendToClient(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can unbind the server device.' }));
+                await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can unbind the server device.' }));
                 return;
             }
             await this.handleMobileUnbind(client, { type: 'mobile.unbind', groupId: this.group.groupId });
@@ -568,7 +607,7 @@ export class RelayServer {
         this.groupStore?.saveGroup(this.group);
         const targetClient = this.findClientByDeviceId(targetDeviceId);
         if (targetClient) {
-            await sendToClient(targetClient, serialize({ type: 'device.unregister', deviceId: targetDeviceId }));
+            await this.send(targetClient, serialize({ type: 'device.unregister', deviceId: targetDeviceId }));
             targetClient.ws.close();
         }
         this.devices.delete(targetDeviceId);
@@ -576,12 +615,13 @@ export class RelayServer {
             this.broadcastToAll(serialize({ type: 'group.member.left', deviceId: targetDeviceId }));
             this.broadcastToAll(serialize({ type: 'group.member.list', members: this.buildGroupMemberInfoList() }));
         }
+        this.broadcastDeviceList();
     }
     async handleMobileBindRequest(client, req) {
         if (!this.group)
             return;
         if (this.group.boundMobileId && this.group.boundMobileId !== req.mobileDeviceId) {
-            await sendToClient(client, serialize({ type: 'mobile.bind.rejected', reason: 'Another mobile device is already bound to this group.' }));
+            await this.send(client, serialize({ type: 'mobile.bind.rejected', reason: 'Another mobile device is already bound to this group.' }));
             return;
         }
         this.group.boundMobileId = req.mobileDeviceId;
@@ -600,11 +640,12 @@ export class RelayServer {
         client.memberRole = 'Mobile';
         client.registeredDeviceId = req.mobileDeviceId;
         this.groupStore?.saveGroup(this.group);
-        await sendToClient(client, serialize({
+        await this.send(client, serialize({
             type: 'mobile.bind.accepted',
             groupId: this.group.groupId, mobileDeviceId: req.mobileDeviceId,
         }));
         this.broadcastToAll(serialize({ type: 'group.member.list', members: this.buildGroupMemberInfoList() }));
+        this.broadcastDeviceList();
         this.log(`Mobile bound: ${req.mobileDisplayName} (${req.mobileDeviceId})`);
         this.tryDispatchPendingPanelLogins();
     }
@@ -615,7 +656,7 @@ export class RelayServer {
         if (!boundMobileId)
             return;
         if (client.memberRole !== 'Mobile' && client.registeredDeviceId !== this.group.serverDeviceId) {
-            await sendToClient(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile or server can unbind.' }));
+            await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile or server can unbind.' }));
             return;
         }
         this.group.boundMobileId = null;
@@ -625,12 +666,13 @@ export class RelayServer {
         this.tokenManager.clearAll();
         const boundClient = this.findClientByDeviceId(boundMobileId);
         if (boundClient) {
-            await sendToClient(boundClient, serialize({ type: 'device.unregister', deviceId: boundMobileId }));
+            await this.send(boundClient, serialize({ type: 'device.unregister', deviceId: boundMobileId }));
             boundClient.ws.close();
         }
         this.devices.delete(boundMobileId);
         this.broadcastToAll(serialize({ type: 'group.member.left', deviceId: boundMobileId }));
         this.broadcastToAll(serialize({ type: 'group.member.list', members: this.buildGroupMemberInfoList() }));
+        this.broadcastDeviceList();
         this.log(`Mobile unbound from group: ${boundMobileId}`);
     }
     handleAuthResponse(resp) {
@@ -649,29 +691,29 @@ export class RelayServer {
     }
     async handlePanelLoginScan(client, loginScan) {
         if (!this.group) {
-            await sendToClient(client, serialize({ type: 'error', code: 'no_group', message: 'No group exists on this server.' }));
+            await this.send(client, serialize({ type: 'error', code: 'no_group', message: 'No group exists on this server.' }));
             return;
         }
         if (!this.group.boundMobileId || client.registeredDeviceId !== this.group.boundMobileId) {
-            await sendToClient(client, serialize({ type: 'error', code: 'not_bound_mobile', message: 'Only the bound mobile can scan login QR codes.' }));
+            await this.send(client, serialize({ type: 'error', code: 'not_bound_mobile', message: 'Only the bound mobile can scan login QR codes.' }));
             return;
         }
         const session = this.tokenManager.getLoginSession(loginScan.requestId);
         if (!session) {
-            await sendToClient(client, serialize({ type: 'error', code: 'login_session_not_found', message: 'Login session not found or expired.' }));
+            await this.send(client, serialize({ type: 'error', code: 'login_session_not_found', message: 'Login session not found or expired.' }));
             return;
         }
         if (session.status === 'approved' || session.status === 'rejected' || session.status === 'expired') {
-            await sendToClient(client, serialize({ type: 'error', code: 'login_session_closed', message: 'Login session already resolved.' }));
+            await this.send(client, serialize({ type: 'error', code: 'login_session_closed', message: 'Login session already resolved.' }));
             return;
         }
         if (new Date() > session.expiresAtUtc) {
             session.status = 'expired';
             session.message = 'Request expired.';
-            await sendToClient(client, serialize({ type: 'error', code: 'login_session_expired', message: 'Login session expired.' }));
+            await this.send(client, serialize({ type: 'error', code: 'login_session_expired', message: 'Login session expired.' }));
             return;
         }
-        // Bound mobile scanning login QR IS the authorization — auto-approve
+        // Bound mobile scanning login QR IS the authorization �?auto-approve
         this.tokenManager.approveLogin(session);
         this.log(`Panel login auto-approved by mobile scan (requestId=${loginScan.requestId})`);
     }
@@ -679,18 +721,18 @@ export class RelayServer {
         if (!this.group)
             return;
         if (client.memberRole !== 'Mobile') {
-            await sendToClient(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can initiate server migration.' }));
+            await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can initiate server migration.' }));
             return;
         }
         const targetDevice = this.devices.get(req.newServerDeviceId);
         if (!targetDevice || !targetDevice.clientId) {
-            await sendToClient(client, serialize({ type: 'error', code: 'device_not_found', message: 'Target device is not online.' }));
+            await this.send(client, serialize({ type: 'error', code: 'device_not_found', message: 'Target device is not online.' }));
             return;
         }
         const targetClient = this.clients.get(targetDevice.clientId);
         if (!targetClient)
             return;
-        await sendToClient(targetClient, serialize({
+        await this.send(targetClient, serialize({
             type: 'group.server.change.prepare',
             groupId: this.group.groupId, groupSecret: this.group.groupSecret, newServerUrl: '',
         }));
@@ -709,7 +751,7 @@ export class RelayServer {
         if (!this.group)
             return;
         if (client.memberRole !== 'Mobile') {
-            await sendToClient(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can rotate the group secret.' }));
+            await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can rotate the group secret.' }));
             return;
         }
         const newSecret = crypto.randomBytes(32).toString('base64url');
@@ -828,13 +870,20 @@ export class RelayServer {
     }
     broadcastToOthers(sender, message) {
         for (const c of this.clients.values()) {
-            if (c.clientId !== sender.clientId)
-                sendToClient(c, message);
+            if (c.clientId !== sender.clientId) {
+                this.send(c, message).catch(() => { });
+            }
         }
     }
     broadcastToAll(message) {
         for (const c of this.clients.values()) {
-            sendToClient(c, message);
+            this.send(c, message).catch(() => { });
+        }
+    }
+    broadcastDeviceList() {
+        const msg = serialize({ type: 'device.list', devices: this.getDeviceList() });
+        for (const c of this.clients.values()) {
+            this.send(c, msg).catch(() => { });
         }
     }
     tryDispatchPendingPanelLogins() {
@@ -854,7 +903,7 @@ export class RelayServer {
         const description = session.requesterAddress
             ? `Web panel login request from ${session.requesterAddress}.`
             : 'Web panel login request.';
-        sendToClient(mobileClient, serialize({
+        this.send(mobileClient, serialize({
             type: 'auth.request',
             requestId: session.requestId,
             action: 'panel.login',
@@ -875,37 +924,43 @@ export class RelayServer {
     }
     // --- Relay designate handler ---
     async handleRelayDesignate(client) {
-        // Only the bound mobile can designate
-        if (client.memberRole !== 'Mobile') {
-            await sendToClient(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can designate a relay.' }));
+        // Allow designation from the bound mobile. If no mobile is bound yet (single mode),
+        // allow the current client to designate so the phone can join the group.
+        const hasBoundMobile = !!this.group?.boundMobileId;
+        if (hasBoundMobile && client.memberRole !== 'Mobile') {
+            await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can designate a relay.' }));
             return;
         }
         // Already in relay mode if group exists, just confirm
         if (this.group) {
-            await sendToClient(client, serialize({
+            await this.send(client, serialize({
                 type: 'relay.designated',
                 relayUrl: this.relayUrl,
                 groupId: this.group.groupId,
+                groupSecret: this.group.groupSecret,
             }));
             this.log('Relay designation confirmed (already relay)');
             return;
         }
         // This shouldn't normally happen in the new architecture since groups are auto-created
-        await sendToClient(client, serialize({ type: 'error', code: 'no_group', message: 'No group exists.' }));
+        await this.send(client, serialize({ type: 'error', code: 'no_group', message: 'No group exists.' }));
     }
     // --- Invite create handler ---
     async handleInviteCreate(client) {
         if (!this.group) {
-            await sendToClient(client, serialize({ type: 'error', code: 'no_group', message: 'No group exists on this server.' }));
+            await this.send(client, serialize({ type: 'error', code: 'no_group', message: 'No group exists on this server.' }));
             return;
         }
-        if (client.memberRole !== 'Mobile') {
-            await sendToClient(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can create invites.' }));
+        // Allow invite creation by bound mobile (by role or by device ID match)
+        const isBoundMobile = client.memberRole === 'Mobile' ||
+            (this.group.boundMobileId && client.registeredDeviceId === this.group.boundMobileId);
+        if (!isBoundMobile) {
+            await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can create invites.' }));
             return;
         }
         const { code, expiresAt } = this.inviteManager.generateInviteCode();
         this.log(`Invite code created: ${code} (expires ${expiresAt.toISOString()})`);
-        await sendToClient(client, serialize({
+        await this.send(client, serialize({
             type: 'invite.create.response',
             inviteCode: code,
             relayUrl: this.relayUrl,
@@ -917,12 +972,12 @@ export class RelayServer {
         if (!this.group)
             return;
         if (client.memberRole !== 'Mobile') {
-            await sendToClient(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can update device settings.' }));
+            await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can update device settings.' }));
             return;
         }
         const member = this.group.members.find(m => m.deviceId === msg.deviceId);
         if (!member) {
-            await sendToClient(client, serialize({ type: 'error', code: 'device_not_found', message: 'Device not found in group.' }));
+            await this.send(client, serialize({ type: 'error', code: 'device_not_found', message: 'Device not found in group.' }));
             return;
         }
         if (msg.displayName) {
@@ -938,30 +993,32 @@ export class RelayServer {
             deviceId: msg.deviceId,
             displayName: member.displayName,
         }));
-        this.log(`Device settings updated: ${msg.deviceId} → ${member.displayName}`);
+        this.broadcastDeviceList();
+        this.log(`Device settings updated: ${msg.deviceId} �?${member.displayName}`);
     }
     // --- Device kick handler (new: sends device.kicked to target) ---
     async handleDeviceKick(client, kick) {
         if (!this.group)
             return;
         if (client.memberRole !== 'Mobile') {
-            await sendToClient(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can kick members.' }));
+            await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can kick members.' }));
             return;
         }
         if (kick.deviceId === this.group.serverDeviceId) {
-            await sendToClient(client, serialize({ type: 'error', code: 'cannot_kick_server', message: 'Cannot kick the server device.' }));
+            await this.send(client, serialize({ type: 'error', code: 'cannot_kick_server', message: 'Cannot kick the server device.' }));
             return;
         }
         this.group.members = this.group.members.filter(m => m.deviceId !== kick.deviceId);
         this.groupStore?.saveGroup(this.group);
         const kickedClient = this.findClientByDeviceId(kick.deviceId);
         if (kickedClient) {
-            await sendToClient(kickedClient, serialize({ type: 'device.kicked', reason: 'You have been removed from the group.' }));
+            await this.send(kickedClient, serialize({ type: 'device.kicked', reason: 'You have been removed from the group.' }));
             kickedClient.ws.close();
         }
         this.devices.delete(kick.deviceId);
         this.broadcastToAll(serialize({ type: 'group.member.left', deviceId: kick.deviceId }));
         this.broadcastToAll(serialize({ type: 'group.member.list', members: this.buildGroupMemberInfoList() }));
+        this.broadcastDeviceList();
         this.log(`Device kicked: ${kick.deviceId}`);
     }
     // --- Group dissolve handler ---
@@ -969,14 +1026,14 @@ export class RelayServer {
         if (!this.group)
             return;
         if (client.memberRole !== 'Mobile') {
-            await sendToClient(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can dissolve the group.' }));
+            await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can dissolve the group.' }));
             return;
         }
         const reason = 'Group dissolved by administrator.';
         // Notify all non-mobile clients and disconnect them
         for (const c of this.clients.values()) {
             if (c.clientId !== client.clientId) {
-                await sendToClient(c, serialize({ type: 'group.dissolved', reason }));
+                await this.send(c, serialize({ type: 'group.dissolved', reason }));
                 c.ws.close();
             }
         }
@@ -986,7 +1043,7 @@ export class RelayServer {
         this.inviteManager.clearAll();
         this.tokenManager.clearAll();
         // Notify the mobile that group was dissolved
-        await sendToClient(client, serialize({ type: 'group.dissolved', reason }));
+        await this.send(client, serialize({ type: 'group.dissolved', reason }));
         this.log('Group dissolved');
     }
     stop() {

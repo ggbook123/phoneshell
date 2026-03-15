@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { PtySession } from './pty-session.js';
 import { OutputBuffer } from './output-buffer.js';
 export class TerminalManager {
     sessions = new Map();
-    sessionCounter = 0;
     defaultCols;
     defaultRows;
     /** Callback for terminal output */
@@ -46,6 +46,11 @@ export class TerminalManager {
                 }
             }
         }
+        const bashIndex = shells.findIndex(s => s.id.toLowerCase() === 'bash');
+        if (bashIndex > 0) {
+            const [bashShell] = shells.splice(bashIndex, 1);
+            shells.unshift(bashShell);
+        }
         return shells;
     }
     getDefaultShell() {
@@ -54,7 +59,16 @@ export class TerminalManager {
         const preferred = shells.find(s => s.id === 'bash') ||
             shells.find(s => s.id === 'zsh') ||
             shells[0];
-        return preferred || { id: 'sh', displayName: 'sh', path: '/bin/sh' };
+        if (preferred)
+            return preferred;
+        // Fallback: check if /bin/sh exists
+        const fallbackPath = '/bin/sh';
+        if (fs.existsSync(fallbackPath)) {
+            return { id: 'sh', displayName: 'sh', path: fallbackPath };
+        }
+        // Last resort: return sh but log warning
+        console.warn('[TerminalManager] No valid shell found, using /bin/sh as fallback');
+        return { id: 'sh', displayName: 'sh', path: fallbackPath };
     }
     findShell(shellId) {
         if (!shellId)
@@ -65,7 +79,10 @@ export class TerminalManager {
     }
     createSession(shellId) {
         const shell = this.findShell(shellId);
-        const sessionId = `session-${++this.sessionCounter}`;
+        // Generate unique session ID using timestamp + random bytes
+        const timestamp = Date.now().toString(36);
+        const randomPart = crypto.randomBytes(4).toString('hex');
+        const sessionId = `session-${timestamp}-${randomPart}`;
         const ptySession = new PtySession();
         const outputBuffer = new OutputBuffer();
         const managed = {

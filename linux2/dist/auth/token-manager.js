@@ -82,12 +82,12 @@ export class TokenManager {
             if (entry.expiresAtUtc <= now)
                 this.accessTokens.delete(key);
         }
-        for (const [, session] of this.loginSessions) {
+        for (const [key, session] of this.loginSessions) {
             if (session.status === 'approved')
                 continue;
             if (session.expiresAtUtc <= now) {
-                session.status = 'expired';
-                session.message ??= 'Request expired.';
+                // Remove expired sessions to prevent unbounded Map growth
+                this.loginSessions.delete(key);
             }
         }
     }

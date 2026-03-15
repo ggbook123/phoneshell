@@ -35,6 +35,7 @@ export declare class RelayServer {
     setRelayUrl(url: string): void;
     getGroup(): GroupInfo | null;
     getInviteManager(): InviteManager;
+    private send;
     initGroup(groupStore: GroupStore, deviceId: string, displayName: string, os: string, availableShells: string[]): void;
     registerLocalDevice(deviceId: string, displayName: string, os: string, availableShells: string[]): void;
     start(): void;
@@ -91,6 +92,7 @@ export declare class RelayServer {
     private findClientByDeviceId;
     private broadcastToOthers;
     private broadcastToAll;
+    private broadcastDeviceList;
     private tryDispatchPendingPanelLogins;
     private dispatchAuthForSession;
     private handleRelayDesignate;

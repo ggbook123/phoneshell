@@ -100,6 +100,7 @@ export interface RelayDesignatedMessage {
     type: 'relay.designated';
     relayUrl: string;
     groupId: string;
+    groupSecret: string;
 }
 export interface InviteCreateRequestMessage {
     type: 'invite.create.request';
@@ -154,6 +155,7 @@ export interface GroupJoinAcceptedMessage {
     members: GroupMemberInfo[];
     serverDeviceId: string;
     boundMobileId?: string | null;
+    groupSecret?: string;
 }
 export interface GroupJoinRejectedMessage {
     type: 'group.join.rejected';

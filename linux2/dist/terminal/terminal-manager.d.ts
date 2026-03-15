@@ -6,7 +6,6 @@ export interface ShellInfo {
 }
 export declare class TerminalManager {
     private readonly sessions;
-    private sessionCounter;
     private readonly defaultCols;
     private readonly defaultRows;
     /** Callback for terminal output */

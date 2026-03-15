@@ -1,5 +1,5 @@
 <template>
-  <div class="dashboard">
+  <div class="dashboard" :class="{ compact: isCompact }">
     <header>
       <h1>PhoneShell</h1>
       <div class="header-info">
@@ -68,20 +68,21 @@
       </aside>
 
       <!-- Terminal area -->
-      <div class="terminal-area">
+      <div class="terminal-area" :class="{ compact: isCompact }">
         <div v-if="activeSessionId && selectedDeviceId" class="terminal-toolbar">
           <button class="btn-compact" @click="toggleCompact">
             {{ isCompact ? labels.desktopMode : labels.compactMode }}
           </button>
         </div>
-        <Terminal
-          v-if="activeSessionId && selectedDeviceId"
-          :key="activeSessionId"
-          :session-id="activeSessionId"
-          :device-id="selectedDeviceId"
-          :ws="ws"
-          :compact="isCompact"
-        />
+        <div v-if="activeSessionId && selectedDeviceId" class="terminal-frame" :class="{ compact: isCompact }">
+          <Terminal
+            :key="activeSessionId"
+            :session-id="activeSessionId"
+            :device-id="selectedDeviceId"
+            :ws="ws"
+            :compact="isCompact"
+          />
+        </div>
         <div v-else class="terminal-placeholder">
           <p>{{ labels.selectDeviceHint }}</p>
         </div>
@@ -271,7 +272,22 @@ function toggleCompact() {
 </script>
 
 <style scoped>
-.dashboard { display: flex; flex-direction: column; height: 100vh; }
+.dashboard {
+  --compact-w: 390px;
+  --compact-h: 844px;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+.dashboard.compact {
+  width: min(92vw, var(--compact-w));
+  height: min(92vh, var(--compact-h));
+  margin: 8px auto;
+  border: 1px solid #1a1a4e;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.45);
+}
 header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 16px; background: #0f3460; border-bottom: 1px solid #1a1a4e;
@@ -326,6 +342,9 @@ header h1 { font-size: 1.2rem; color: #00d4ff; }
 .empty-hint { font-size: 0.8rem; color: #555; }
 .terminal-area { flex: 1; display: flex; background: #000; }
 .terminal-area { position: relative; }
+.terminal-area.compact { justify-content: stretch; align-items: stretch; padding: 0; }
+.terminal-frame { flex: 1; display: flex; min-width: 0; min-height: 0; }
+.terminal-frame.compact { width: 100%; height: 100%; }
 .terminal-toolbar {
   position: absolute; top: 8px; right: 10px; z-index: 2;
 }

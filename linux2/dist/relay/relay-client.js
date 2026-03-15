@@ -8,6 +8,7 @@ export class RelayClient {
     os = '';
     availableShells = [];
     inviteCode = '';
+    groupSecret = '';
     reconnectTimer = null;
     reconnectAttempts = 0;
     maxReconnectAttempts = 10;
@@ -18,13 +19,14 @@ export class RelayClient {
     setLogger(fn) { this.log = fn; }
     setCallbacks(cb) { this.callbacks = cb; }
     isConnected() { return this.connected; }
-    connect(relayUrl, deviceId, displayName, os, availableShells, inviteCode) {
+    connect(relayUrl, deviceId, displayName, os, availableShells, inviteCode, groupSecret = '') {
         this.relayUrl = relayUrl;
         this.deviceId = deviceId;
         this.displayName = displayName;
         this.os = os;
         this.availableShells = availableShells;
         this.inviteCode = inviteCode;
+        this.groupSecret = groupSecret;
         this.shouldReconnect = true;
         this.reconnectAttempts = 0;
         this.doConnect();
@@ -33,11 +35,16 @@ export class RelayClient {
         this.shouldReconnect = false;
         this.clearReconnectTimer();
         if (this.ws) {
-            try {
-                this.ws.close();
-            }
-            catch { }
+            const wsToClose = this.ws;
             this.ws = null;
+            try {
+                if (wsToClose.readyState === WebSocket.OPEN || wsToClose.readyState === WebSocket.CONNECTING) {
+                    wsToClose.close();
+                }
+            }
+            catch (err) {
+                this.log(`Error closing WebSocket: ${err.message}`);
+            }
         }
         this.connected = false;
     }
@@ -47,15 +54,22 @@ export class RelayClient {
         }
     }
     doConnect() {
+        // Clean up existing connection first
         if (this.ws) {
-            try {
-                this.ws.close();
-            }
-            catch { }
+            const oldWs = this.ws;
             this.ws = null;
+            try {
+                if (oldWs.readyState === WebSocket.OPEN || oldWs.readyState === WebSocket.CONNECTING) {
+                    oldWs.close();
+                }
+            }
+            catch (err) {
+                this.log(`Error closing old WebSocket: ${err.message}`);
+            }
         }
-        this.log(`Connecting to relay: ${this.relayUrl}`);
-        this.ws = new WebSocket(this.relayUrl);
+        const connectUrl = this.buildConnectUrl();
+        this.log(`Connecting to relay: ${connectUrl}`);
+        this.ws = new WebSocket(connectUrl);
         this.ws.on('open', () => {
             this.connected = true;
             this.reconnectAttempts = 0;
@@ -69,15 +83,17 @@ export class RelayClient {
                 availableShells: this.availableShells,
                 mode: 'client',
             }));
-            // Join group with invite code
-            this.send(serialize({
+            // Join group with group secret or invite code
+            const joinPayload = {
                 type: 'group.join.request',
-                inviteCode: this.inviteCode,
                 deviceId: this.deviceId,
                 displayName: this.displayName,
                 os: this.os,
                 availableShells: this.availableShells,
-            }));
+                ...(this.groupSecret ? { groupSecret: this.groupSecret } : {}),
+                ...(this.inviteCode ? { inviteCode: this.inviteCode } : {}),
+            };
+            this.send(serialize(joinPayload));
         });
         this.ws.on('message', (data) => {
             try {
@@ -106,7 +122,15 @@ export class RelayClient {
         this.log(`Relay → ${message.type}`);
         switch (message.type) {
             case 'group.join.accepted':
-                this.log('Joined group successfully');
+                {
+                    const accepted = message;
+                    if (accepted.groupSecret) {
+                        this.groupSecret = accepted.groupSecret;
+                        this.inviteCode = '';
+                    }
+                    this.callbacks.onGroupJoined?.(accepted.groupId, accepted.groupSecret);
+                    this.log('Joined group successfully');
+                }
                 break;
             case 'group.join.rejected':
                 this.log(`Group join rejected: ${message.reason}`);
@@ -257,6 +281,32 @@ export class RelayClient {
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
+        }
+    }
+    buildConnectUrl() {
+        try {
+            const url = new URL(this.relayUrl);
+            if (this.groupSecret) {
+                if (!url.searchParams.get('token')) {
+                    url.searchParams.set('token', this.groupSecret);
+                }
+            }
+            else if (this.inviteCode) {
+                if (!url.searchParams.get('invite') && !url.searchParams.get('token')) {
+                    url.searchParams.set('invite', this.inviteCode);
+                }
+            }
+            return url.toString();
+        }
+        catch {
+            // Fallback for invalid URL parsing
+            if (!this.inviteCode && !this.groupSecret)
+                return this.relayUrl;
+            const hasQuery = this.relayUrl.includes('?');
+            const tokenParam = this.groupSecret ? `token=${encodeURIComponent(this.groupSecret)}` : '';
+            const inviteParam = this.inviteCode ? `invite=${encodeURIComponent(this.inviteCode)}` : '';
+            const param = tokenParam || inviteParam;
+            return this.relayUrl + (hasQuery ? '&' : '?') + param;
         }
     }
 }

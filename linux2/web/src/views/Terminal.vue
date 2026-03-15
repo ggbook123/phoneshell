@@ -3,7 +3,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue';
+import { ref, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -22,8 +22,8 @@ const containerRef = ref<HTMLDivElement | null>(null);
 let term: Terminal | null = null;
 let fitAddon: FitAddon | null = null;
 let resizeObserver: ResizeObserver | null = null;
-const compactCols = computed(() => props.compactCols ?? 80);
-const compactRows = computed(() => props.compactRows ?? 24);
+const compactCols = computed(() => props.compactCols);
+const compactRows = computed(() => props.compactRows);
 
 function handleOutput(msg: any) {
   if (msg.sessionId === props.sessionId && msg.deviceId === props.deviceId && msg.data) {
@@ -72,7 +72,15 @@ onMounted(() => {
   function stripTerminalResponses(data: string): string {
     let cleaned = data;
     cleaned = cleaned.replace(/\x1b\](?:10|11|12|4);[^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
-    cleaned = cleaned.replace(/\x1b\[[0-9;?]*c/g, '');
+    // Device attribute / status replies
+    cleaned = cleaned.replace(/\x1b\[[0-9;?<>]*c/g, '');
+    cleaned = cleaned.replace(/\x1b\[[0-9;?<>]*n/g, '');
+    // Drop DSR cursor position replies (ESC [ row ; col R)
+    cleaned = cleaned.replace(/\x1b\[[0-9;?<>]*R/g, '');
+    // Window ops replies (ESC [ ... t)
+    cleaned = cleaned.replace(/\x1b\[[0-9;?<>]*t/g, '');
+    // DECRQM replies (ESC [ ? ... $ y)
+    cleaned = cleaned.replace(/\x1b\[[0-9;?<>]*\$y/g, '');
     return cleaned;
   }
 
@@ -88,8 +96,13 @@ onMounted(() => {
 
   function applyCompactSize() {
     if (!term) return;
-    term.resize(compactCols.value, compactRows.value);
-    sendResize(compactCols.value, compactRows.value);
+    if (compactCols.value && compactRows.value) {
+      term.resize(compactCols.value, compactRows.value);
+      sendResize(compactCols.value, compactRows.value);
+      return;
+    }
+    fitAddon?.fit();
+    sendResize(term.cols, term.rows);
   }
 
   function applyFitSize() {
@@ -145,9 +158,10 @@ onMounted(() => {
 
   watch(
     () => props.compact,
-    () => {
+    async () => {
       if (!term) return;
-      applySizeMode();
+      await nextTick();
+      requestAnimationFrame(() => applySizeMode());
     }
   );
 });

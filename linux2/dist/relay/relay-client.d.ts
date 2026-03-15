@@ -14,6 +14,7 @@ export interface RelayClientCallbacks {
     onTerminalOutput?: (deviceId: string, sessionId: string, data: string) => void;
     onKicked?: (reason: string) => void;
     onGroupDissolved?: (reason: string) => void;
+    onGroupJoined?: (groupId: string, groupSecret?: string) => void;
 }
 export declare class RelayClient {
     private ws;
@@ -23,6 +24,7 @@ export declare class RelayClient {
     private os;
     private availableShells;
     private inviteCode;
+    private groupSecret;
     private reconnectTimer;
     private reconnectAttempts;
     private readonly maxReconnectAttempts;
@@ -33,7 +35,7 @@ export declare class RelayClient {
     setLogger(fn: LogFn): void;
     setCallbacks(cb: RelayClientCallbacks): void;
     isConnected(): boolean;
-    connect(relayUrl: string, deviceId: string, displayName: string, os: string, availableShells: string[], inviteCode: string): void;
+    connect(relayUrl: string, deviceId: string, displayName: string, os: string, availableShells: string[], inviteCode: string, groupSecret?: string): void;
     disconnect(): void;
     send(json: string): void;
     private doConnect;
@@ -45,5 +47,6 @@ export declare class RelayClient {
     sendSessionList(deviceId: string, sessions: SessionInfo[]): void;
     private scheduleReconnect;
     private clearReconnectTimer;
+    private buildConnectUrl;
 }
 export {};

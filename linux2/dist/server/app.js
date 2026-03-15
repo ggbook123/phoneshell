@@ -1,7 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { URL } from 'node:url';
+import { URL, fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { RelayServer } from '../relay/relay-server.js';
 import { RelayClient } from '../relay/relay-client.js';
@@ -9,6 +9,7 @@ import { ModeManager } from '../relay/mode-manager.js';
 import { TerminalManager } from '../terminal/terminal-manager.js';
 import { DeviceStore } from '../store/device-store.js';
 import { GroupStore } from '../store/group-store.js';
+import { GroupMembershipStore } from '../store/group-membership-store.js';
 import { generateQrPng, buildStandalonePayload } from '../auth/qr-service.js';
 function log(msg) {
     const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -17,6 +18,7 @@ function log(msg) {
 export function createApp(config) {
     const deviceStore = new DeviceStore(config.baseDirectory);
     const groupStore = new GroupStore(config.baseDirectory);
+    const membershipStore = new GroupMembershipStore(config.baseDirectory);
     const identity = deviceStore.loadOrCreate();
     const deviceId = identity.deviceId;
     const displayName = config.displayName || identity.displayName;
@@ -31,8 +33,13 @@ export function createApp(config) {
     const outputChains = new Map();
     function enqueueOutput(sessionId, fn) {
         const chain = (outputChains.get(sessionId) || Promise.resolve())
-            .then(() => fn().catch(() => { }));
+            .then(() => fn().catch((err) => {
+            log(`[output-chain] Error sending output for session ${sessionId}: ${err.message}`);
+        }));
         outputChains.set(sessionId, chain);
+    }
+    function cleanupOutputChain(sessionId) {
+        outputChains.delete(sessionId);
     }
     // Wire terminal callbacks
     relay.setCallbacks({
@@ -40,7 +47,7 @@ export function createApp(config) {
         onLocalTerminalResize: (sessionId, cols, rows) => terminalManager.resize(sessionId, cols, rows),
         onLocalTerminalSessionEnded: (sessionId) => {
             terminalManager.closeSession(sessionId);
-            outputChains.delete(sessionId);
+            cleanupOutputChain(sessionId);
             log(`Terminal session ended: ${sessionId}`);
         },
         onLocalTerminalOpen: async (_devId, shellId) => {
@@ -57,9 +64,10 @@ export function createApp(config) {
             enqueueOutput(sessionId, () => relay.broadcastLocalTerminalOutput(deviceId, sessionId, data));
         };
         terminalManager.onExit = (sessionId) => {
+            terminalManager.closeSession(sessionId);
             relay.broadcastLocalTerminalClosed(deviceId, sessionId);
             relay.broadcastLocalSessionListChanged(deviceId);
-            outputChains.delete(sessionId);
+            cleanupOutputChain(sessionId);
         };
     }
     function wireTerminalOutputToClient() {
@@ -69,34 +77,89 @@ export function createApp(config) {
             });
         };
         terminalManager.onExit = (sessionId) => {
+            terminalManager.closeSession(sessionId);
             relayClient?.sendTerminalClosed(deviceId, sessionId);
             relayClient?.sendSessionList(deviceId, terminalManager.getSessionList());
-            outputChains.delete(sessionId);
+            cleanupOutputChain(sessionId);
         };
     }
-    wireTerminalOutputToRelay();
-    // Set auth token
+    // Set auth token (server mode only)
     const effectiveToken = config.groupSecret || config.relayAuthToken;
-    relay.setAuthToken(effectiveToken);
-    // Init group
-    relay.initGroup(groupStore, deviceId, displayName, os, availableShells);
-    relay.registerLocalDevice(deviceId, displayName, os, availableShells);
-    relay.start();
     // Mode manager for standalone ↔ client transitions
     const modeManager = new ModeManager();
     modeManager.setLogger((msg) => log(`[mode] ${msg}`));
-    modeManager.initialize('standalone');
     let relayClient = null;
+    function startRelayServer() {
+        relay.setAuthToken(effectiveToken);
+        relay.initGroup(groupStore, deviceId, displayName, os, availableShells);
+        relay.registerLocalDevice(deviceId, displayName, os, availableShells);
+        relay.start();
+        wireTerminalOutputToRelay();
+    }
+    function startRelayClient(relayUrl, inviteCode, groupSecret) {
+        relay.stop();
+        if (relayClient) {
+            relayClient.disconnect();
+            relayClient = null;
+        }
+        relayClient = new RelayClient();
+        relayClient.setLogger((msg) => log(`[relay-client] ${msg}`));
+        relayClient.setCallbacks({
+            onLocalTerminalInput: (sessionId, data) => terminalManager.writeInput(sessionId, data),
+            onLocalTerminalResize: (sessionId, cols, rows) => terminalManager.resize(sessionId, cols, rows),
+            onLocalTerminalSessionEnded: (sessionId) => {
+                terminalManager.closeSession(sessionId);
+                cleanupOutputChain(sessionId);
+            },
+            onLocalTerminalOpen: async (_devId, shellId) => terminalManager.createSession(shellId),
+            getLocalSessionList: () => terminalManager.getSessionList(),
+            getLocalTerminalSnapshot: (sessionId) => terminalManager.getSnapshot(sessionId),
+            onGroupJoined: (groupId, newSecret) => {
+                if (!newSecret)
+                    return;
+                membershipStore.save({
+                    groupId,
+                    groupSecret: newSecret,
+                    relayUrl,
+                    updatedAtUtc: new Date().toISOString(),
+                });
+            },
+            onKicked: (reason) => {
+                log(`Kicked from group: ${reason}`);
+                membershipStore.clear();
+                transitionBackToStandalone();
+            },
+            onGroupDissolved: (reason) => {
+                log(`Group dissolved: ${reason}`);
+                membershipStore.clear();
+                transitionBackToStandalone();
+            },
+        });
+        wireTerminalOutputToClient();
+        relayClient.connect(relayUrl, deviceId, displayName, os, availableShells, inviteCode, groupSecret);
+    }
     function transitionBackToStandalone() {
         if (relayClient) {
             relayClient.disconnect();
             relayClient = null;
         }
         modeManager.transitionToStandalone();
-        relay.start();
-        relay.registerLocalDevice(deviceId, displayName, os, availableShells);
-        wireTerminalOutputToRelay();
+        startRelayServer();
         log('Transitioned back to standalone mode');
+    }
+    const savedMembership = membershipStore.load();
+    const shouldStartAsClient = config.mode === 'client' ||
+        (config.mode === 'standalone' && !!savedMembership);
+    if (shouldStartAsClient && savedMembership) {
+        modeManager.initialize('client');
+        startRelayClient(savedMembership.relayUrl, '', savedMembership.groupSecret);
+    }
+    else {
+        if (config.mode === 'client' && !savedMembership) {
+            log('[mode] Client mode requested but no membership found; falling back to standalone.');
+        }
+        modeManager.initialize('standalone');
+        startRelayServer();
     }
     // Resolve server URL from request headers (reverse proxy support)
     function resolveServerUrl(req) {
@@ -125,7 +188,14 @@ export function createApp(config) {
         }
         const scheme = proto?.toLowerCase();
         const wsScheme = scheme === 'https' || scheme === 'wss' ? 'wss' : 'ws';
-        return `${wsScheme}://${host}/ws/`;
+        const serverUrl = `${wsScheme}://${host}/ws/`;
+        if (!config.publicHost) {
+            const hostOnly = host.split(':')[0]?.toLowerCase() || '';
+            if (hostOnly && hostOnly !== 'localhost' && hostOnly !== '127.0.0.1') {
+                relay.setRelayUrl(serverUrl);
+            }
+        }
+        return serverUrl;
     }
     // Serve panel HTML (inline singlefile)
     let panelHtml = null;
@@ -133,7 +203,8 @@ export function createApp(config) {
         if (panelHtml)
             return panelHtml;
         // Try loading from web/dist/index.html first, then fallback
-        const webDistPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../web/dist/index.html');
+        const currentFilePath = fileURLToPath(import.meta.url);
+        const webDistPath = path.resolve(path.dirname(currentFilePath), '../../web/dist/index.html');
         try {
             if (fs.existsSync(webDistPath)) {
                 panelHtml = fs.readFileSync(webDistPath);
@@ -178,31 +249,7 @@ export function createApp(config) {
                         writeJson(res, 409, { type: 'error', code: 'not_standalone', message: 'Device is not in standalone mode.' });
                         return;
                     }
-                    // Stop relay server, switch to client mode
-                    relay.stop();
-                    relayClient = new RelayClient();
-                    relayClient.setLogger((msg) => log(`[relay-client] ${msg}`));
-                    relayClient.setCallbacks({
-                        onLocalTerminalInput: (sessionId, data) => terminalManager.writeInput(sessionId, data),
-                        onLocalTerminalResize: (sessionId, cols, rows) => terminalManager.resize(sessionId, cols, rows),
-                        onLocalTerminalSessionEnded: (sessionId) => {
-                            terminalManager.closeSession(sessionId);
-                            outputChains.delete(sessionId);
-                        },
-                        onLocalTerminalOpen: async (_devId, shellId) => terminalManager.createSession(shellId),
-                        getLocalSessionList: () => terminalManager.getSessionList(),
-                        getLocalTerminalSnapshot: (sessionId) => terminalManager.getSnapshot(sessionId),
-                        onKicked: (reason) => {
-                            log(`Kicked from group: ${reason}`);
-                            transitionBackToStandalone();
-                        },
-                        onGroupDissolved: (reason) => {
-                            log(`Group dissolved: ${reason}`);
-                            transitionBackToStandalone();
-                        },
-                    });
-                    wireTerminalOutputToClient();
-                    relayClient.connect(invite.relayUrl, deviceId, displayName, os, availableShells, invite.inviteCode);
+                    startRelayClient(invite.relayUrl, invite.inviteCode, '');
                     writeJson(res, 200, { status: 'accepted', relayUrl: invite.relayUrl });
                 }
                 catch {
@@ -250,7 +297,8 @@ export function createApp(config) {
         // --- Panel static assets from web/dist ---
         if (pathname.startsWith('/panel/')) {
             const assetPath = pathname.slice('/panel/'.length);
-            const webDistDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../web/dist');
+            const currentFilePath = fileURLToPath(import.meta.url);
+            const webDistDir = path.resolve(path.dirname(currentFilePath), '../../web/dist');
             const filePath = path.join(webDistDir, assetPath);
             // Prevent directory traversal
             if (!filePath.startsWith(webDistDir)) {
@@ -426,7 +474,12 @@ export function createApp(config) {
             return;
         }
         const token = extractToken(req) || url.searchParams.get('token') || undefined;
-        if (!relay.isAuthorized(token)) {
+        const inviteCode = url.searchParams.get('invite') || undefined;
+        // Check token authorization first
+        const tokenAuthorized = relay.isAuthorized(token);
+        // Check invite code (will be consumed on successful join)
+        const inviteValid = inviteCode && relay.getInviteManager().isValidInviteCode(inviteCode);
+        if (!tokenAuthorized && !inviteValid) {
             socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
             socket.destroy();
             return;

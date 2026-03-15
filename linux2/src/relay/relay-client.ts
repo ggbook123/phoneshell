@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 import { serialize, deserialize } from '../protocol/serializer.js';
-import type { SessionInfo, Message } from '../protocol/messages.js';
+import type { SessionInfo, Message, GroupJoinRequestMessage } from '../protocol/messages.js';
 
 type LogFn = (msg: string) => void;
 
@@ -116,18 +116,15 @@ export class RelayClient {
       }));
 
       // Join group with group secret or invite code
-      const joinPayload: Record<string, unknown> = {
-        type: 'group.join.request' as const,
+      const joinPayload: GroupJoinRequestMessage = {
+        type: 'group.join.request',
         deviceId: this.deviceId,
         displayName: this.displayName,
         os: this.os,
         availableShells: this.availableShells,
+        ...(this.groupSecret ? { groupSecret: this.groupSecret } : {}),
+        ...(this.inviteCode ? { inviteCode: this.inviteCode } : {}),
       };
-      if (this.groupSecret) {
-        joinPayload['groupSecret'] = this.groupSecret;
-      } else if (this.inviteCode) {
-        joinPayload['inviteCode'] = this.inviteCode;
-      }
       this.send(serialize(joinPayload as Message));
     });
 

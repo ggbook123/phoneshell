@@ -9,7 +9,7 @@ export function createClientConnection(ws) {
         isPanelClient: false,
     };
 }
-export function sendToClient(client, message) {
+export function sendToClient(client, message, logger) {
     const promise = new Promise((resolve) => {
         client.sendQueue = client.sendQueue.then(() => {
             return new Promise((done) => {
@@ -19,11 +19,15 @@ export function sendToClient(client, message) {
                     return;
                 }
                 client.ws.send(message, (err) => {
-                    if (err) { /* ignore send errors */ }
+                    if (err) {
+                        logger?.(`Failed to send message to client ${client.clientId}: ${err.message}`);
+                    }
                     resolve();
                     done();
                 });
             });
+        }).catch((err) => {
+            logger?.(`Send queue error for client ${client.clientId}: ${err.message}`);
         });
     });
     return promise;

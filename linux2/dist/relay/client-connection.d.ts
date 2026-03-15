@@ -11,4 +11,4 @@ export interface ClientConnection {
     isPanelClient: boolean;
 }
 export declare function createClientConnection(ws: WebSocket): ClientConnection;
-export declare function sendToClient(client: ClientConnection, message: string): Promise<void>;
+export declare function sendToClient(client: ClientConnection, message: string, logger?: (msg: string) => void): Promise<void>;
