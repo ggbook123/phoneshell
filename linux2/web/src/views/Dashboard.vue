@@ -69,12 +69,18 @@
 
       <!-- Terminal area -->
       <div class="terminal-area">
+        <div v-if="activeSessionId && selectedDeviceId" class="terminal-toolbar">
+          <button class="btn-compact" @click="toggleCompact">
+            {{ isCompact ? labels.desktopMode : labels.compactMode }}
+          </button>
+        </div>
         <Terminal
           v-if="activeSessionId && selectedDeviceId"
           :key="activeSessionId"
           :session-id="activeSessionId"
           :device-id="selectedDeviceId"
           :ws="ws"
+          :compact="isCompact"
         />
         <div v-else class="terminal-placeholder">
           <p>{{ labels.selectDeviceHint }}</p>
@@ -112,6 +118,7 @@ const devices = ref<DeviceInfo[]>([]);
 const sessions = ref<SessionInfo[]>([]);
 const selectedDeviceId = ref<string | null>(null);
 const activeSessionId = ref<string | null>(null);
+const isCompact = ref(false);
 
 const { language, setLanguage } = useLanguage();
 const labels = computed(() => language.value === 'zh'
@@ -126,6 +133,8 @@ const labels = computed(() => language.value === 'zh'
       newTerminal: '新终端',
       newTerminalTitle: '新终端',
       closeSession: '关闭会话',
+      compactMode: '手机适配',
+      desktopMode: '电脑适配',
       noActiveSessions: '暂无会话',
       selectDeviceHint: '选择设备并打开终端会话',
     }
@@ -140,6 +149,8 @@ const labels = computed(() => language.value === 'zh'
       newTerminal: 'New Terminal',
       newTerminalTitle: 'New terminal',
       closeSession: 'Close session',
+      compactMode: 'Compact',
+      desktopMode: 'Desktop',
       noActiveSessions: 'No active sessions',
       selectDeviceHint: 'Select a device and open a terminal session',
     });
@@ -253,6 +264,10 @@ function closeSession(sessionId: string) {
     sessionId,
   });
 }
+
+function toggleCompact() {
+  isCompact.value = !isCompact.value;
+}
 </script>
 
 <style scoped>
@@ -310,6 +325,15 @@ header h1 { font-size: 1.2rem; color: #00d4ff; }
 .mode-mobile { background: #2ecc71; color: #000; }
 .empty-hint { font-size: 0.8rem; color: #555; }
 .terminal-area { flex: 1; display: flex; background: #000; }
+.terminal-area { position: relative; }
+.terminal-toolbar {
+  position: absolute; top: 8px; right: 10px; z-index: 2;
+}
+.btn-compact {
+  background: #0f3460; color: #00d4ff; border: 1px solid #1a1a4e;
+  border-radius: 6px; padding: 4px 8px; font-size: 0.75rem; cursor: pointer;
+}
+.btn-compact:hover { background: #16213e; }
 .terminal-placeholder {
   flex: 1; display: flex; align-items: center; justify-content: center;
   color: #555;
