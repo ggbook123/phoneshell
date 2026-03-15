@@ -1391,7 +1391,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     DisplayName = _identity.DisplayName,
                     Os = "Windows",
                     AvailableShells = AvailableShells.Select(s => s.Id).ToList(),
-                    GroupSecret = GroupSecret
+                    GroupSecret = GroupSecret,
+                    LocalSessionListProvider = GetLocalSessionList
                 };
                 _relayClient.Log += OnNetworkLog;
                 _relayClient.ConnectionStateChanged += OnClientConnectionStateChanged;
@@ -2716,11 +2717,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 DisplayName = _identity.DisplayName,
                 Os = "Windows",
                 AvailableShells = AvailableShells.Select(s => s.Id).ToList(),
-                InviteCode = inviteCode
+                InviteCode = inviteCode,
+                LocalSessionListProvider = GetLocalSessionList
             };
             _relayClient.Log += OnNetworkLog;
             _relayClient.ConnectionStateChanged += OnClientConnectionStateChanged;
             _relayClient.TerminalInputReceived += OnRemoteTerminalInput;
+            _relayClient.TerminalOpenRequested += OnRelayClientTerminalOpenRequested;
             _relayClient.TerminalResizeRequested += OnRemoteTerminalResize;
             _relayClient.TerminalCloseRequested += OnRemoteTerminalCloseRequested;
             _relayClient.GroupJoined += OnGroupJoined;

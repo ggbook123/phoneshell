@@ -101,6 +101,9 @@ public sealed class RelayClient : IDisposable
     /// <summary>Raised when a web panel disconnects.</summary>
     public event Action<string>? PanelDisconnected; // clientId
 
+    /// <summary>Provides local session list when a remote client requests it.</summary>
+    public Func<List<SessionInfo>>? LocalSessionListProvider { get; set; }
+
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
     /// <summary>
@@ -408,6 +411,14 @@ public sealed class RelayClient : IDisposable
 
             case TerminalClosedMessage closed:
                 TerminalClosedReceived?.Invoke(closed.DeviceId, closed.SessionId);
+                break;
+
+            case SessionListRequestMessage sessionReq:
+                if (string.Equals(sessionReq.DeviceId, DeviceId, StringComparison.Ordinal))
+                {
+                    var sessions = LocalSessionListProvider?.Invoke() ?? new List<SessionInfo>();
+                    _ = SendSessionListAsync(DeviceId, sessions);
+                }
                 break;
 
             case DeviceUnregisterMessage unregistered:
