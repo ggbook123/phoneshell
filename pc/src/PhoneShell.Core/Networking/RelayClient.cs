@@ -170,12 +170,28 @@ public sealed class RelayClient : IDisposable
         await SendAsync(msg);
     }
 
+    /// <summary>
+    /// Send the current local session list to the relay server.
+    /// </summary>
+    public async Task SendSessionListAsync(string deviceId, List<SessionInfo> sessions)
+    {
+        if (_ws?.State != WebSocketState.Open) return;
+
+        var msg = MessageSerializer.Serialize(new SessionListMessage
+        {
+            DeviceId = deviceId,
+            Sessions = sessions ?? new List<SessionInfo>()
+        });
+        await SendAsync(msg);
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         Disconnect();
         _cts?.Dispose();
+        _sendLock.Dispose();
     }
 
     private async Task ConnectInternalAsync(CancellationToken ct)
@@ -256,6 +272,7 @@ public sealed class RelayClient : IDisposable
 
                 // Start receiving
                 await ReceiveLoopAsync(ct);
+                ConnectionStateChanged?.Invoke(false);
             }
             catch (OperationCanceledException)
             {
@@ -330,6 +347,7 @@ public sealed class RelayClient : IDisposable
             case GroupJoinRejectedMessage rejected:
                 GroupJoinRejected?.Invoke(rejected.Reason);
                 Log?.Invoke($"Group join rejected: {rejected.Reason}");
+                _cts?.Cancel(); // Stop reconnect loop — credentials are invalid
                 break;
 
             case GroupMemberJoinedMessage memberJoined:
@@ -442,11 +460,13 @@ public sealed class RelayClient : IDisposable
 
             case DeviceKickedMessage kicked:
                 Log?.Invoke($"Device kicked from group: {kicked.Reason}");
+                _cts?.Cancel(); // Stop reconnect loop
                 DeviceKicked?.Invoke(kicked.Reason);
                 break;
 
             case GroupDissolvedMessage dissolved:
                 Log?.Invoke($"Group dissolved: {dissolved.Reason}");
+                _cts?.Cancel(); // Stop reconnect loop
                 GroupDissolved?.Invoke(dissolved.Reason);
                 break;
 

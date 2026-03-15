@@ -4,7 +4,7 @@
       <h1>PhoneShell</h1>
       <div class="header-info">
         <span :class="['connection-dot', ws.connected.value ? 'online' : 'offline']"></span>
-        <span>{{ ws.connected.value ? 'Connected' : 'Reconnecting...' }}</span>
+        <span>{{ ws.connected.value ? labels.connected : labels.reconnecting }}</span>
       </div>
     </header>
 
@@ -12,7 +12,19 @@
       <!-- Sidebar: Device & Session list -->
       <aside class="sidebar">
         <div class="sidebar-section">
-          <h3>Devices</h3>
+          <h3>{{ labels.languageHeader }}</h3>
+          <ul class="lang-list">
+            <li :class="{ active: language === 'en' }" @click="setLanguage('en')">
+              {{ labels.languageEnglish }}
+            </li>
+            <li :class="{ active: language === 'zh' }" @click="setLanguage('zh')">
+              {{ labels.languageChinese }}
+            </li>
+          </ul>
+        </div>
+
+        <div class="sidebar-section">
+          <h3>{{ labels.devices }}</h3>
           <ul class="device-list">
             <li v-for="device in devices" :key="device.deviceId"
                 :class="{ active: selectedDeviceId === device.deviceId }"
@@ -30,22 +42,22 @@
 
         <div v-if="selectedDeviceId" class="sidebar-section">
           <h3>
-            Sessions
-            <button class="btn-new" @click="openNewTerminal" title="New terminal">+</button>
+            {{ labels.sessions }}
+            <button class="btn-new" @click="openNewTerminal" :title="labels.newTerminalTitle">+</button>
           </h3>
           <ul class="session-list">
             <li v-for="session in sessions" :key="session.sessionId"
                 :class="{ active: activeSessionId === session.sessionId }"
                 @click="switchSession(session.sessionId)">
               <span class="session-title">{{ session.title || session.sessionId }}</span>
-              <button class="btn-close" @click.stop="closeSession(session.sessionId)" title="Close session">&times;</button>
+              <button class="btn-close" @click.stop="closeSession(session.sessionId)" :title="labels.closeSession">&times;</button>
             </li>
           </ul>
-          <p v-if="sessions.length === 0" class="empty-hint">No active sessions</p>
+          <p v-if="sessions.length === 0" class="empty-hint">{{ labels.noActiveSessions }}</p>
         </div>
 
         <div v-if="selectedDevice" class="sidebar-section">
-          <h3>New Terminal</h3>
+          <h3>{{ labels.newTerminal }}</h3>
           <ul class="shell-list">
             <li v-for="shell in selectedDevice.availableShells" :key="shell"
                 @click="openTerminalWithShell(shell)">
@@ -65,7 +77,7 @@
           :ws="ws"
         />
         <div v-else class="terminal-placeholder">
-          <p>Select a device and open a terminal session</p>
+          <p>{{ labels.selectDeviceHint }}</p>
         </div>
       </div>
     </div>
@@ -75,6 +87,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { useWebSocket } from '../composables/useWebSocket';
+import { useLanguage } from '../composables/useLanguage';
 import Terminal from './Terminal.vue';
 
 const props = defineProps<{ token: string }>();
@@ -99,6 +112,37 @@ const devices = ref<DeviceInfo[]>([]);
 const sessions = ref<SessionInfo[]>([]);
 const selectedDeviceId = ref<string | null>(null);
 const activeSessionId = ref<string | null>(null);
+
+const { language, setLanguage } = useLanguage();
+const labels = computed(() => language.value === 'zh'
+  ? {
+      connected: '已连接',
+      reconnecting: '重新连接中...',
+      languageHeader: '语言 / Language',
+      languageEnglish: 'English',
+      languageChinese: '中文',
+      devices: '设备',
+      sessions: '会话',
+      newTerminal: '新终端',
+      newTerminalTitle: '新终端',
+      closeSession: '关闭会话',
+      noActiveSessions: '暂无会话',
+      selectDeviceHint: '选择设备并打开终端会话',
+    }
+  : {
+      connected: 'Connected',
+      reconnecting: 'Reconnecting...',
+      languageHeader: 'Language / 语言',
+      languageEnglish: 'English',
+      languageChinese: '中文',
+      devices: 'Devices',
+      sessions: 'Sessions',
+      newTerminal: 'New Terminal',
+      newTerminalTitle: 'New terminal',
+      closeSession: 'Close session',
+      noActiveSessions: 'No active sessions',
+      selectDeviceHint: 'Select a device and open a terminal session',
+    });
 
 const selectedDevice = computed(() =>
   devices.value.find(d => d.deviceId === selectedDeviceId.value)
@@ -238,8 +282,8 @@ header h1 { font-size: 1.2rem; color: #00d4ff; }
   background: #00d4ff; color: #000; border: none; border-radius: 4px;
   width: 22px; height: 22px; cursor: pointer; font-size: 1rem; line-height: 1;
 }
-.device-list, .session-list, .shell-list { list-style: none; }
-.device-list li, .session-list li, .shell-list li {
+.device-list, .session-list, .shell-list, .lang-list { list-style: none; }
+.device-list li, .session-list li, .shell-list li, .lang-list li {
   padding: 6px 8px; border-radius: 4px; cursor: pointer;
   font-size: 0.85rem; margin-bottom: 2px;
 }
@@ -254,7 +298,7 @@ header h1 { font-size: 1.2rem; color: #00d4ff; }
 }
 .btn-close:hover { background: #e74c3c; color: #fff; }
 .device-list li:hover, .session-list li:hover, .shell-list li:hover { background: #1a1a4e; }
-.device-list li.active, .session-list li.active { background: #0f3460; color: #00d4ff; }
+.device-list li.active, .session-list li.active, .lang-list li.active { background: #0f3460; color: #00d4ff; }
 .device-name { display: block; }
 .device-os { display: block; font-size: 0.75rem; color: #666; }
 .mode-badge {

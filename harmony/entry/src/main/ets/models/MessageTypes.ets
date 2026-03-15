@@ -13,7 +13,7 @@ export interface DeviceRegisterMessage extends BaseMessage {
   displayName: string;
   os: string;
   availableShells: Array<string>;
-  mode: string; // 'standalone' | 'relay' | 'client'
+  mode?: string; // 'standalone' | 'relay' | 'client'
 }
 
 export interface DeviceUnregisterMessage extends BaseMessage {
@@ -138,8 +138,8 @@ export interface ErrorMessage extends BaseMessage {
 
 export interface GroupJoinRequestMessage extends BaseMessage {
   type: 'group.join.request';
-  groupSecret: string;
-  inviteCode: string;
+  groupSecret?: string;
+  inviteCode?: string;
   deviceId: string;
   displayName: string;
   os: string;
@@ -151,7 +151,8 @@ export interface GroupJoinAcceptedMessage extends BaseMessage {
   groupId: string;
   members: Array<GroupMemberInfo>;
   serverDeviceId: string;
-  boundMobileId: string | null;
+  boundMobileId?: string | null;
+  groupSecret?: string;
 }
 
 export interface GroupJoinRejectedMessage extends BaseMessage {
@@ -221,7 +222,7 @@ export interface AuthRequestMessage extends BaseMessage {
   action: string; // 'panel.login' | 'terminal.open.remote'
   requesterId: string;
   requesterName: string;
-  targetDeviceId: string | null;
+  targetDeviceId?: string | null;
   description: string;
 }
 
@@ -241,6 +242,15 @@ export interface RelayDesignatedMessage extends BaseMessage {
   type: 'relay.designated';
   relayUrl: string;
   groupId: string;
+  groupSecret: string;
+}
+
+// --- Panel login scan ---
+
+export interface PanelLoginScanMessage extends BaseMessage {
+  type: 'panel.login.scan';
+  requestId: string;
+  mobileDeviceId: string;
 }
 
 // --- Invite system ---
@@ -261,7 +271,7 @@ export interface InviteCreateResponseMessage extends BaseMessage {
 export interface DeviceSettingsUpdateMessage extends BaseMessage {
   type: 'device.settings.update';
   deviceId: string;
-  displayName: string;
+  displayName?: string;
 }
 
 export interface DeviceSettingsUpdatedMessage extends BaseMessage {
@@ -300,6 +310,40 @@ export interface PanelDisconnectedMessage extends BaseMessage {
   clientId: string;
 }
 
+// --- Server migration ---
+
+export interface GroupServerChangeRequestMessage extends BaseMessage {
+  type: 'group.server.change.request';
+  newServerDeviceId: string;
+  requesterId: string;
+}
+
+export interface GroupServerChangePrepareMessage extends BaseMessage {
+  type: 'group.server.change.prepare';
+  newServerUrl: string;
+  groupId: string;
+  groupSecret: string;
+}
+
+export interface GroupServerChangeCommitMessage extends BaseMessage {
+  type: 'group.server.change.commit';
+  newServerUrl: string;
+  groupId: string;
+  groupSecret: string;
+}
+
+// --- Group secret rotation ---
+
+export interface GroupSecretRotateRequestMessage extends BaseMessage {
+  type: 'group.secret.rotate.request';
+  requesterId: string;
+}
+
+export interface GroupSecretRotateDoneMessage extends BaseMessage {
+  type: 'group.secret.rotate.done';
+  newSecret: string;
+}
+
 // Union type for all incoming messages (for reference; individual types used in practice)
 export type ServerMessage =
   DeviceListMessage |
@@ -323,4 +367,7 @@ export type ServerMessage =
   DeviceSettingsUpdatedMessage |
   DeviceKickedMessage |
   GroupDissolvedMessage |
-  PanelDisconnectedMessage;
+  PanelDisconnectedMessage |
+  GroupServerChangePrepareMessage |
+  GroupServerChangeCommitMessage |
+  GroupSecretRotateDoneMessage;

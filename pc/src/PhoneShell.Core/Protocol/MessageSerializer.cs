@@ -89,6 +89,7 @@ public static class MessageSerializer
             "invite.create.response" => Deserialize<InviteCreateResponseMessage>(json),
             "device.settings.update" => Deserialize<DeviceSettingsUpdateMessage>(json),
             "device.settings.updated" => Deserialize<DeviceSettingsUpdatedMessage>(json),
+            "device.kick" => Deserialize<DeviceKickMessage>(json),
             "device.kicked" => Deserialize<DeviceKickedMessage>(json),
             "group.dissolve" => Deserialize<GroupDissolveMessage>(json),
             "group.dissolved" => Deserialize<GroupDissolvedMessage>(json),

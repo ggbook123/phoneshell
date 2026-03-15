@@ -285,10 +285,9 @@ public sealed class RelayServer : IDisposable
 
         foreach (var client in _clients.Values)
         {
-            if (client.SubscribedDeviceId == deviceId)
-            {
-                await SendAsync(client, msg);
-            }
+            // Broadcast to all connected clients so mobile UIs refresh even if they
+            // haven't explicitly subscribed yet.
+            await SendAsync(client, msg);
         }
     }
 
@@ -372,14 +371,44 @@ public sealed class RelayServer : IDisposable
 
     public List<DeviceInfo> GetDeviceList()
     {
-        return _devices.Values.Select(d => new DeviceInfo
+        if (_group is null)
         {
-            DeviceId = d.DeviceId,
-            DisplayName = d.DisplayName,
-            Os = d.Os,
-            IsOnline = true,
-            AvailableShells = d.AvailableShells
-        }).ToList();
+            return _devices.Values.Select(d => new DeviceInfo
+            {
+                DeviceId = d.DeviceId,
+                DisplayName = d.DisplayName,
+                Os = d.Os,
+                IsOnline = true,
+                AvailableShells = d.AvailableShells
+            }).ToList();
+        }
+
+        var merged = new Dictionary<string, DeviceInfo>(StringComparer.Ordinal);
+        foreach (var member in _group.Members)
+        {
+            merged[member.DeviceId] = new DeviceInfo
+            {
+                DeviceId = member.DeviceId,
+                DisplayName = member.DisplayName,
+                Os = member.Os,
+                IsOnline = _devices.ContainsKey(member.DeviceId),
+                AvailableShells = new List<string>(member.AvailableShells)
+            };
+        }
+
+        foreach (var device in _devices.Values)
+        {
+            merged[device.DeviceId] = new DeviceInfo
+            {
+                DeviceId = device.DeviceId,
+                DisplayName = device.DisplayName,
+                Os = device.Os,
+                IsOnline = true,
+                AvailableShells = device.AvailableShells
+            };
+        }
+
+        return merged.Values.ToList();
     }
 
     private List<SessionInfo>? GetSessionsForDevice(string deviceId)
@@ -521,15 +550,34 @@ public sealed class RelayServer : IDisposable
                 _devices.TryGetValue(client.SubscribedDeviceId, out var subscribedDevice) &&
                 subscribedDevice.IsLocal)
             {
-                try
+                var hasOtherSubscribers = false;
+                foreach (var other in _clients.Values)
                 {
-                    LocalTerminalSessionEnded?.Invoke(client.SubscribedSessionId);
+                    if (other.ClientId != client.ClientId &&
+                        other.SubscribedDeviceId == client.SubscribedDeviceId &&
+                        other.SubscribedSessionId == client.SubscribedSessionId)
+                    {
+                        hasOtherSubscribers = true;
+                        break;
+                    }
                 }
-                catch (Exception ex)
+
+                if (!hasOtherSubscribers)
                 {
-                    Log?.Invoke(
-                        $"Local terminal session end handler failed for {client.ClientId}: {ex.Message}");
+                    try
+                    {
+                        LocalTerminalSessionEnded?.Invoke(client.SubscribedSessionId);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log?.Invoke(
+                            $"Local terminal session end handler failed for {client.ClientId}: {ex.Message}");
+                        // Continue cleanup even if handler fails
+                    }
                 }
+
+                // Ensure subscription is cleared
+                client.SubscribedSessionId = null;
             }
 
             // Clean up device registration if this client registered one
@@ -944,6 +992,10 @@ public sealed class RelayServer : IDisposable
                 await HandleDeviceSettingsUpdate(client, settingsUpdate);
                 break;
 
+            case DeviceKickMessage deviceKick:
+                await HandleDeviceKick(client, deviceKick);
+                break;
+
             case DeviceKickedMessage:
                 // device.kicked is sent by the server to a client, not expected from client
                 break;
@@ -989,9 +1041,18 @@ public sealed class RelayServer : IDisposable
     {
         if (client.WebSocket.State != WebSocketState.Open) return;
         var bytes = Encoding.UTF8.GetBytes(message);
-        await client.SendLock.WaitAsync();
+        
+        // Use timeout to prevent indefinite blocking
+        var lockAcquired = false;
         try
         {
+            lockAcquired = await client.SendLock.WaitAsync(TimeSpan.FromSeconds(5));
+            if (!lockAcquired)
+            {
+                // Lock timeout - connection may be stuck
+                return;
+            }
+            
             if (client.WebSocket.State != WebSocketState.Open) return;
             await client.WebSocket.SendAsync(
                 new ArraySegment<byte>(bytes),
@@ -1001,9 +1062,13 @@ public sealed class RelayServer : IDisposable
         }
         catch (WebSocketException) { }
         catch (ObjectDisposedException) { }
+        catch (TimeoutException) { }
         finally
         {
-            client.SendLock.Release();
+            if (lockAcquired)
+            {
+                client.SendLock.Release();
+            }
         }
     }
 
@@ -1059,7 +1124,21 @@ public sealed class RelayServer : IDisposable
 
     private void NotifyDeviceListChanged()
     {
-        DeviceListChanged?.Invoke(GetDeviceList());
+        var list = GetDeviceList();
+        DeviceListChanged?.Invoke(list);
+        _ = BroadcastDeviceListAsync(list);
+    }
+
+    private Task BroadcastDeviceListAsync(List<DeviceInfo> devices)
+    {
+        if (_clients.IsEmpty) return Task.CompletedTask;
+        var msg = MessageSerializer.Serialize(new DeviceListMessage { Devices = devices });
+        var tasks = new List<Task>(_clients.Count);
+        foreach (var client in _clients.Values)
+        {
+            tasks.Add(SendAsync(client, msg));
+        }
+        return Task.WhenAll(tasks);
     }
 
     // --- Group management handlers ---
@@ -1075,8 +1154,11 @@ public sealed class RelayServer : IDisposable
             return;
         }
 
-        if (!TokensEqual(req.GroupSecret, _group.GroupSecret) &&
-            !(!string.IsNullOrEmpty(req.InviteCode) && _inviteManager.ConsumeInviteCode(req.InviteCode)))
+        var groupSecret = req.GroupSecret ?? string.Empty;
+        var inviteCode = req.InviteCode ?? string.Empty;
+
+        if (!TokensEqual(groupSecret, _group.GroupSecret) &&
+            !(!string.IsNullOrEmpty(inviteCode) && _inviteManager.ConsumeInviteCode(inviteCode)))
         {
             Log?.Invoke($"Group join rejected for {req.DisplayName} ({req.DeviceId}): invalid credentials");
             await SendAsync(client, MessageSerializer.Serialize(new GroupJoinRejectedMessage
@@ -1087,7 +1169,7 @@ public sealed class RelayServer : IDisposable
         }
 
         // Track whether this join was via invite code (to return secret for reconnect)
-        var joinedViaInvite = !TokensEqual(req.GroupSecret, _group.GroupSecret);
+        var joinedViaInvite = !TokensEqual(groupSecret, _group.GroupSecret);
 
         // Determine role
         var role = MemberRole.Member;
@@ -1214,6 +1296,9 @@ public sealed class RelayServer : IDisposable
             }));
             try { kickedClient.WebSocket.Abort(); } catch { }
         }
+
+        _devices.TryRemove(kick.DeviceId, out _);
+        NotifyDeviceListChanged();
 
         // Broadcast member left
         await BroadcastToAllAsync(MessageSerializer.Serialize(new GroupMemberLeftMessage
@@ -1376,6 +1461,7 @@ public sealed class RelayServer : IDisposable
         }));
 
         GroupMemberListChanged?.Invoke(memberList);
+        NotifyDeviceListChanged();
         Log?.Invoke($"Mobile bound: {req.MobileDisplayName} ({req.MobileDeviceId})");
 
         TryDispatchPendingPanelLogins();
@@ -1640,10 +1726,17 @@ public sealed class RelayServer : IDisposable
             return;
         }
 
+        var newName = update.DisplayName?.Trim();
+        if (string.IsNullOrWhiteSpace(newName))
+        {
+            Log?.Invoke($"Device settings update ignored: empty displayName for {update.DeviceId}");
+            return;
+        }
+
         var member = _group.Members.FirstOrDefault(m => m.DeviceId == update.DeviceId);
         if (member is not null)
         {
-            member.DisplayName = update.DisplayName;
+            member.DisplayName = newName;
             _groupStore?.SaveGroup(_group);
         }
 
@@ -1651,18 +1744,74 @@ public sealed class RelayServer : IDisposable
         var updatedMsg = MessageSerializer.Serialize(new DeviceSettingsUpdatedMessage
         {
             DeviceId = update.DeviceId,
-            DisplayName = update.DisplayName
+            DisplayName = newName
         });
         await BroadcastToAllAsync(updatedMsg);
 
         // Also update in-memory device info
         if (_devices.TryGetValue(update.DeviceId, out var device))
         {
-            device.DisplayName = update.DisplayName;
-            NotifyDeviceListChanged();
+            device.DisplayName = newName;
+        }
+        NotifyDeviceListChanged();
+
+        Log?.Invoke($"Device settings updated: {update.DeviceId} -> {newName}");
+    }
+
+    private async Task HandleDeviceKick(ConnectedClient client, DeviceKickMessage kick)
+    {
+        if (_group is null) return;
+
+        if (client.MemberRole != MemberRole.Mobile)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "permission_denied",
+                Message = "Only the bound mobile can kick members."
+            }));
+            return;
         }
 
-        Log?.Invoke($"Device settings updated: {update.DeviceId} -> {update.DisplayName}");
+        if (kick.DeviceId == _group.ServerDeviceId)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "cannot_kick_server",
+                Message = "Cannot kick the server device."
+            }));
+            return;
+        }
+
+        _group.Members.RemoveAll(m => m.DeviceId == kick.DeviceId);
+        _groupStore?.SaveGroup(_group);
+
+        // Send device.kicked to the target and disconnect it
+        var kickedClient = _clients.Values.FirstOrDefault(c => c.RegisteredDeviceId == kick.DeviceId);
+        if (kickedClient is not null)
+        {
+            await SendAsync(kickedClient, MessageSerializer.Serialize(new DeviceKickedMessage
+            {
+                Reason = "You have been removed from the group."
+            }));
+            try { kickedClient.WebSocket.Abort(); } catch { }
+        }
+
+        _devices.TryRemove(kick.DeviceId, out _);
+        NotifyDeviceListChanged();
+
+        await BroadcastToAllAsync(MessageSerializer.Serialize(new GroupMemberLeftMessage
+        {
+            DeviceId = kick.DeviceId
+        }));
+
+        var memberList = BuildGroupMemberInfoList();
+        await BroadcastToAllAsync(MessageSerializer.Serialize(new GroupMemberListMessage
+        {
+            Members = memberList
+        }));
+
+        GroupMemberListChanged?.Invoke(memberList);
+        Log?.Invoke($"Device kicked: {kick.DeviceId}");
     }
 
     private async Task HandleGroupDissolve(ConnectedClient client)
@@ -1839,6 +1988,17 @@ public sealed class RelayServer : IDisposable
 
     private async Task HandleHttpRequestAsync(HttpListenerContext context, string path)
     {
+        // CORS preflight
+        if (context.Request.HttpMethod == "OPTIONS")
+        {
+            context.Response.Headers.Set("Access-Control-Allow-Origin", "*");
+            context.Response.Headers.Set("Access-Control-Allow-Headers", "Authorization, X-PhoneShell-Token, Content-Type");
+            context.Response.Headers.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            context.Response.StatusCode = 204;
+            context.Response.Close();
+            return;
+        }
+
         // Custom HTTP handler (for standalone mode endpoints like /api/invite, /api/standalone/info)
         if (CustomHttpHandler is not null)
         {
@@ -2495,15 +2655,23 @@ public sealed class RelayServer : IDisposable
         };
     }
 
+    private static readonly JsonSerializerOptions HttpJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        WriteIndented = false
+    };
+
     private static async Task WriteJsonResponseAsync(HttpListenerResponse response, HttpStatusCode statusCode, object payload)
     {
-        var json = JsonSerializer.Serialize(payload);
+        var json = JsonSerializer.Serialize(payload, payload.GetType(), HttpJsonOptions);
         var bytes = Encoding.UTF8.GetBytes(json);
 
         response.StatusCode = (int)statusCode;
         response.ContentType = "application/json; charset=utf-8";
         response.ContentEncoding = Encoding.UTF8;
         response.ContentLength64 = bytes.Length;
+        response.Headers.Set("Access-Control-Allow-Origin", "*");
         await response.OutputStream.WriteAsync(bytes, 0, bytes.Length);
         response.Close();
     }

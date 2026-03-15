@@ -59,5 +59,7 @@ export class PtySession extends EventEmitter {
         // already dead
       }
     }
+    this.ptyProcess = null;
+    this.removeAllListeners();
   }
 }

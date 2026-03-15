@@ -14,7 +14,7 @@ public sealed class DeviceRegisterMessage
     public string DisplayName { get; init; } = string.Empty;
     public string Os { get; init; } = string.Empty;
     public List<string> AvailableShells { get; init; } = new();
-    public string Mode { get; init; } = "standalone";
+    public string? Mode { get; init; } = "standalone";
 }
 
 public sealed class DeviceUnregisterMessage
@@ -149,8 +149,8 @@ public sealed class ControlForceDisconnectMessage
 public sealed class GroupJoinRequestMessage
 {
     public string Type => "group.join.request";
-    public string GroupSecret { get; init; } = string.Empty;
-    public string InviteCode { get; init; } = string.Empty;
+    public string? GroupSecret { get; init; }
+    public string? InviteCode { get; init; }
     public string DeviceId { get; init; } = string.Empty;
     public string DisplayName { get; init; } = string.Empty;
     public string Os { get; init; } = string.Empty;
@@ -314,7 +314,7 @@ public sealed class DeviceSettingsUpdateMessage
 {
     public string Type => "device.settings.update";
     public string DeviceId { get; init; } = string.Empty;
-    public string DisplayName { get; init; } = string.Empty;
+    public string? DisplayName { get; init; }
 }
 
 public sealed class DeviceSettingsUpdatedMessage
@@ -324,7 +324,15 @@ public sealed class DeviceSettingsUpdatedMessage
     public string DisplayName { get; init; } = string.Empty;
 }
 
-// --- Device kicked ---
+// --- Device kick (request from mobile to kick a member) ---
+
+public sealed class DeviceKickMessage
+{
+    public string Type => "device.kick";
+    public string DeviceId { get; init; } = string.Empty;
+}
+
+// --- Device kicked (notification sent to the kicked client) ---
 
 public sealed class DeviceKickedMessage
 {

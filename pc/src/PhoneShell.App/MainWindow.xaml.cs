@@ -51,6 +51,7 @@ public partial class MainWindow : Window
         ApiKeyBox.Password = _viewModel.AiApiKey;
 
         UpdatePanelVisibility();
+        LoadLanguagePreference();
     }
 
     // --- Custom Title Bar ---
@@ -351,5 +352,126 @@ public partial class MainWindow : Window
         _viewModel.TerminalViewportAutoFitRequested -= OnTerminalViewportAutoFitRequested;
         _viewModel.Dispose();
         base.OnClosed(e);
+    }
+
+    // --- Sidebar Accordion ---
+
+    private Expander[]? _sidebarExpanders;
+
+    private Expander[] GetSidebarExpanders()
+    {
+        if (_sidebarExpanders is not null)
+            return _sidebarExpanders;
+
+        Expander?[] expanders =
+        {
+            LanguageExpander, ServerSettingsExpander, ShellExpander,
+            DeviceInfoExpander, GroupDevicesExpander, QrCodeExpander,
+            AiSettingsExpander, DebugLogExpander
+        };
+
+        if (expanders.Any(expander => expander is null))
+        {
+            return expanders.Where(expander => expander is not null)
+                .Select(expander => expander!)
+                .ToArray();
+        }
+
+        _sidebarExpanders = expanders.Select(expander => expander!).ToArray();
+        return _sidebarExpanders;
+    }
+
+    private void SidebarExpander_Expanded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Expander expandedExpander) return;
+
+        var expanders = GetSidebarExpanders();
+        if (expanders.Length == 0) return;
+
+        foreach (var expander in expanders)
+        {
+            if (expander != expandedExpander && expander.IsExpanded)
+            {
+                expander.IsExpanded = false;
+            }
+        }
+    }
+
+    // --- Language Switching ---
+
+    private void LanguageRadio_Checked(object sender, RoutedEventArgs e)
+    {
+        if (LangEnRadio is null || LangZhRadio is null) return;
+
+        var isEnglish = LangEnRadio.IsChecked == true;
+        ApplyLanguage(isEnglish);
+        _viewModel?.SaveLanguagePreference(isEnglish ? "en" : "zh");
+    }
+
+    private void ApplyLanguage(bool isEnglish)
+    {
+        if (isEnglish)
+        {
+            if (LanguageExpander is not null) LanguageExpander.Header = "Language / 语言";
+            if (ServerSettingsExpander is not null) ServerSettingsExpander.Header = "Server Settings";
+            if (AutoModeCheckBox is not null) AutoModeCheckBox.Content = "Auto Mode (choose server/client)";
+            if (EnableRelayServerCheckBox is not null) EnableRelayServerCheckBox.Content = "Enable Relay Server (this PC as hub)";
+            if (ServerPortLabel is not null) ServerPortLabel.Text = "PORT";
+            if (RelayServerAddressLabel is not null) RelayServerAddressLabel.Text = "RELAY SERVER ADDRESS";
+            if (RelayReachableLabel is not null) RelayReachableLabel.Text = "LAN LISTEN ADDRESSES";
+            if (RelayReachableHintText is not null) RelayReachableHintText.Text = "Use these addresses for phones on the same LAN";
+            if (GroupSecretLabel is not null) GroupSecretLabel.Text = "GROUP SECRET";
+            if (GroupSecretCopyButton is not null) GroupSecretCopyButton.Content = "Copy";
+            if (GroupSecretHintText is not null) GroupSecretHintText.Text = "Share this key with other PCs to join the group";
+            if (GroupIdLabel is not null) GroupIdLabel.Text = "GROUP ID";
+            if (GroupIdCopyButton is not null) GroupIdCopyButton.Content = "Copy";
+            if (ServerSettingsSaveButton is not null) ServerSettingsSaveButton.Content = "Save";
+            if (ServerSettingsStartButton is not null) ServerSettingsStartButton.Content = "Start";
+            if (ServerSettingsStopButton is not null) ServerSettingsStopButton.Content = "Stop";
+            if (ShellExpander is not null) ShellExpander.Header = "Shell";
+            if (DeviceInfoExpander is not null) DeviceInfoExpander.Header = "Device Info";
+            if (GroupDevicesExpander is not null) GroupDevicesExpander.Header = "Group Devices";
+            if (QrCodeExpander is not null) QrCodeExpander.Header = "QR Code";
+            if (AiSettingsExpander is not null) AiSettingsExpander.Header = "AI Settings";
+            if (DebugLogExpander is not null) DebugLogExpander.Header = "Debug Log";
+            if (WelcomeNewSessionButton is not null) WelcomeNewSessionButton.Content = "+ New Session";
+            if (NewTabButton is not null) NewTabButton.ToolTip = "New Session";
+        }
+        else
+        {
+            if (LanguageExpander is not null) LanguageExpander.Header = "语言 / Language";
+            if (ServerSettingsExpander is not null) ServerSettingsExpander.Header = "服务器设置";
+            if (AutoModeCheckBox is not null) AutoModeCheckBox.Content = "自动模式（自动选择服务端/客户端）";
+            if (EnableRelayServerCheckBox is not null) EnableRelayServerCheckBox.Content = "启用中转服务器（本机作为中转）";
+            if (ServerPortLabel is not null) ServerPortLabel.Text = "端口";
+            if (RelayServerAddressLabel is not null) RelayServerAddressLabel.Text = "中转服务器地址";
+            if (RelayReachableLabel is not null) RelayReachableLabel.Text = "局域网监听地址";
+            if (RelayReachableHintText is not null) RelayReachableHintText.Text = "同一局域网内手机可使用这些地址连接";
+            if (GroupSecretLabel is not null) GroupSecretLabel.Text = "群组密钥";
+            if (GroupSecretCopyButton is not null) GroupSecretCopyButton.Content = "复制";
+            if (GroupSecretHintText is not null) GroupSecretHintText.Text = "把此密钥分享给其他 PC 以加入群组";
+            if (GroupIdLabel is not null) GroupIdLabel.Text = "群组 ID";
+            if (GroupIdCopyButton is not null) GroupIdCopyButton.Content = "复制";
+            if (ServerSettingsSaveButton is not null) ServerSettingsSaveButton.Content = "保存";
+            if (ServerSettingsStartButton is not null) ServerSettingsStartButton.Content = "启动";
+            if (ServerSettingsStopButton is not null) ServerSettingsStopButton.Content = "停止";
+            if (ShellExpander is not null) ShellExpander.Header = "终端选择";
+            if (DeviceInfoExpander is not null) DeviceInfoExpander.Header = "设备信息";
+            if (GroupDevicesExpander is not null) GroupDevicesExpander.Header = "群组设备";
+            if (QrCodeExpander is not null) QrCodeExpander.Header = "二维码";
+            if (AiSettingsExpander is not null) AiSettingsExpander.Header = "AI 设置";
+            if (DebugLogExpander is not null) DebugLogExpander.Header = "调试日志";
+            if (WelcomeNewSessionButton is not null) WelcomeNewSessionButton.Content = "+ 新会话";
+            if (NewTabButton is not null) NewTabButton.ToolTip = "新会话";
+        }
+    }
+
+    private void LoadLanguagePreference()
+    {
+        var lang = _viewModel.LoadLanguagePreference();
+        var isEnglish = lang == "en";
+        LangEnRadio.IsChecked = isEnglish;
+        LangZhRadio.IsChecked = !isEnglish;
+        ApplyLanguage(isEnglish);
     }
 }

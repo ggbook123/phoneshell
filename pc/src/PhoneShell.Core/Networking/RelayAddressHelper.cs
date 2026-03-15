@@ -10,9 +10,20 @@ public static class RelayAddressHelper
     {
         "virtual",
         "vmware",
+        "virtualbox",
+        "vmnet",
         "hyper-v",
         "vethernet",
+        "wsl",
         "vpn",
+        "wireguard",
+        "openvpn",
+        "tun",
+        "tap",
+        "ppp",
+        "tunnel",
+        "teredo",
+        "isatap",
         "wintun",
         "tailscale",
         "zerotier",
@@ -104,7 +115,7 @@ public static class RelayAddressHelper
 
     private static IReadOnlyList<string> GetReachableIpv4Addresses()
     {
-        var candidates = new List<(string Address, int Score)>();
+        var candidates = new List<(string Address, int Score, bool IsVirtual)>();
 
         foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
         {
@@ -136,12 +147,23 @@ public static class RelayAddressHelper
                 if (!looksVirtual)
                     score += 20;
 
-                candidates.Add((address.ToString(), score));
+                candidates.Add((address.ToString(), score, looksVirtual));
             }
         }
 
-        var privateAddresses = candidates
+        var privateCandidates = candidates
             .Where(candidate => IsPrivateIpv4(IPAddress.Parse(candidate.Address)))
+            .ToList();
+
+        var nonVirtualPrivate = privateCandidates
+            .Where(candidate => !candidate.IsVirtual)
+            .ToList();
+
+        var primaryPrivateSet = nonVirtualPrivate.Count > 0
+            ? nonVirtualPrivate
+            : privateCandidates;
+
+        var privateAddresses = primaryPrivateSet
             .OrderByDescending(candidate => candidate.Score)
             .ThenBy(candidate => candidate.Address, StringComparer.Ordinal)
             .Select(candidate => candidate.Address)
@@ -151,7 +173,15 @@ public static class RelayAddressHelper
         if (privateAddresses.Count > 0)
             return privateAddresses;
 
-        return candidates
+        var nonVirtualCandidates = candidates
+            .Where(candidate => !candidate.IsVirtual)
+            .ToList();
+
+        var fallbackSet = nonVirtualCandidates.Count > 0
+            ? nonVirtualCandidates
+            : candidates;
+
+        return fallbackSet
             .OrderByDescending(candidate => candidate.Score)
             .ThenBy(candidate => candidate.Address, StringComparer.Ordinal)
             .Select(candidate => candidate.Address)

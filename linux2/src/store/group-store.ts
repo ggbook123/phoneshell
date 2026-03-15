@@ -25,7 +25,7 @@ export class GroupStore {
   }
 
   saveGroup(group: GroupInfo): void {
-    fs.writeFileSync(this.groupFilePath, JSON.stringify(group, null, 2), 'utf-8');
+    fs.writeFileSync(this.groupFilePath, JSON.stringify(group, null, 2), { encoding: 'utf-8', mode: 0o600 });
   }
 
   clearGroup(): void {

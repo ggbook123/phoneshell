@@ -162,30 +162,68 @@
                         BorderThickness="0,0,1,0" BorderBrush="{StaticResource Border1Brush}">
                     <DockPanel LastChildFill="True">
 
-                        <!-- ===== Server Settings ===== -->
-                        <Expander DockPanel.Dock="Top" Header="Server Settings"
-                                  Style="{StaticResource SidebarExpander}" IsExpanded="False">
+                        <!-- ===== Language ===== -->
+                        <Expander x:Name="LanguageExpander" DockPanel.Dock="Top" Header="Language / 语言"
+                                  Style="{StaticResource SidebarExpander}" IsExpanded="False"
+                                  Expanded="SidebarExpander_Expanded">
                             <StackPanel>
-                                <CheckBox Content="Auto Mode (choose server/client)"
+                                <TextBlock Text="INTERFACE LANGUAGE" Style="{StaticResource SectionLabel}" />
+                                <RadioButton x:Name="LangEnRadio" Content="English"
+                                             GroupName="Language" Margin="0,0,0,6"
+                                             Foreground="{StaticResource Text2Brush}"
+                                             FontFamily="{StaticResource BodyFont}" FontSize="12"
+                                             Cursor="Hand"
+                                             Checked="LanguageRadio_Checked" />
+                                <RadioButton x:Name="LangZhRadio" Content="中文"
+                                             GroupName="Language" IsChecked="True" Margin="0,0,0,8"
+                                             Foreground="{StaticResource Text2Brush}"
+                                             FontFamily="{StaticResource BodyFont}" FontSize="12"
+                                             Cursor="Hand"
+                                             Checked="LanguageRadio_Checked" />
+                                <TextBlock Text="Changes apply immediately."
+                                           FontSize="10" Foreground="{StaticResource Text3Brush}"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Expander>
+
+                        <!-- ===== Server Settings ===== -->
+                        <Expander x:Name="ServerSettingsExpander" DockPanel.Dock="Top" Header="Server Settings"
+                                  Style="{StaticResource SidebarExpander}" IsExpanded="False"
+                                  Expanded="SidebarExpander_Expanded">
+                            <StackPanel>
+                                <CheckBox x:Name="AutoModeCheckBox"
+                                          Content="Auto Mode (choose server/client)"
                                           IsChecked="{Binding IsAutoMode}"
                                           Style="{StaticResource DarkCheckBox}" Margin="0,0,0,8" />
 
-                                <CheckBox Content="Enable Relay Server (this PC as hub)"
+                                <CheckBox x:Name="EnableRelayServerCheckBox"
+                                          Content="Enable Relay Server (this PC as hub)"
                                           IsChecked="{Binding IsRelayServer}"
                                           IsEnabled="{Binding IsAutoMode, Converter={StaticResource InvertBoolConverter}}"
                                           Style="{StaticResource DarkCheckBox}" Margin="0,0,0,10" />
 
-                                <TextBlock Text="PORT" Style="{StaticResource SectionLabel}" />
+                                <TextBlock x:Name="ServerPortLabel" Text="PORT" Style="{StaticResource SectionLabel}" />
                                 <TextBox Text="{Binding ServerPort, UpdateSourceTrigger=PropertyChanged}"
                                          Style="{StaticResource DarkTextBox}"
                                          Width="100" HorizontalAlignment="Left" Margin="0,0,0,10" />
 
-                                <TextBlock Text="RELAY SERVER ADDRESS" Style="{StaticResource SectionLabel}" />
+                                <TextBlock x:Name="RelayServerAddressLabel" Text="RELAY SERVER ADDRESS" Style="{StaticResource SectionLabel}" />
                                 <TextBox Text="{Binding RelayServerAddress, UpdateSourceTrigger=PropertyChanged}"
                                          Style="{StaticResource DarkTextBox}" Margin="0,0,0,12"
                                          IsEnabled="{Binding IsRelayServer, Converter={StaticResource InvertBoolConverter}}" />
 
-                                <TextBlock Text="GROUP SECRET" Style="{StaticResource SectionLabel}" />
+                                <TextBlock x:Name="RelayReachableLabel" Text="LAN LISTEN ADDRESSES" Style="{StaticResource SectionLabel}" />
+                                <TextBox Text="{Binding RelayReachableAddresses, Mode=OneWay}"
+                                         Style="{StaticResource DarkTextBox}" Margin="0,0,0,4"
+                                         IsReadOnly="True" AcceptsReturn="True"
+                                         TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                                         Height="64" />
+                                <TextBlock x:Name="RelayReachableHintText"
+                                           Text="Use these addresses for phones on the same LAN"
+                                           FontSize="10" Foreground="{StaticResource Text3Brush}"
+                                           TextWrapping="Wrap" Margin="0,0,0,12" />
+
+                                <TextBlock x:Name="GroupSecretLabel" Text="GROUP SECRET" Style="{StaticResource SectionLabel}" />
                                 <Grid Margin="0,0,0,4">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
@@ -196,15 +234,15 @@
                                              Text="{Binding GroupSecret, UpdateSourceTrigger=PropertyChanged}"
                                              Style="{StaticResource DarkTextBox}"
                                              FontFamily="{StaticResource MonoFont}" FontSize="10.5" />
-                                    <Button Grid.Column="2" Content="Copy" Style="{StaticResource GhostButton}"
+                                    <Button x:Name="GroupSecretCopyButton" Grid.Column="2" Content="Copy" Style="{StaticResource GhostButton}"
                                             Width="58" Height="26"
                                             Command="{Binding CopyGroupSecretCommand}" />
                                 </Grid>
-                                <TextBlock Text="Share this key with other PCs to join the group"
+                                <TextBlock x:Name="GroupSecretHintText" Text="Share this key with other PCs to join the group"
                                            FontSize="10" Foreground="{StaticResource Text3Brush}"
                                            TextWrapping="Wrap" Margin="0,0,0,12" />
 
-                                <TextBlock Text="GROUP ID" Style="{StaticResource SectionLabel}"
+                                <TextBlock x:Name="GroupIdLabel" Text="GROUP ID" Style="{StaticResource SectionLabel}"
                                            Visibility="{Binding IsGroupJoined, Converter={StaticResource BoolToVisConverter}}" />
                                 <Grid Margin="0,0,0,12"
                                       Visibility="{Binding IsGroupJoined, Converter={StaticResource BoolToVisConverter}}">
@@ -218,20 +256,20 @@
                                              Style="{StaticResource DarkTextBox}"
                                              FontFamily="{StaticResource MonoFont}" FontSize="10.5"
                                              IsReadOnly="True" />
-                                    <Button Grid.Column="2" Content="Copy" Style="{StaticResource GhostButton}"
+                                    <Button x:Name="GroupIdCopyButton" Grid.Column="2" Content="Copy" Style="{StaticResource GhostButton}"
                                             Width="58" Height="26"
                                             Command="{Binding CopyGroupIdCommand}" />
                                 </Grid>
 
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                    <Button Content="Save" Style="{StaticResource GhostButton}"
+                                    <Button x:Name="ServerSettingsSaveButton" Content="Save" Style="{StaticResource GhostButton}"
                                             Width="70" Margin="0,0,6,0"
                                             Command="{Binding SaveServerSettingsCommand}" />
-                                    <Button Content="Start" Style="{StaticResource AccentButton}"
+                                    <Button x:Name="ServerSettingsStartButton" Content="Start" Style="{StaticResource AccentButton}"
                                             Width="70" Margin="0,0,6,0"
                                             Command="{Binding StartNetworkCommand}"
                                             IsEnabled="{Binding IsServerStopped}" />
-                                    <Button Content="Stop" Style="{StaticResource DangerButton}"
+                                    <Button x:Name="ServerSettingsStopButton" Content="Stop" Style="{StaticResource DangerButton}"
                                             Width="70"
                                             Command="{Binding StopNetworkCommand}"
                                             IsEnabled="{Binding IsServerRunning}" />
@@ -284,8 +322,9 @@
                         </Expander>
 
                         <!-- ===== Shell Selector ===== -->
-                        <Expander DockPanel.Dock="Top" Header="Shell"
-                                  Style="{StaticResource SidebarExpander}" IsExpanded="False">
+                        <Expander x:Name="ShellExpander" DockPanel.Dock="Top" Header="Shell"
+                                  Style="{StaticResource SidebarExpander}" IsExpanded="False"
+                                  Expanded="SidebarExpander_Expanded">
                             <StackPanel>
                                 <TextBlock Text="TERMINAL SHELL" Style="{StaticResource SectionLabel}" />
                                 <ComboBox ItemsSource="{Binding AvailableShells}"
@@ -302,8 +341,9 @@
                         </Expander>
 
                         <!-- ===== Device Info ===== -->
-                        <Expander DockPanel.Dock="Top" Header="Device Info"
-                                  Style="{StaticResource SidebarExpander}" IsExpanded="False">
+                        <Expander x:Name="DeviceInfoExpander" DockPanel.Dock="Top" Header="Device Info"
+                                  Style="{StaticResource SidebarExpander}" IsExpanded="False"
+                                  Expanded="SidebarExpander_Expanded">
                             <StackPanel>
                                 <TextBlock Text="DEVICE ID" Style="{StaticResource SectionLabel}" />
                                 <TextBlock Text="{Binding DeviceId}" Foreground="{StaticResource Text2Brush}"
@@ -328,8 +368,9 @@
                         </Expander>
 
                         <!-- ===== Group Devices ===== -->
-                        <Expander DockPanel.Dock="Top" Header="Group Devices"
+                        <Expander x:Name="GroupDevicesExpander" DockPanel.Dock="Top" Header="Group Devices"
                                   Style="{StaticResource SidebarExpander}" IsExpanded="False"
+                                  Expanded="SidebarExpander_Expanded"
                                   Visibility="{Binding IsGroupJoined, Converter={StaticResource BoolToVisConverter}}">
                             <ItemsControl ItemsSource="{Binding GroupMembers}">
                                 <ItemsControl.ItemTemplate>
@@ -382,8 +423,9 @@
                         </Expander>
 
                         <!-- ===== QR Code ===== -->
-                        <Expander DockPanel.Dock="Top" Header="QR Code"
-                                  Style="{StaticResource SidebarExpander}" IsExpanded="False">
+                        <Expander x:Name="QrCodeExpander" DockPanel.Dock="Top" Header="QR Code"
+                                  Style="{StaticResource SidebarExpander}" IsExpanded="False"
+                                  Expanded="SidebarExpander_Expanded">
                             <StackPanel>
                                 <Border Background="{StaticResource Surface0Brush}"
                                         CornerRadius="8" Padding="12" HorizontalAlignment="Left"
@@ -408,8 +450,9 @@
                         </Expander>
 
                         <!-- ===== AI Settings ===== -->
-                        <Expander DockPanel.Dock="Top" Header="AI Settings"
-                                  Style="{StaticResource SidebarExpander}" IsExpanded="True">
+                        <Expander x:Name="AiSettingsExpander" DockPanel.Dock="Top" Header="AI Settings"
+                                  Style="{StaticResource SidebarExpander}" IsExpanded="True"
+                                  Expanded="SidebarExpander_Expanded">
                             <StackPanel>
                                 <TextBlock Text="API ENDPOINT" Style="{StaticResource SectionLabel}" />
                                 <TextBox Text="{Binding AiEndpoint, UpdateSourceTrigger=PropertyChanged}"
@@ -430,8 +473,9 @@
                         </Expander>
 
                         <!-- ===== Debug Log ===== -->
-                        <Expander DockPanel.Dock="Top" Header="Debug Log"
-                                  Style="{StaticResource SidebarExpander}" IsExpanded="False">
+                        <Expander x:Name="DebugLogExpander" DockPanel.Dock="Top" Header="Debug Log"
+                                  Style="{StaticResource SidebarExpander}" IsExpanded="False"
+                                  Expanded="SidebarExpander_Expanded">
                             <ListBox ItemsSource="{Binding DebugLogs}" MaxHeight="300"
                                      BorderThickness="0" Background="Transparent"
                                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
@@ -631,7 +675,7 @@
                             </ItemsControl>
 
                             <!-- New Session button -->
-                            <Button Content="+ New Session" FontSize="14" Padding="24,11"
+                            <Button x:Name="WelcomeNewSessionButton" Content="+ New Session" FontSize="14" Padding="24,11"
                                     HorizontalAlignment="Center"
                                     Style="{StaticResource AccentButton}"
                                     FontFamily="{StaticResource BodyFont}"
@@ -650,7 +694,7 @@
                                                 VerticalAlignment="Center" Margin="8,0,0,0">
 
                                         <!-- New tab -->
-                                        <Button Content="+" FontSize="16" FontWeight="Bold"
+                                        <Button x:Name="NewTabButton" Content="+" FontSize="16" FontWeight="Bold"
                                                 Style="{StaticResource SubtleButton}"
                                                 Width="30" Height="26" Padding="0"
                                                 Command="{Binding NewSessionCommand}"

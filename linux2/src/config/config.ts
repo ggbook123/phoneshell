@@ -216,9 +216,16 @@ export function saveConfig(config: AppConfig): void {
   try {
     const dir = path.dirname(config.configPath);
     fs.mkdirSync(dir, { recursive: true });
-    const { configPath: _, baseDirectory: __, ...rest } = config;
-    fs.writeFileSync(config.configPath, JSON.stringify(rest, null, 2), 'utf-8');
-  } catch {
-    // ignore save errors
+    
+    // Exclude sensitive and runtime-only fields
+    const { configPath: _, baseDirectory: __, groupSecret: ___, relayAuthToken: ____, ...rest } = config;
+    
+    // Save config without sensitive data
+    const configData = JSON.stringify(rest, null, 2);
+    fs.writeFileSync(config.configPath, configData, { encoding: 'utf-8', mode: 0o600 });
+    
+    console.log(`[config] Configuration saved (sensitive fields excluded)`);
+  } catch (err) {
+    console.error(`[config] Failed to save configuration: ${(err as Error).message}`);
   }
 }

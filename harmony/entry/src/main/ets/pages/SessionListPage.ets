@@ -30,6 +30,7 @@ struct SessionListPage {
   @State selectedShell: string = '';
   private stateListenerId: number = -1;
   private messageListenerId: number = -1;
+  private pendingOpenRequestedAt: number = 0;
 
   private normalizeString(value: string | undefined | null, fallback: string = ''): string {
     if (typeof value === 'string') {
@@ -85,6 +86,8 @@ struct SessionListPage {
           this.connectionState = state;
           if (state === ConnectionState.DISCONNECTED) {
             this.getUIContext().getRouter().back();
+          } else if (state === ConnectionState.CONNECTED) {
+            this.refreshSessions();
           }
         }
       });
@@ -107,15 +110,22 @@ struct SessionListPage {
             hilog.info(DOMAIN, PAGE_TAG, 'terminal.opened session=%{public}s device=%{public}s',
               resolvedSessionId, resolvedDeviceId);
             if (resolvedDeviceId === this.deviceId) {
-              ConnectionManager.setActiveSession(resolvedDeviceId, resolvedSessionId);
-              try {
-                this.getUIContext().getRouter().pushUrl({ url: 'pages/TerminalPage' });
-              } catch (_e) {
-                // Ignore navigation errors
+              if (this.isPendingOpen()) {
+                this.clearPendingOpen();
+                ConnectionManager.setActiveSession(resolvedDeviceId, resolvedSessionId);
+                try {
+                  this.getUIContext().getRouter().pushUrl({ url: 'pages/TerminalPage' });
+                } catch (_e) {
+                  // Ignore navigation errors
+                }
+              } else {
+                // Session created from another client; refresh list to show it.
+                this.refreshSessions();
               }
             }
           }
         } else if (type === 'error') {
+          this.clearPendingOpen();
           this.isRefreshing = false;
         }
       });
@@ -138,6 +148,7 @@ struct SessionListPage {
       ConnectionManager.removeOnMessage(this.messageListenerId);
       this.messageListenerId = -1;
     }
+    this.clearPendingOpen();
   }
 
   private handleSessionList(data: Record<string, Object>): void {
@@ -170,6 +181,9 @@ struct SessionListPage {
   }
 
   private refreshSessions(): void {
+    if (this.isRefreshing) {
+      return;
+    }
     if (this.deviceId.length === 0 || this.connectionState !== ConnectionState.CONNECTED) {
       this.isRefreshing = false;
       return;
@@ -191,7 +205,31 @@ struct SessionListPage {
   private onNewSession(): void {
     const shellId: string = this.selectedShell;
     hilog.info(DOMAIN, PAGE_TAG, 'newSession device=%{public}s shell=%{public}s', this.deviceId, shellId);
+    if (this.deviceId.length === 0 || this.connectionState !== ConnectionState.CONNECTED) {
+      return;
+    }
+    this.markPendingOpen();
     ConnectionManager.openTerminal(this.deviceId, shellId);
+  }
+
+  private markPendingOpen(): void {
+    this.pendingOpenRequestedAt = Date.now();
+  }
+
+  private clearPendingOpen(): void {
+    this.pendingOpenRequestedAt = 0;
+  }
+
+  private isPendingOpen(): boolean {
+    if (this.pendingOpenRequestedAt <= 0) {
+      return false;
+    }
+    const ageMs: number = Date.now() - this.pendingOpenRequestedAt;
+    if (ageMs > 10000) {
+      this.clearPendingOpen();
+      return false;
+    }
+    return true;
   }
 
   private goBack(): void {

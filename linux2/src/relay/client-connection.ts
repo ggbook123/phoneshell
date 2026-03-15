@@ -24,7 +24,7 @@ export function createClientConnection(ws: WebSocket): ClientConnection {
   };
 }
 
-export function sendToClient(client: ClientConnection, message: string): Promise<void> {
+export function sendToClient(client: ClientConnection, message: string, logger?: (msg: string) => void): Promise<void> {
   const promise = new Promise<void>((resolve) => {
     client.sendQueue = client.sendQueue.then(() => {
       return new Promise<void>((done) => {
@@ -34,11 +34,15 @@ export function sendToClient(client: ClientConnection, message: string): Promise
           return;
         }
         client.ws.send(message, (err) => {
-          if (err) { /* ignore send errors */ }
+          if (err) {
+            logger?.(`Failed to send message to client ${client.clientId}: ${err.message}`);
+          }
           resolve();
           done();
         });
       });
+    }).catch((err) => {
+      logger?.(`Send queue error for client ${client.clientId}: ${err.message}`);
     });
   });
   return promise;

@@ -322,6 +322,9 @@ class ConnectionManagerClass {
       this.emitModeChange(DeviceMode.SINGLE);
     }
 
+    // Notify UI immediately that a new device is available
+    this.emitDeviceListChanged();
+
     conn.connect(wsUrl);
   }
 
@@ -372,7 +375,8 @@ class ConnectionManagerClass {
 
     this.disconnectGroup();
 
-    hilog.info(DOMAIN, TAG, 'connectGroup url=%{public}s', wsUrl);
+    const connectUrl: string = this.buildConnectUrlWithToken(wsUrl, groupSecret);
+    hilog.info(DOMAIN, TAG, 'connectGroup url=%{public}s', connectUrl);
 
     this.groupId = groupId;
     this.groupSecret = groupSecret;
@@ -389,10 +393,10 @@ class ConnectionManagerClass {
     this._currentMode = DeviceMode.GROUP;
     this.emitModeChange(DeviceMode.GROUP);
 
-    conn.connect(wsUrl);
+    conn.connect(connectUrl);
 
     // Save group relay URL
-    PreferencesUtil.setString(StorageKeys.GROUP_RELAY_URL, wsUrl);
+    PreferencesUtil.setString(StorageKeys.GROUP_RELAY_URL, connectUrl);
     PreferencesUtil.setString(StorageKeys.GROUP_ID, groupId);
     PreferencesUtil.setString(StorageKeys.GROUP_SECRET, groupSecret);
   }
@@ -863,6 +867,11 @@ class ConnectionManagerClass {
       this.groupId = ((data['groupId'] ?? '') as string);
       this.groupMembers = this.normalizeGroupMembers(data['members']);
       PreferencesUtil.setString(StorageKeys.GROUP_ID, this.groupId);
+      const secret: string = (data['groupSecret'] ?? '') as string;
+      if (secret.length > 0 && secret !== this.groupSecret) {
+        this.groupSecret = secret;
+        PreferencesUtil.setString(StorageKeys.GROUP_SECRET, secret);
+      }
       // Refresh device list after successful join
       this.requestDeviceList();
     } else if (type === 'group.member.list') {
@@ -876,6 +885,24 @@ class ConnectionManagerClass {
       const leftDeviceId: string = (data['deviceId'] ?? '') as string;
       this.groupMembers = this.groupMembers.filter((m: GroupMemberInfo) => m.deviceId !== leftDeviceId);
       this.requestDeviceList();
+    } else if (type === 'group.server.change.commit') {
+      const newUrl: string = (data['newServerUrl'] ?? '') as string;
+      const newGroupId: string = (data['groupId'] ?? this.groupId) as string;
+      const newSecret: string = (data['groupSecret'] ?? '') as string;
+      const effectiveSecret: string = newSecret.length > 0 ? newSecret : this.groupSecret;
+      if (newUrl.length === 0 || effectiveSecret.length === 0) {
+        hilog.error(DOMAIN, TAG, 'server change commit missing url/secret');
+        return;
+      }
+      hilog.info(DOMAIN, TAG, 'server change commit: newUrl=%{public}s', newUrl);
+      const connectUrl: string = this.buildConnectUrlWithToken(newUrl, effectiveSecret);
+      this.connectGroup(connectUrl, effectiveSecret, newGroupId);
+    } else if (type === 'group.secret.rotate.done') {
+      const newSecret: string = (data['newSecret'] ?? '') as string;
+      if (newSecret.length > 0) {
+        this.groupSecret = newSecret;
+        PreferencesUtil.setString(StorageKeys.GROUP_SECRET, newSecret);
+      }
     } else if (type === 'group.dissolved') {
       hilog.info(DOMAIN, TAG, 'Group dissolved');
       this.disconnectGroup();
@@ -1197,6 +1224,17 @@ class ConnectionManagerClass {
     for (let i: number = 0; i < listeners.length; i++) {
       try { listeners[i].callback(mode); } catch (_e) { /* ignore */ }
     }
+  }
+
+  private buildConnectUrlWithToken(baseUrl: string, groupSecret: string): string {
+    const trimmedSecret: string = groupSecret.trim();
+    if (trimmedSecret.length === 0) return baseUrl;
+    const token: string = encodeURIComponent(trimmedSecret);
+    if (baseUrl.indexOf('token=') >= 0) {
+      return baseUrl.replace(/token=[^&]*/g, 'token=' + token);
+    }
+    if (baseUrl.indexOf('?') >= 0) return baseUrl + '&token=' + token;
+    return baseUrl + '?token=' + token;
   }
 }
 

@@ -1125,6 +1125,44 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         UpdateRelayAddressPreview();
     }
 
+    // --- Language Preference ---
+
+    private static string GetLanguageFilePath()
+    {
+        return Path.Combine(AppContext.BaseDirectory, "data", "language.json");
+    }
+
+    public void SaveLanguagePreference(string langCode)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(GetLanguageFilePath())!;
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(GetLanguageFilePath(),
+                System.Text.Json.JsonSerializer.Serialize(new { language = langCode }));
+        }
+        catch
+        {
+            // Best effort
+        }
+    }
+
+    public string LoadLanguagePreference()
+    {
+        try
+        {
+            var path = GetLanguageFilePath();
+            if (!File.Exists(path)) return "zh";
+            var json = File.ReadAllText(path);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.GetProperty("language").GetString() ?? "zh";
+        }
+        catch
+        {
+            return "zh";
+        }
+    }
+
     private void ClearPersistedGroupIfRequested()
     {
         if (!IsRelayServer || !string.IsNullOrWhiteSpace(GroupSecret))
@@ -1193,32 +1231,48 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var existingGroup = _groupStore.LoadGroup();
         var membership = _groupStore.LoadMembership();
 
+        // Priority 1: If we have a membership file, we're a client
+        if (membership is not null)
+        {
+            IsRelayServer = false;
+            if (string.IsNullOrWhiteSpace(GroupSecret))
+                GroupSecret = membership.GroupSecret;
+            OnNetworkLog("[AutoMode] Detected membership file - starting as client");
+            return;
+        }
+
+        // Priority 2: If we have a local group file, we're a server
         if (existingGroup is not null)
         {
             IsRelayServer = true;
             RelayServerAddress = string.Empty;
             if (string.IsNullOrWhiteSpace(GroupSecret))
                 GroupSecret = existingGroup.GroupSecret;
+            OnNetworkLog("[AutoMode] Detected group file - starting as server");
             return;
         }
 
-        if (membership is not null)
-        {
-            IsRelayServer = false;
-            if (string.IsNullOrWhiteSpace(GroupSecret))
-                GroupSecret = membership.GroupSecret;
-            return;
-        }
-
+        // Priority 3: If RelayServerAddress is configured, we're a client
         if (!string.IsNullOrWhiteSpace(RelayServerAddress))
         {
             IsRelayServer = false;
+            OnNetworkLog("[AutoMode] Relay server address configured - starting as client");
             return;
         }
 
-        // First run default: act as relay server so QR is available
-        IsRelayServer = true;
+        // Priority 4: If GroupSecret is set but no server address, wait for invite
+        if (!string.IsNullOrWhiteSpace(GroupSecret))
+        {
+            IsRelayServer = false;
+            OnNetworkLog("[AutoMode] Group secret configured but no server address - waiting for invite or manual configuration");
+            return;
+        }
+
+        // Default: Start in standalone mode (not as relay server)
+        // This prevents creating a new group when one already exists elsewhere
+        IsRelayServer = false;
         RelayServerAddress = string.Empty;
+        OnNetworkLog("[AutoMode] No configuration found - starting in standalone mode (waiting for invite)");
     }
 
     // --- Network Start/Stop ---
@@ -1290,12 +1344,21 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
                     // Update GroupMembers from server
                     var members = _relayServer.BuildGroupMemberInfoList();
-                    _dispatcher.InvokeAsync(() =>
+                    if (_dispatcher.CheckAccess())
                     {
                         GroupMembers.Clear();
                         foreach (var m in members)
                             GroupMembers.Add(m);
-                    });
+                    }
+                    else
+                    {
+                        await _dispatcher.InvokeAsync(() =>
+                        {
+                            GroupMembers.Clear();
+                            foreach (var m in members)
+                                GroupMembers.Add(m);
+                        });
+                    }
 
                     // Save the GroupSecret back to settings
                     _serverSettings.GroupSecret = GroupSecret;
@@ -1333,6 +1396,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayClient.Log += OnNetworkLog;
                 _relayClient.ConnectionStateChanged += OnClientConnectionStateChanged;
                 _relayClient.TerminalInputReceived += OnRemoteTerminalInput;
+                _relayClient.TerminalOpenRequested += OnRelayClientTerminalOpenRequested;
                 _relayClient.TerminalResizeRequested += OnRemoteTerminalResize;
                 _relayClient.TerminalCloseRequested += OnRemoteTerminalCloseRequested;
                 _relayClient.GroupJoined += OnGroupJoined;
@@ -1360,6 +1424,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
             else
             {
+                // No relay server address configured - start in standalone mode
                 // Standalone mode: start local WS server without group secret, show connect QR
                 _isStandaloneMode = true;
                 _relayServer = new RelayServer();
@@ -1394,7 +1459,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 RefreshQr();
 
                 IsServerRunning = true;
-                ServerStatus = "Standalone mode. Scan QR to connect.";
+                ServerStatus = "Standalone mode. Scan QR to connect or wait for invite.";
                 ConnectionStatus = "Waiting for phone...";
             }
         }
@@ -1431,6 +1496,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayClient.Log -= OnNetworkLog;
             _relayClient.ConnectionStateChanged -= OnClientConnectionStateChanged;
             _relayClient.TerminalInputReceived -= OnRemoteTerminalInput;
+            _relayClient.TerminalOpenRequested -= OnRelayClientTerminalOpenRequested;
             _relayClient.TerminalResizeRequested -= OnRemoteTerminalResize;
             _relayClient.TerminalCloseRequested -= OnRemoteTerminalCloseRequested;
             _relayClient.GroupJoined -= OnGroupJoined;
@@ -1911,6 +1977,34 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         });
     }
 
+    private void OnRelayClientTerminalOpenRequested(string deviceId, string shellId)
+    {
+        _ = HandleRelayClientTerminalOpenAsync(deviceId, shellId);
+    }
+
+    private async Task HandleRelayClientTerminalOpenAsync(string deviceId, string shellId)
+    {
+        try
+        {
+            var (sessionId, cols, rows) = await OnRemoteTerminalOpenRequested(deviceId, shellId);
+
+            if (_relayClient is null || !_relayClient.IsConnected)
+                return;
+
+            await _relayClient.SendTerminalOpenedAsync(deviceId, sessionId, cols, rows);
+
+            var snapshot = await CaptureTabTerminalViewAsync(sessionId);
+            if (!string.IsNullOrWhiteSpace(snapshot))
+            {
+                await _relayClient.SendTerminalOutputAsync(deviceId, sessionId, snapshot);
+            }
+        }
+        catch (Exception ex)
+        {
+            OnNetworkLog($"Relay client terminal.open handling failed: {ex.Message}");
+        }
+    }
+
     private async Task<(string SessionId, int Cols, int Rows)> OnRemoteTerminalOpenRequested(
         string deviceId, string shellId)
     {
@@ -1970,9 +2064,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void NotifyLocalSessionListChanged()
     {
-        if (_relayServer is null || !_relayServer.IsRunning) return;
+        if (_relayServer is not null && _relayServer.IsRunning)
+        {
+            _ = _relayServer.BroadcastLocalSessionListChangedAsync(_identity.DeviceId);
+        }
 
-        _ = _relayServer.BroadcastLocalSessionListChangedAsync(_identity.DeviceId);
+        if (_relayClient is not null && _relayClient.IsConnected)
+        {
+            var sessions = GetLocalSessionList();
+            _ = _relayClient.SendSessionListAsync(_identity.DeviceId, sessions);
+        }
     }
 
     private void NotifyLocalTerminalClosed(TerminalTab tab)

@@ -1,45 +1,50 @@
 <template>
   <div class="qr-login">
+    <div class="lang-toggle">
+      <button :class="{ active: language === 'en' }" @click="setLanguage('en')">EN</button>
+      <button :class="{ active: language === 'zh' }" @click="setLanguage('zh')">中文</button>
+    </div>
     <div class="login-container">
       <h1>PhoneShell</h1>
-      <p class="subtitle">Remote Terminal Control</p>
+      <p class="subtitle">{{ labels.subtitle }}</p>
 
       <!-- Step 1: Check pairing status -->
       <div v-if="step === 'loading'" class="status-box">
-        <p>Connecting...</p>
+        <p>{{ labels.connecting }}</p>
       </div>
 
       <!-- Step 2: Show bind QR (no mobile bound yet) -->
       <div v-else-if="step === 'bind'" class="qr-box">
-        <p>Scan with PhoneShell app to bind your phone</p>
+        <p>{{ labels.bindHint }}</p>
         <img :src="bindQrUrl" alt="Bind QR Code" class="qr-image" />
-        <p class="hint">After binding, the page will update automatically.</p>
+        <p class="hint">{{ labels.bindHintSub }}</p>
       </div>
 
       <!-- Step 3: Show login QR (mobile bound, awaiting scan) -->
       <div v-else-if="step === 'login'" class="qr-box">
-        <p>Scan with your bound phone to log in</p>
+        <p>{{ labels.loginHint }}</p>
         <img v-if="loginQrUrl" :src="loginQrUrl" alt="Login QR Code" class="qr-image" />
-        <p v-else class="hint">Generating login QR...</p>
+        <p v-else class="hint">{{ labels.generatingQr }}</p>
       </div>
 
       <!-- Step 4: Waiting for approval -->
       <div v-else-if="step === 'approval'" class="status-box">
-        <p>Waiting for approval on your phone...</p>
+        <p>{{ labels.waitingApproval }}</p>
         <div class="spinner"></div>
       </div>
 
       <!-- Error -->
       <div v-else-if="step === 'error'" class="status-box error">
         <p>{{ errorMessage }}</p>
-        <button @click="startLogin">Retry</button>
+        <button @click="startLogin">{{ labels.retry }}</button>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted, computed } from 'vue';
+import { useLanguage } from '../composables/useLanguage';
 
 const emit = defineEmits<{ authenticated: [token: string] }>();
 
@@ -49,6 +54,33 @@ const bindQrUrl = ref('');
 const loginQrUrl = ref('');
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let loginRequestId = '';
+
+const { language, setLanguage } = useLanguage();
+const labels = computed(() => language.value === 'zh'
+  ? {
+      subtitle: '远程终端控制',
+      connecting: '连接中...',
+      bindHint: '使用 PhoneShell 手机端扫码绑定',
+      bindHintSub: '绑定完成后，页面会自动更新。',
+      loginHint: '使用已绑定的手机扫码登录',
+      generatingQr: '正在生成登录二维码...',
+      waitingApproval: '等待手机端确认...',
+      retry: '重试',
+      errorConnect: '连接服务器失败。',
+      loginRejected: '登录被拒绝。',
+    }
+  : {
+      subtitle: 'Remote Terminal Control',
+      connecting: 'Connecting...',
+      bindHint: 'Scan with PhoneShell app to bind your phone',
+      bindHintSub: 'After binding, the page will update automatically.',
+      loginHint: 'Scan with your bound phone to log in',
+      generatingQr: 'Generating login QR...',
+      waitingApproval: 'Waiting for approval on your phone...',
+      retry: 'Retry',
+      errorConnect: 'Failed to connect to server.',
+      loginRejected: 'Login rejected.',
+    });
 
 onMounted(() => startLogin());
 onUnmounted(() => { if (pollTimer) clearInterval(pollTimer); });
@@ -89,7 +121,7 @@ async function startLogin() {
     startLoginPoll();
   } catch (err) {
     step.value = 'error';
-    errorMessage.value = 'Failed to connect to server.';
+    errorMessage.value = labels.value.errorConnect;
   }
 }
 
@@ -122,7 +154,7 @@ function startLoginPoll() {
       } else if (data.status === 'rejected') {
         if (pollTimer) clearInterval(pollTimer);
         step.value = 'error';
-        errorMessage.value = data.message || 'Login rejected.';
+        errorMessage.value = data.message || labels.value.loginRejected;
       } else if (data.status === 'expired') {
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = null;
@@ -136,7 +168,7 @@ function startLoginPoll() {
 <style scoped>
 .qr-login {
   display: flex; align-items: center; justify-content: center;
-  min-height: 100vh; padding: 20px;
+  min-height: 100vh; padding: 20px; position: relative;
 }
 .login-container {
   text-align: center; max-width: 400px; width: 100%;
@@ -164,4 +196,17 @@ button {
   cursor: pointer; font-size: 1rem;
 }
 button:hover { background: #00b8d9; }
+.lang-toggle {
+  position: absolute; top: 16px; right: 16px;
+  display: flex; gap: 6px;
+}
+.lang-toggle button {
+  margin-top: 0; padding: 6px 10px; font-size: 0.8rem;
+  background: #16213e; color: #cfd6e6; border: 1px solid #1a1a4e;
+  border-radius: 4px;
+}
+.lang-toggle button:hover { background: #1a1a4e; }
+.lang-toggle button.active {
+  background: #00d4ff; color: #000; border-color: #00d4ff;
+}
 </style>

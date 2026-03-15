@@ -210,6 +210,7 @@ export interface GroupJoinAcceptedMessage {
   members: GroupMemberInfo[];
   serverDeviceId: string;
   boundMobileId?: string | null;
+  groupSecret?: string;
 }
 
 export interface GroupJoinRejectedMessage {
