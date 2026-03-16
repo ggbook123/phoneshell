@@ -754,6 +754,19 @@ class ConnectionManagerClass {
   // --- Restore saved connections ---
 
   async restoreSavedConnections(): Promise<void> {
+    // Restore group connection first (if any)
+    try {
+      const groupRelayUrl: string = await PreferencesUtil.getString(StorageKeys.GROUP_RELAY_URL);
+      const groupSecret: string = await PreferencesUtil.getString(StorageKeys.GROUP_SECRET);
+      const groupId: string = await PreferencesUtil.getString(StorageKeys.GROUP_ID);
+      if (groupRelayUrl.length > 0 && groupSecret.length > 0) {
+        this.connectGroup(groupRelayUrl, groupSecret, groupId);
+      }
+    } catch (_e) {
+      // Ignore restore errors
+    }
+
+    // Restore single-device connections
     try {
       const raw: string = await PreferencesUtil.getString(StorageKeys.SINGLE_DEVICES);
       if (raw.length === 0) return;
