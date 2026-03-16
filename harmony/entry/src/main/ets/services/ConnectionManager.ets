@@ -49,6 +49,14 @@ class TerminalInputMsg {
   data: string = '';
 }
 
+class TerminalHistoryRequestMsg {
+  type: string = 'terminal.history.request';
+  deviceId: string = '';
+  sessionId: string = '';
+  beforeSeq: number = 0;
+  maxChars: number = 20000;
+}
+
 class TerminalResizeMsg {
   type: string = 'terminal.resize';
   deviceId: string = '';
@@ -158,7 +166,7 @@ class ConnectionManagerClass {
   private sessions: Map<string, SessionState> = new Map();
   private activeSessionId: string = '';
   private activeDeviceId: string = '';
-  private maxBufferedTerminalOutput: number = 50000;
+  private maxBufferedTerminalOutput: number = 200000;
 
   // Callbacks
   private deviceListCallbackWrappers: Array<DeviceListCallbackWrapper> = [];
@@ -606,6 +614,18 @@ class ConnectionManagerClass {
     conn.send(JSON.stringify(msg));
   }
 
+  requestTerminalHistory(deviceId: string, sessionId: string, beforeSeq: number, maxChars: number): void {
+    if (deviceId.length === 0 || sessionId.length === 0) return;
+    const conn: DeviceConnection | null = this.getConnectionForDevice(deviceId);
+    if (conn === null) return;
+    let msg: TerminalHistoryRequestMsg = new TerminalHistoryRequestMsg();
+    msg.deviceId = deviceId;
+    msg.sessionId = sessionId;
+    msg.beforeSeq = beforeSeq;
+    msg.maxChars = maxChars;
+    conn.send(JSON.stringify(msg));
+  }
+
   sendTerminalResize(cols: number, rows: number, targetSessionId: string = ''): void {
     const sessionId: string = targetSessionId.length > 0 ? targetSessionId : this.activeSessionId;
     if (sessionId.length === 0) return;
@@ -798,7 +818,9 @@ class ConnectionManagerClass {
   }
 
   private handleSingleMessage(deviceId: string, type: string, data: Record<string, Object>): void {
-    hilog.info(DOMAIN, TAG, 'singleMessage device=%{public}s type=%{public}s', deviceId, type);
+    if (type !== 'terminal.output') {
+      hilog.info(DOMAIN, TAG, 'singleMessage device=%{public}s type=%{public}s', deviceId, type);
+    }
 
     // Handle device info from standalone device
     if (type === 'device.list') {
@@ -870,7 +892,9 @@ class ConnectionManagerClass {
   }
 
   private handleGroupMessage(type: string, data: Record<string, Object>): void {
-    hilog.info(DOMAIN, TAG, 'groupMessage type=%{public}s', type);
+    if (type !== 'terminal.output') {
+      hilog.info(DOMAIN, TAG, 'groupMessage type=%{public}s', type);
+    }
 
     if (type === 'device.list') {
       this.groupDevices = this.normalizeDeviceList(data['devices']);

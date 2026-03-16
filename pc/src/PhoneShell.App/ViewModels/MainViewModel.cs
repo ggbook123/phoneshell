@@ -45,6 +45,9 @@ public sealed class TerminalTab : ObservableObject, IDisposable
     private string _remoteDeviceId = string.Empty;
     private string _remoteDeviceName = string.Empty;
     private string _remoteSessionId = string.Empty;
+    private long _historyBeforeSeq;
+    private bool _historyLoading;
+    private bool _historyComplete;
 
     public TerminalTab(string tabId, ShellInfo shell, int tabNumber)
     {
@@ -81,6 +84,28 @@ public sealed class TerminalTab : ObservableObject, IDisposable
     public TerminalOutputBuffer OutputBuffer { get; }
     public VirtualScreen VirtualScreen { get; }
     public TerminalOutputStabilizer OutputStabilizer { get; }
+
+    internal List<string> HistoryChunks { get; } = new();
+    internal StringBuilder PendingHistoryOutput { get; } = new();
+    internal StringBuilder HistoryCache { get; } = new();
+
+    internal long HistoryBeforeSeq
+    {
+        get => _historyBeforeSeq;
+        set => _historyBeforeSeq = value;
+    }
+
+    internal bool HistoryLoading
+    {
+        get => _historyLoading;
+        set => _historyLoading = value;
+    }
+
+    internal bool HistoryComplete
+    {
+        get => _historyComplete;
+        set => _historyComplete = value;
+    }
 
     /// <summary>Cached delegate for OutputReceived subscription (allows proper unsubscribe).</summary>
     internal Action<string>? OutputHandler;
@@ -228,6 +253,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly AiChatService _aiChatService;
     private readonly ServerSettingsStore _serverSettingsStore;
     private readonly GroupStore _groupStore;
+    private readonly TerminalHistoryStore _historyStore;
     private readonly Dispatcher _dispatcher;
 
     private DeviceIdentity _identity = new();
@@ -254,6 +280,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private int _autoExecStep;
     private const int AutoExecMaxSteps = 10;
     private const int MaxDebugLogEntries = 100;
+    private const int HistoryPageChars = 20000;
     private string _autoExecStatus = string.Empty;
 
     // Server/Client fields
@@ -294,6 +321,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _aiChatService = new AiChatService();
         _serverSettingsStore = new ServerSettingsStore(AppContext.BaseDirectory);
         _groupStore = new GroupStore(AppContext.BaseDirectory);
+        _historyStore = new TerminalHistoryStore(AppContext.BaseDirectory);
         _shellLocator = new WindowsShellLocator();
         _dispatcher = Application.Current.Dispatcher;
 
@@ -342,6 +370,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// Raised when terminal output is received for the active tab. MainWindow pushes to WebView2.
     /// </summary>
     public event Action<string>? TerminalOutputForwarded;
+
+    /// <summary>
+    /// Raised when the terminal buffer should be replaced with a full replay (e.g. history load).
+    /// </summary>
+    public event Action<string>? TerminalBufferReplaceRequested;
 
     /// <summary>
     /// Raised when the desktop terminal viewport should lock to explicit terminal geometry.
@@ -629,6 +662,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _autoExecCts?.Cancel();
         _autoExecCts?.Dispose();
         _aiChatService.Dispose();
+        _historyStore.Dispose();
 
         foreach (var tab in Tabs)
             tab.Dispose();
@@ -962,12 +996,30 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         tab.VirtualScreen.Write(text);
         tab.OutputStabilizer.NotifyOutputReceived();
 
+        if (ShouldAppendLocalHistory())
+        {
+            _historyStore.Append(_identity.DeviceId, tab.TabId, text);
+        }
+
         // Forward to network
         ForwardTabOutputToNetwork(tab, text);
 
         // Only forward to UI if this is the active tab
         if (tab == ActiveTab)
             TerminalOutputForwarded?.Invoke(text);
+    }
+
+    private bool ShouldAppendLocalHistory()
+    {
+        if (_relayServer is null || !_relayServer.IsRunning)
+            return true;
+
+        if (!ReferenceEquals(_relayServer.HistoryStore, _historyStore))
+        {
+            _relayServer.HistoryStore = _historyStore;
+        }
+
+        return false;
     }
 
     private void ForwardTabOutputToNetwork(TerminalTab tab, string text)
@@ -988,7 +1040,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public string GetTabReplayData(TerminalTab tab)
     {
-        return tab.OutputBuffer.GetRecentRaw();
+        if (tab.IsRemote)
+            return tab.HistoryCache.ToString();
+
+        return _historyStore.ReadAll(_identity.DeviceId, tab.TabId);
     }
 
     // --- Viewport resize handling ---
@@ -1303,6 +1358,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (IsRelayServer)
             {
                 _relayServer = new RelayServer();
+                _relayServer.HistoryStore = _historyStore;
+                _relayServer.PreserveTerminalHistoryOnClose = true;
                 _relayServer.Log += OnNetworkLog;
                 _relayServer.LocalTerminalInputReceived += OnRemoteTerminalInput;
                 _relayServer.LocalTerminalResizeReceived += OnRemoteTerminalResize;
@@ -1409,6 +1466,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayClient.DeviceUnbound += OnDeviceUnbound;
                 _relayClient.TerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
                 _relayClient.TerminalOutputReceived += OnRemoteTerminalOutputReceived;
+                _relayClient.TerminalHistoryReceived += OnRemoteTerminalHistoryReceived;
                 _relayClient.TerminalClosedReceived += OnRemoteTerminalClosedReceived;
                 _relayClient.RelayDesignated += OnRelayDesignated;
                 _relayClient.InviteCreated += OnInviteCreated;
@@ -1429,6 +1487,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 // Standalone mode: start local WS server without group secret, show connect QR
                 _isStandaloneMode = true;
                 _relayServer = new RelayServer();
+                _relayServer.HistoryStore = _historyStore;
+                _relayServer.PreserveTerminalHistoryOnClose = true;
                 _relayServer.Log += OnNetworkLog;
                 _relayServer.LocalTerminalInputReceived += OnRemoteTerminalInput;
                 _relayServer.LocalTerminalResizeReceived += OnRemoteTerminalResize;
@@ -1509,6 +1569,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayClient.DeviceUnbound -= OnDeviceUnbound;
             _relayClient.TerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
             _relayClient.TerminalOutputReceived -= OnRemoteTerminalOutputReceived;
+            _relayClient.TerminalHistoryReceived -= OnRemoteTerminalHistoryReceived;
             _relayClient.TerminalClosedReceived -= OnRemoteTerminalClosedReceived;
             _relayClient.RelayDesignated -= OnRelayDesignated;
             _relayClient.InviteCreated -= OnInviteCreated;
@@ -1760,6 +1821,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             var deviceName = member?.DisplayName ?? deviceId[..Math.Min(8, deviceId.Length)];
 
             var tab = CreateRemoteTab(deviceId, deviceName, "remote", sessionId, cols, rows);
+            StartRemoteHistorySync(tab);
             OnNetworkLog($"Remote tab created: [{deviceName}] session={sessionId}");
         });
     }
@@ -1774,6 +1836,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             tab.OutputBuffer.Append(data);
             tab.VirtualScreen.Write(data);
 
+            if (!tab.HistoryComplete)
+            {
+                tab.PendingHistoryOutput.Append(data);
+                return;
+            }
+
+            tab.HistoryCache.Append(data);
             if (tab == ActiveTab)
                 TerminalOutputForwarded?.Invoke(data);
         });
@@ -1790,6 +1859,96 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 OnNetworkLog($"Remote terminal closed: device={deviceId}, session={sessionId}");
             }
         });
+    }
+
+    private void OnRemoteTerminalHistoryReceived(string deviceId, string sessionId, string data, long nextBeforeSeq, bool hasMore)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            HandleRemoteHistoryResponse(deviceId, sessionId, data, nextBeforeSeq, hasMore);
+        });
+    }
+
+    private void StartRemoteHistorySync(TerminalTab tab)
+    {
+        if (!tab.IsRemote) return;
+        ResetRemoteHistoryState(tab);
+        RequestRemoteHistoryPage(tab);
+    }
+
+    private void ResetRemoteHistoryState(TerminalTab tab)
+    {
+        tab.HistoryLoading = false;
+        tab.HistoryComplete = false;
+        tab.HistoryBeforeSeq = 0;
+        tab.HistoryChunks.Clear();
+        tab.PendingHistoryOutput.Clear();
+        tab.HistoryCache.Clear();
+    }
+
+    private void RequestRemoteHistoryPage(TerminalTab tab)
+    {
+        if (tab.HistoryLoading || tab.HistoryComplete) return;
+        if (string.IsNullOrWhiteSpace(tab.RemoteSessionId) || string.IsNullOrWhiteSpace(tab.RemoteDeviceId))
+            return;
+
+        tab.HistoryLoading = true;
+
+        if (_relayClient is not null && _relayClient.IsConnected)
+        {
+            _ = _relayClient.SendTerminalHistoryRequestAsync(
+                tab.RemoteDeviceId, tab.RemoteSessionId, tab.HistoryBeforeSeq, HistoryPageChars);
+            return;
+        }
+
+        if (_relayServer is not null && _relayServer.IsRunning)
+        {
+            var page = _relayServer.GetTerminalHistoryPage(
+                tab.RemoteDeviceId, tab.RemoteSessionId, tab.HistoryBeforeSeq, HistoryPageChars);
+            HandleRemoteHistoryResponse(tab.RemoteDeviceId, tab.RemoteSessionId,
+                page.Data, page.NextBeforeSeq, page.HasMore);
+            return;
+        }
+
+        tab.HistoryLoading = false;
+        tab.HistoryComplete = true;
+        if (tab.PendingHistoryOutput.Length > 0)
+        {
+            var merged = tab.PendingHistoryOutput.ToString();
+            tab.PendingHistoryOutput.Clear();
+            tab.HistoryCache.Append(merged);
+            if (tab == ActiveTab)
+                TerminalBufferReplaceRequested?.Invoke(merged);
+        }
+    }
+
+    private void HandleRemoteHistoryResponse(string deviceId, string sessionId, string data, long nextBeforeSeq, bool hasMore)
+    {
+        var tab = Tabs.FirstOrDefault(t => t.IsRemote && t.RemoteSessionId == sessionId);
+        if (tab is null || tab.RemoteDeviceId != deviceId) return;
+
+        tab.HistoryLoading = false;
+        if (!string.IsNullOrEmpty(data))
+            tab.HistoryChunks.Insert(0, data);
+
+        if (hasMore)
+        {
+            tab.HistoryBeforeSeq = nextBeforeSeq;
+            RequestRemoteHistoryPage(tab);
+            return;
+        }
+
+        tab.HistoryComplete = true;
+        var history = string.Concat(tab.HistoryChunks);
+        tab.HistoryChunks.Clear();
+        var pending = tab.PendingHistoryOutput.ToString();
+        tab.PendingHistoryOutput.Clear();
+        var merged = history + pending;
+        tab.HistoryCache.Clear();
+        tab.HistoryCache.Append(merged);
+
+        if (tab == ActiveTab)
+            TerminalBufferReplaceRequested?.Invoke(merged);
     }
 
     private void UpdateRelayAddressPreview()
@@ -2735,6 +2894,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayClient.DeviceUnbound += OnDeviceUnbound;
             _relayClient.TerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
             _relayClient.TerminalOutputReceived += OnRemoteTerminalOutputReceived;
+            _relayClient.TerminalHistoryReceived += OnRemoteTerminalHistoryReceived;
             _relayClient.TerminalClosedReceived += OnRemoteTerminalClosedReceived;
             _relayClient.RelayDesignated += OnRelayDesignated;
             _relayClient.InviteCreated += OnInviteCreated;

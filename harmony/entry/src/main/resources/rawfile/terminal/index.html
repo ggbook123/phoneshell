@@ -29,6 +29,7 @@
       height: 100%;
       box-sizing: border-box;
       padding: 6px 4px;
+      touch-action: none;
     }
 
     .xterm {
@@ -53,7 +54,7 @@
       cursorStyle: 'block',
       fontSize: 13,
       lineHeight: 1.08,
-      scrollback: 2000,
+      scrollback: 20000,
       convertEol: false,
       fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
       theme: {
@@ -115,10 +116,148 @@
       callNative('sendInput', data);
     });
 
-    terminalElement.addEventListener('pointerdown', function() {
-      callNative('onTerminalInteraction');
-      term.focus();
-    }, { passive: true });
+    // Notify native side on first interaction only (for resize sync & focus)
+    var interactionNotified = false;
+    function notifyInteraction() {
+      if (!interactionNotified) {
+        interactionNotified = true;
+        callNative('onTerminalInteraction');
+      }
+    }
+
+    // Patch xterm.js viewport: disable its built-in touch scroll (uses scrollTop
+    // which doesn't work reliably in HarmonyOS WebView), replace with scrollLines.
+    (function() {
+      var vp = null;
+      try { vp = term._core.viewport; } catch(e) {}
+      if (vp) {
+        vp.handleTouchStart = function() {};
+        vp.handleTouchMove = function() { return true; };  // return true = don't cancel
+      }
+
+      var lastY = 0;
+      var velocity = 0;
+      var lastTime = 0;
+      var inertiaId = 0;
+      var accum = 0;
+      // Read actual line height from rendered DOM
+      var lineH = 14;
+      setTimeout(function() {
+        try {
+          var rows = terminalElement.querySelector('.xterm-rows');
+          if (rows && rows.children.length > 0) {
+            lineH = rows.children[0].getBoundingClientRect().height || 14;
+          }
+        } catch(e) {}
+      }, 200);
+
+      function applyDelta(dy) {
+        accum += dy;
+        var lines = (accum / lineH) | 0;
+        if (lines !== 0) {
+          accum -= lines * lineH;
+          term.scrollLines(lines);
+        }
+      }
+
+      function stopInertia() {
+        if (inertiaId) { cancelAnimationFrame(inertiaId); inertiaId = 0; }
+        velocity = 0;
+      }
+
+      function inertiaFrame() {
+        if (Math.abs(velocity) < 0.3) { inertiaId = 0; return; }
+        applyDelta(velocity);
+        velocity *= 0.95;
+        inertiaId = requestAnimationFrame(inertiaFrame);
+      }
+
+      function startScroll(clientY, timeStamp) {
+        stopInertia();
+        lastY = clientY;
+        lastTime = timeStamp;
+        accum = 0;
+      }
+
+      function moveScroll(clientY, timeStamp) {
+        var dt = timeStamp - lastTime;
+        var dy = lastY - clientY;
+
+        if (dt > 0) {
+          var instantV = dy * (16 / dt);
+          velocity = velocity * 0.4 + instantV * 0.6;
+        }
+
+        lastY = clientY;
+        lastTime = timeStamp;
+        applyDelta(dy);
+      }
+
+      function endScroll() {
+        if (Math.abs(velocity) > 0.5) {
+          inertiaId = requestAnimationFrame(inertiaFrame);
+        }
+      }
+
+      if (window.PointerEvent) {
+        var activePointerId = null;
+
+        terminalElement.addEventListener('pointerdown', function(e) {
+          notifyInteraction();
+          term.focus();
+          if (e.pointerType !== 'touch') {
+            return;
+          }
+          activePointerId = e.pointerId;
+          try { terminalElement.setPointerCapture(activePointerId); } catch (_e) {}
+          if (e.cancelable) e.preventDefault();
+          startScroll(e.clientY, e.timeStamp);
+        }, { passive: false });
+
+        terminalElement.addEventListener('pointermove', function(e) {
+          if (e.pointerId !== activePointerId) return;
+          if (e.cancelable) e.preventDefault();
+          moveScroll(e.clientY, e.timeStamp);
+        }, { passive: false });
+
+        terminalElement.addEventListener('pointerup', function(e) {
+          if (e.pointerId !== activePointerId) return;
+          try { terminalElement.releasePointerCapture(activePointerId); } catch (_e) {}
+          activePointerId = null;
+          endScroll();
+        }, { passive: true });
+
+        terminalElement.addEventListener('pointercancel', function(e) {
+          if (e.pointerId !== activePointerId) return;
+          try { terminalElement.releasePointerCapture(activePointerId); } catch (_e) {}
+          activePointerId = null;
+          stopInertia();
+        }, { passive: true });
+      } else {
+        terminalElement.addEventListener('touchstart', function(e) {
+          notifyInteraction();
+          term.focus();
+          if (e.touches.length === 1) {
+            if (e.cancelable) e.preventDefault();
+            startScroll(e.touches[0].clientY, e.timeStamp);
+          }
+        }, { passive: false });
+
+        terminalElement.addEventListener('touchmove', function(e) {
+          if (e.touches.length !== 1) return;
+          if (e.cancelable) e.preventDefault();
+          moveScroll(e.touches[0].clientY, e.timeStamp);
+        }, { passive: false });
+
+        terminalElement.addEventListener('touchend', function() {
+          endScroll();
+        }, { passive: true });
+
+        terminalElement.addEventListener('touchcancel', function() {
+          stopInertia();
+        }, { passive: true });
+      }
+    })();
 
     window.phoneShell = {
       write: function(data) {

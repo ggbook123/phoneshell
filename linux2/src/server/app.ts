@@ -11,6 +11,7 @@ import { TerminalManager } from '../terminal/terminal-manager.js';
 import { DeviceStore } from '../store/device-store.js';
 import { GroupStore } from '../store/group-store.js';
 import { GroupMembershipStore } from '../store/group-membership-store.js';
+import { TerminalHistoryStore } from '../store/terminal-history-store.js';
 import { generateQrPng, buildStandalonePayload } from '../auth/qr-service.js';
 
 function log(msg: string): void {
@@ -33,7 +34,10 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     : [];
 
   const relay = new RelayServer();
+  const historyStore = new TerminalHistoryStore(config.baseDirectory);
   relay.setLogger((msg) => log(`[relay] ${msg}`));
+  relay.setHistoryStore(historyStore);
+  relay.setPreserveTerminalHistoryOnClose(true);
 
   // Output ordering: per-session promise chain
   const outputChains = new Map<string, Promise<void>>();

@@ -83,6 +83,23 @@ export interface TerminalOutputMessage {
   data: string;
 }
 
+export interface TerminalHistoryRequestMessage {
+  type: 'terminal.history.request';
+  deviceId: string;
+  sessionId: string;
+  beforeSeq: number;
+  maxChars: number;
+}
+
+export interface TerminalHistoryResponseMessage {
+  type: 'terminal.history.response';
+  deviceId: string;
+  sessionId: string;
+  data: string;
+  nextBeforeSeq: number;
+  hasMore: boolean;
+}
+
 export interface TerminalResizeMessage {
   type: 'terminal.resize';
   deviceId: string;
@@ -380,6 +397,8 @@ export type Message =
   | TerminalOpenedMessage
   | TerminalInputMessage
   | TerminalOutputMessage
+  | TerminalHistoryRequestMessage
+  | TerminalHistoryResponseMessage
   | TerminalResizeMessage
   | TerminalCloseMessage
   | TerminalClosedMessage

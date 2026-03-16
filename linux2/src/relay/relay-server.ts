@@ -6,6 +6,7 @@ import { TokenManager } from '../auth/token-manager.js';
 import { InviteManager } from '../auth/invite-manager.js';
 import { buildGroupBindPayload, buildPanelLoginPayload } from '../auth/qr-service.js';
 import { GroupStore } from '../store/group-store.js';
+import { TerminalHistoryStore } from '../store/terminal-history-store.js';
 import type { ClientConnection } from './client-connection.js';
 import type { PanelLoginSession } from '../auth/token-manager.js';
 import type {
@@ -15,6 +16,7 @@ import type {
   MobileBindRequestMessage, MobileUnbindMessage, AuthResponseMessage,
   PanelLoginScanMessage, DeviceRegisterMessage, SessionListRequestMessage,
   TerminalInputMessage, TerminalOutputMessage, TerminalOpenMessage,
+  TerminalHistoryRequestMessage,
   TerminalResizeMessage, TerminalCloseMessage, TerminalOpenedMessage,
   TerminalClosedMessage, SessionListMessage,
   GroupServerChangeRequestMessage, GroupServerChangePrepareMessage,
@@ -23,6 +25,8 @@ import type {
   InviteCreateRequestMessage, RelayDesignateMessage,
   GroupDissolveMessage,
 } from '../protocol/messages.js';
+
+const TerminalHistoryPageChars = 20000;
 
 interface ConnectedDevice {
   deviceId: string;
@@ -57,6 +61,8 @@ export class RelayServer {
   private readonly tokenManager = new TokenManager();
   private readonly inviteManager = new InviteManager();
   private readonly outputChains = new Map<string, Promise<void>>();
+  private historyStore: TerminalHistoryStore | null = null;
+  private preserveTerminalHistoryOnClose = true;
   private group: GroupInfo | null = null;
   private groupStore: GroupStore | null = null;
   private authToken = '';
@@ -69,6 +75,8 @@ export class RelayServer {
   setCallbacks(cb: RelayServerCallbacks): void { this.callbacks = cb; }
   setAuthToken(token: string): void { this.authToken = token; }
   setRelayUrl(url: string): void { this.relayUrl = url; }
+  setHistoryStore(store: TerminalHistoryStore | null): void { this.historyStore = store; }
+  setPreserveTerminalHistoryOnClose(preserve: boolean): void { this.preserveTerminalHistoryOnClose = preserve; }
   getGroup(): GroupInfo | null { return this.group; }
   getInviteManager(): InviteManager { return this.inviteManager; }
   
@@ -358,9 +366,15 @@ export class RelayServer {
         }
         break;
       }
+      case 'terminal.history.request': {
+        const req = message as TerminalHistoryRequestMessage;
+        await this.handleTerminalHistoryRequest(client, req);
+        break;
+      }
       case 'terminal.output': {
         const output = message as TerminalOutputMessage;
         client.subscribedDeviceId ??= output.deviceId;
+        this.appendTerminalHistory(output.deviceId, output.sessionId, output.data);
         for (const c of this.clients.values()) {
           if (c.clientId !== client.clientId &&
               c.subscribedDeviceId === output.deviceId &&
@@ -423,6 +437,7 @@ export class RelayServer {
             }));
             client.subscribedSessionId = undefined;
             this.callbacks.onLocalTerminalSessionEnded?.(close.sessionId);
+            this.removeHistoryForSession(close.deviceId, close.sessionId);
           } else if (target.clientId) {
             const dc = this.clients.get(target.clientId);
             if (dc) await this.send(dc, json);
@@ -436,6 +451,10 @@ export class RelayServer {
         // Forward to all other clients
         for (const c of this.clients.values()) {
           if (c.clientId !== client.clientId) await this.send(c, json);
+        }
+        if (message.type === 'terminal.closed') {
+          const closed = message as TerminalClosedMessage;
+          this.removeHistoryForSession(closed.deviceId, closed.sessionId);
         }
         break;
       case 'control.force_disconnect':
@@ -510,6 +529,7 @@ export class RelayServer {
   // --- Broadcast terminal output to subscribed clients ---
 
   async broadcastLocalTerminalOutput(deviceId: string, sessionId: string, data: string): Promise<void> {
+    this.appendTerminalHistory(deviceId, sessionId, data);
     const msg = serialize({ type: 'terminal.output' as const, deviceId, sessionId, data });
     const promises: Promise<void>[] = [];
     for (const client of this.clients.values()) {
@@ -521,6 +541,7 @@ export class RelayServer {
   }
 
   async broadcastLocalTerminalClosed(deviceId: string, sessionId: string): Promise<void> {
+    this.removeHistoryForSession(deviceId, sessionId);
     const msg = serialize({ type: 'terminal.closed' as const, deviceId, sessionId });
     for (const client of this.clients.values()) {
       if (client.subscribedDeviceId === deviceId && client.subscribedSessionId === sessionId) {
@@ -537,6 +558,60 @@ export class RelayServer {
       // Broadcast to all clients so session list stays fresh even before explicit subscribe.
       await this.send(client, msg);
     }
+  }
+
+  // --- Terminal history ---
+
+  private appendTerminalHistory(deviceId: string, sessionId: string, data: string): void {
+    if (!deviceId || !sessionId || !data) return;
+    this.historyStore?.append(deviceId, sessionId, data);
+  }
+
+  private async handleTerminalHistoryRequest(client: ClientConnection, req: TerminalHistoryRequestMessage): Promise<void> {
+    const deviceId = req.deviceId?.trim() || '';
+    const sessionId = req.sessionId?.trim() || '';
+    if (!deviceId || !sessionId) return;
+
+    client.subscribedDeviceId = deviceId;
+    client.subscribedSessionId = sessionId;
+
+    if (!this.historyStore) {
+      await this.send(client, serialize({
+        type: 'terminal.history.response' as const,
+        deviceId,
+        sessionId,
+        data: '',
+        nextBeforeSeq: 0,
+        hasMore: false,
+      }));
+      return;
+    }
+
+    const page = this.historyStore.getPage(
+      deviceId,
+      sessionId,
+      req.beforeSeq || 0,
+      RelayServer.clampHistoryPageSize(req.maxChars || 0),
+    );
+    await this.send(client, serialize({
+      type: 'terminal.history.response' as const,
+      deviceId,
+      sessionId,
+      data: page.data,
+      nextBeforeSeq: page.nextBeforeSeq,
+      hasMore: page.hasMore,
+    }));
+  }
+
+  private removeHistoryForSession(deviceId: string, sessionId: string): void {
+    if (!deviceId || !sessionId) return;
+    if (this.preserveTerminalHistoryOnClose) return;
+    this.historyStore?.removeSession(deviceId, sessionId);
+  }
+
+  private static clampHistoryPageSize(requested: number): number {
+    if (requested <= 0) return TerminalHistoryPageChars;
+    return Math.min(requested, TerminalHistoryPageChars);
   }
 
   // --- Group handlers ---

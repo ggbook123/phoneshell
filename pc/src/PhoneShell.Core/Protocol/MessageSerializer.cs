@@ -57,6 +57,8 @@ public static class MessageSerializer
             "terminal.opened" => Deserialize<TerminalOpenedMessage>(json),
             "terminal.input" => Deserialize<TerminalInputMessage>(json),
             "terminal.output" => Deserialize<TerminalOutputMessage>(json),
+            "terminal.history.request" => Deserialize<TerminalHistoryRequestMessage>(json),
+            "terminal.history.response" => Deserialize<TerminalHistoryResponseMessage>(json),
             "terminal.resize" => Deserialize<TerminalResizeMessage>(json),
             "terminal.close" => Deserialize<TerminalCloseMessage>(json),
             "terminal.closed" => Deserialize<TerminalClosedMessage>(json),

@@ -24,9 +24,19 @@ let fitAddon: FitAddon | null = null;
 let resizeObserver: ResizeObserver | null = null;
 const compactCols = computed(() => props.compactCols);
 const compactRows = computed(() => props.compactRows);
+const historyPageChars = 20000;
+let historyLoading = false;
+let historyComplete = false;
+let historyBeforeSeq = 0;
+let historyChunks: string[] = [];
+let pendingOutput = '';
 
 function handleOutput(msg: any) {
   if (msg.sessionId === props.sessionId && msg.deviceId === props.deviceId && msg.data) {
+    if (!historyComplete) {
+      pendingOutput += msg.data;
+      return;
+    }
     term?.write(msg.data);
   }
 }
@@ -37,6 +47,52 @@ function handleClosed(msg: any) {
   }
 }
 
+function resetHistoryState() {
+  historyLoading = false;
+  historyComplete = false;
+  historyBeforeSeq = 0;
+  historyChunks = [];
+  pendingOutput = '';
+}
+
+function requestHistoryPage() {
+  if (!term || historyLoading || historyComplete) return;
+  historyLoading = true;
+  props.ws.send({
+    type: 'terminal.history.request',
+    deviceId: props.deviceId,
+    sessionId: props.sessionId,
+    beforeSeq: historyBeforeSeq,
+    maxChars: historyPageChars,
+  });
+}
+
+function applyHistoryBuffer() {
+  if (!term) return;
+  const history = historyChunks.join('');
+  const merged = history + pendingOutput;
+  pendingOutput = '';
+  term.reset();
+  if (merged) {
+    term.write(merged);
+  }
+}
+
+function handleHistoryResponse(msg: any) {
+  if (msg.sessionId !== props.sessionId || msg.deviceId !== props.deviceId) return;
+  historyLoading = false;
+  if (msg.data) {
+    historyChunks.unshift(msg.data);
+  }
+  if (msg.hasMore) {
+    historyBeforeSeq = msg.nextBeforeSeq || 0;
+    requestHistoryPage();
+    return;
+  }
+  historyComplete = true;
+  applyHistoryBuffer();
+}
+
 onMounted(() => {
   if (!containerRef.value) return;
 
@@ -45,6 +101,7 @@ onMounted(() => {
     cursorBlink: true,
     fontSize: 14,
     fontFamily: "'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace",
+    scrollback: 1000000,
     theme: {
       background: '#0a0a1a',
       foreground: '#e0e0e0',
@@ -152,6 +209,10 @@ onMounted(() => {
   // Listen for output
   props.ws.on('terminal.output', handleOutput);
   props.ws.on('terminal.closed', handleClosed);
+  props.ws.on('terminal.history.response', handleHistoryResponse);
+
+  resetHistoryState();
+  requestHistoryPage();
 
   // Focus
   term.focus();
@@ -169,6 +230,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   props.ws.off('terminal.output', handleOutput);
   props.ws.off('terminal.closed', handleClosed);
+  props.ws.off('terminal.history.response', handleHistoryResponse);
   resizeObserver?.disconnect();
   term?.dispose();
   term = null;

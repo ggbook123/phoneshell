@@ -25,6 +25,7 @@ public partial class MainWindow : Window
         DataContext = _viewModel;
 
         _viewModel.TerminalOutputForwarded += OnTerminalOutputForwarded;
+        _viewModel.TerminalBufferReplaceRequested += OnTerminalBufferReplaceRequested;
         _viewModel.ActiveTabChanged += OnActiveTabChanged;
         _viewModel.TerminalViewportLockRequested += OnTerminalViewportLockRequested;
         _viewModel.TerminalViewportAutoFitRequested += OnTerminalViewportAutoFitRequested;
@@ -175,6 +176,17 @@ public partial class MainWindow : Window
         });
     }
 
+    private void OnTerminalBufferReplaceRequested(string text)
+    {
+        if (!_webViewReady) return;
+        Dispatcher.InvokeAsync(() =>
+        {
+            var escaped = JsonSerializer.Serialize(text);
+            TerminalWebView.CoreWebView2.ExecuteScriptAsync(
+                $"window.replaceTerminalBuffer && window.replaceTerminalBuffer({escaped})");
+        });
+    }
+
     private void OnActiveTabChanged(TerminalTab? tab)
     {
         Dispatcher.InvokeAsync(() =>
@@ -195,25 +207,35 @@ public partial class MainWindow : Window
                 TerminalWebView.CoreWebView2.ExecuteScriptAsync(
                     "window.resetTerminal && window.resetTerminal()");
 
-                // Replay buffered output from VirtualScreen snapshot
-                var snapshot = tab.VirtualScreen.GetSnapshot();
-                if (!string.IsNullOrWhiteSpace(snapshot))
+                var replay = _viewModel.GetTabReplayData(tab);
+                if (!string.IsNullOrEmpty(replay))
                 {
-                    // Build a bootstrap sequence from the virtual screen
-                    var lines = snapshot.Split('\n');
-                    var sb = new System.Text.StringBuilder();
-                    sb.Append("\x1b[0m\x1b[H\x1b[2J");
-                    for (var row = 0; row < lines.Length; row++)
-                    {
-                        if (lines[row].Length == 0) continue;
-                        sb.Append($"\x1b[{row + 1};1H");
-                        sb.Append(lines[row]);
-                    }
-                    sb.Append($"\x1b[{Math.Max(1, lines.Length)};1H");
-
-                    var escaped = JsonSerializer.Serialize(sb.ToString());
+                    var escapedHistory = JsonSerializer.Serialize(replay);
                     TerminalWebView.CoreWebView2.ExecuteScriptAsync(
-                        $"window.writeTerminal({escaped})");
+                        $"window.replaceTerminalBuffer && window.replaceTerminalBuffer({escapedHistory})");
+                }
+                else
+                {
+                    // Replay buffered output from VirtualScreen snapshot
+                    var snapshot = tab.VirtualScreen.GetSnapshot();
+                    if (!string.IsNullOrWhiteSpace(snapshot))
+                    {
+                        // Build a bootstrap sequence from the virtual screen
+                        var lines = snapshot.Split('\n');
+                        var sb = new System.Text.StringBuilder();
+                        sb.Append("\x1b[0m\x1b[H\x1b[2J");
+                        for (var row = 0; row < lines.Length; row++)
+                        {
+                            if (lines[row].Length == 0) continue;
+                            sb.Append($"\x1b[{row + 1};1H");
+                            sb.Append(lines[row]);
+                        }
+                        sb.Append($"\x1b[{Math.Max(1, lines.Length)};1H");
+
+                        var escaped = JsonSerializer.Serialize(sb.ToString());
+                        TerminalWebView.CoreWebView2.ExecuteScriptAsync(
+                            $"window.writeTerminal({escaped})");
+                    }
                 }
 
                 // Apply correct viewport mode
@@ -347,6 +369,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _viewModel.TerminalOutputForwarded -= OnTerminalOutputForwarded;
+        _viewModel.TerminalBufferReplaceRequested -= OnTerminalBufferReplaceRequested;
         _viewModel.ActiveTabChanged -= OnActiveTabChanged;
         _viewModel.TerminalViewportLockRequested -= OnTerminalViewportLockRequested;
         _viewModel.TerminalViewportAutoFitRequested -= OnTerminalViewportAutoFitRequested;

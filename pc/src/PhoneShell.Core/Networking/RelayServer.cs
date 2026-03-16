@@ -35,6 +35,9 @@ public sealed class RelayServer : IDisposable
     private GroupInfo? _group;
     private GroupStore? _groupStore;
     private readonly InviteManager _inviteManager = new();
+    private TerminalHistoryStore? _historyStore;
+
+    private const int TerminalHistoryPageChars = 20_000;
 
     public event Action<string>? Log;
     public event Action<List<DeviceInfo>>? DeviceListChanged;
@@ -51,6 +54,13 @@ public sealed class RelayServer : IDisposable
 
     public string AuthToken { get; set; } = string.Empty;
     public bool WebPanelEnabled { get; set; }
+    public bool PreserveTerminalHistoryOnClose { get; set; } = true;
+
+    public TerminalHistoryStore? HistoryStore
+    {
+        get => _historyStore;
+        set => _historyStore = value;
+    }
 
     /// <summary>Current group info (null if no group created yet).</summary>
     public GroupInfo? Group => _group;
@@ -76,6 +86,18 @@ public sealed class RelayServer : IDisposable
         if (!string.IsNullOrEmpty(baseDirectory))
         {
             _groupStore = new GroupStore(baseDirectory);
+        }
+        else if (_groupStore is null)
+        {
+            _groupStore = new GroupStore(AppContext.BaseDirectory);
+        }
+
+        if (_historyStore is null)
+        {
+            var historyBase = string.IsNullOrWhiteSpace(baseDirectory)
+                ? AppContext.BaseDirectory
+                : baseDirectory;
+            _historyStore = new TerminalHistoryStore(historyBase);
         }
 
         _listenPrefixes.Clear();
@@ -225,6 +247,7 @@ public sealed class RelayServer : IDisposable
     /// </summary>
     public async Task BroadcastLocalTerminalOutputAsync(string deviceId, string sessionId, string data)
     {
+        AppendTerminalHistory(deviceId, sessionId, data);
         var msg = MessageSerializer.Serialize(new TerminalOutputMessage
         {
             DeviceId = deviceId,
@@ -251,6 +274,8 @@ public sealed class RelayServer : IDisposable
     {
         if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(sessionId))
             return;
+
+        RemoveHistoryForSession(deviceId, sessionId);
 
         var msg = MessageSerializer.Serialize(new TerminalClosedMessage
         {
@@ -727,7 +752,12 @@ public sealed class RelayServer : IDisposable
                 }
                 break;
 
+            case TerminalHistoryRequestMessage historyReq:
+                await HandleTerminalHistoryRequest(client, historyReq);
+                break;
+
             case TerminalOutputMessage output:
+                AppendTerminalHistory(output.DeviceId, output.SessionId, output.Data);
                 // Forward output to all clients subscribed to this device
                 client.SubscribedDeviceId ??= output.DeviceId;
                 foreach (var c in _clients.Values)
@@ -926,6 +956,7 @@ public sealed class RelayServer : IDisposable
                 break;
 
             case TerminalClosedMessage closed:
+                RemoveHistoryForSession(closed.DeviceId, closed.SessionId);
                 // Forward to subscribed clients
                 foreach (var c in _clients.Values)
                 {
@@ -1298,6 +1329,7 @@ public sealed class RelayServer : IDisposable
         }
 
         _devices.TryRemove(kick.DeviceId, out _);
+        RemoveHistoryForDevice(kick.DeviceId);
         NotifyDeviceListChanged();
 
         // Broadcast member left
@@ -1330,6 +1362,7 @@ public sealed class RelayServer : IDisposable
             }
 
             _devices.TryRemove(targetDeviceId, out _);
+            RemoveHistoryForDevice(targetDeviceId);
             NotifyDeviceListChanged();
             Log?.Invoke($"Device unregistered: {targetDeviceId}");
             return;
@@ -1389,6 +1422,7 @@ public sealed class RelayServer : IDisposable
         }
 
         _devices.TryRemove(targetDeviceId, out _);
+        RemoveHistoryForDevice(targetDeviceId);
         NotifyDeviceListChanged();
 
         if (removed)
@@ -2513,6 +2547,74 @@ public sealed class RelayServer : IDisposable
         var wsScheme = scheme is "https" or "wss" ? "wss" : "ws";
         return $"{wsScheme}://{host}/ws/";
     }
+
+    // --- Terminal history ---
+
+    public TerminalHistoryPage GetTerminalHistoryPage(string deviceId, string sessionId, long beforeSeq, int maxChars)
+    {
+        var deviceKey = deviceId?.Trim() ?? string.Empty;
+        var sessionKey = sessionId?.Trim() ?? string.Empty;
+        if (deviceKey.Length == 0 || sessionKey.Length == 0)
+            return TerminalHistoryPage.Empty;
+
+        if (_historyStore is null)
+            return TerminalHistoryPage.Empty;
+
+        return _historyStore.GetPage(deviceKey, sessionKey, beforeSeq, ClampHistoryPageSize(maxChars));
+    }
+
+    private void AppendTerminalHistory(string deviceId, string sessionId, string data)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(sessionId))
+            return;
+
+        if (string.IsNullOrEmpty(data))
+            return;
+
+        _historyStore?.Append(deviceId, sessionId, data);
+    }
+
+    private async Task HandleTerminalHistoryRequest(ConnectedClient client, TerminalHistoryRequestMessage req)
+    {
+        var deviceId = req.DeviceId?.Trim() ?? string.Empty;
+        var sessionId = req.SessionId?.Trim() ?? string.Empty;
+        if (deviceId.Length == 0 || sessionId.Length == 0)
+            return;
+
+        client.SubscribedDeviceId = deviceId;
+        client.SubscribedSessionId = sessionId;
+
+        var page = _historyStore?.GetPage(deviceId, sessionId, req.BeforeSeq, ClampHistoryPageSize(req.MaxChars))
+                   ?? TerminalHistoryPage.Empty;
+        var response = new TerminalHistoryResponseMessage
+        {
+            DeviceId = deviceId,
+            SessionId = sessionId,
+            Data = page.Data,
+            NextBeforeSeq = page.NextBeforeSeq,
+            HasMore = page.HasMore
+        };
+        await SendAsync(client, MessageSerializer.Serialize(response));
+    }
+
+    private void RemoveHistoryForSession(string deviceId, string sessionId)
+    {
+        if (PreserveTerminalHistoryOnClose)
+            return;
+
+        _historyStore?.RemoveSession(deviceId, sessionId);
+    }
+
+    private void RemoveHistoryForDevice(string deviceId)
+    {
+        if (PreserveTerminalHistoryOnClose)
+            return;
+
+        _historyStore?.RemoveDevice(deviceId);
+    }
+
+    private static int ClampHistoryPageSize(int requested) =>
+        requested <= 0 ? TerminalHistoryPageChars : Math.Min(requested, TerminalHistoryPageChars);
 
     private static string? FirstHeaderValue(string? value)
     {

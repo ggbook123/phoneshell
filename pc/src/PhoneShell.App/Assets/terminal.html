@@ -130,7 +130,7 @@
 <script>
   var terminalHost = document.getElementById('terminalHost');
   var terminalElement = document.getElementById('terminal');
-  var defaultScrollback = 2000;
+  var defaultScrollback = 1000000;
   var term = new Terminal({
     cursorBlink: true,
     cursorStyle: 'bar',
@@ -181,7 +181,9 @@
   function syncHostLayout() {
     if (manualGeometryLock) {
       terminalHost.classList.add('geometry-locked');
-      term.options.scrollback = 0;
+      if (term.options.scrollback !== defaultScrollback) {
+        term.options.scrollback = defaultScrollback;
+      }
       return;
     }
 
@@ -285,6 +287,18 @@
 
   window.resetTerminal = function() {
     term.reset();
+  };
+
+  window.replaceTerminalBuffer = function(data) {
+    term.reset();
+    if (!data) {
+      return;
+    }
+    term.write(data, function() {
+      if (manualGeometryLock) {
+        stabilizeViewport();
+      }
+    });
   };
 
   window.setTerminalGeometry = function(cols, rows) {

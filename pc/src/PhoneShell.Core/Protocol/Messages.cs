@@ -99,6 +99,25 @@ public sealed class TerminalOutputMessage
     public string Data { get; init; } = string.Empty;
 }
 
+public sealed class TerminalHistoryRequestMessage
+{
+    public string Type => "terminal.history.request";
+    public string DeviceId { get; init; } = string.Empty;
+    public string SessionId { get; init; } = string.Empty;
+    public long BeforeSeq { get; init; }
+    public int MaxChars { get; init; } = 20000;
+}
+
+public sealed class TerminalHistoryResponseMessage
+{
+    public string Type => "terminal.history.response";
+    public string DeviceId { get; init; } = string.Empty;
+    public string SessionId { get; init; } = string.Empty;
+    public string Data { get; init; } = string.Empty;
+    public long NextBeforeSeq { get; init; }
+    public bool HasMore { get; init; }
+}
+
 public sealed class TerminalResizeMessage
 {
     public string Type => "terminal.resize";

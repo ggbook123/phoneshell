@@ -6,6 +6,7 @@ Thumbs.db
 
 # Agent / local workspace artifacts
 .claude/
+.dotnet/
 .dotnet-home/
 .nuget/
 plan/
@@ -37,4 +38,3 @@ harmony/.test/
 *.log
 pc/src/PhoneShell.App/data/
 pc/src/PhoneShell.App/bin/**/data/
-

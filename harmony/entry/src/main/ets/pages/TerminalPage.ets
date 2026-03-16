@@ -50,8 +50,9 @@ struct TerminalPage {
   private terminalController: webview.WebviewController = new webview.WebviewController();
   private terminalBridge: TerminalBridge = new TerminalBridge();
   private terminalPageUrl: string = 'resource://rawfile/terminal/index.html';
-  private maxOutputLength: number = 50000;
+  private maxOutputLength: number = 200000;
   private pendingTerminalOutput: string = '';
+  private flushTimer: number = -1;
   private seededCachedOutput: boolean = false;
   private lastReportedCols: number = 0;
   private lastReportedRows: number = 0;
@@ -157,7 +158,6 @@ struct TerminalPage {
 
     if (this.messageListenerId === -1) {
       this.messageListenerId = ConnectionManager.addOnMessage((type: string, data: Record<string, Object>) => {
-        hilog.info(DOMAIN, PAGE_TAG, 'message listener %{public}s', type);
         if (type === 'terminal.output') {
           if (this.isCurrentSessionMessage(data)) {
             this.enqueueTerminalOutput(this.getMessageString(data, 'data'));
@@ -182,6 +182,11 @@ struct TerminalPage {
   }
 
   private deactivatePage(): void {
+    if (this.flushTimer !== -1) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = -1;
+    }
+
     if (this.stateListenerId !== -1) {
       ConnectionManager.removeOnStateChange(this.stateListenerId);
       this.stateListenerId = -1;
@@ -212,7 +217,17 @@ struct TerminalPage {
       );
     }
 
-    this.flushPendingTerminalOutput();
+    this.scheduleFlush();
+  }
+
+  private scheduleFlush(): void {
+    if (!this.terminalReady || this.flushTimer !== -1) {
+      return;
+    }
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = -1;
+      this.flushPendingTerminalOutput();
+    }, 16) as number;
   }
 
   private flushPendingTerminalOutput(): void {

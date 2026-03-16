@@ -71,6 +71,9 @@ public sealed class RelayClient : IDisposable
     /// <summary>Raised when terminal output is received from a remote device.</summary>
     public event Action<string, string, string>? TerminalOutputReceived; // deviceId, sessionId, data
 
+    /// <summary>Raised when terminal history is received from the relay server.</summary>
+    public event Action<string, string, string, long, bool>? TerminalHistoryReceived; // deviceId, sessionId, data, nextBeforeSeq, hasMore
+
     /// <summary>Raised when a remote terminal is closed.</summary>
     public event Action<string, string>? TerminalClosedReceived; // deviceId, sessionId
 
@@ -170,6 +173,24 @@ public sealed class RelayClient : IDisposable
             Cols = cols,
             Rows = rows
         });
+        await SendAsync(msg);
+    }
+
+    /// <summary>
+    /// Request terminal history for a session from the relay server.
+    /// </summary>
+    public async Task SendTerminalHistoryRequestAsync(string deviceId, string sessionId, long beforeSeq, int maxChars)
+    {
+        if (_ws?.State != WebSocketState.Open) return;
+
+        var msg = MessageSerializer.Serialize(new TerminalHistoryRequestMessage
+        {
+            DeviceId = deviceId,
+            SessionId = sessionId,
+            BeforeSeq = beforeSeq,
+            MaxChars = maxChars
+        });
+
         await SendAsync(msg);
     }
 
@@ -399,6 +420,11 @@ public sealed class RelayClient : IDisposable
 
             case TerminalOutputMessage output:
                 TerminalOutputReceived?.Invoke(output.DeviceId, output.SessionId, output.Data);
+                break;
+
+            case TerminalHistoryResponseMessage history:
+                TerminalHistoryReceived?.Invoke(history.DeviceId, history.SessionId, history.Data,
+                    history.NextBeforeSeq, history.HasMore);
                 break;
 
             case TerminalResizeMessage resize:

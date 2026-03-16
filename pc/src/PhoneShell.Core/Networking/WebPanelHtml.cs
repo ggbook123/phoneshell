@@ -778,6 +778,12 @@ html, body {
   var statusPollTimer = null;
   var groupPollTimer = null;
   var serverStatus = null;
+  var historyPageChars = 20000;
+  var historyLoading = false;
+  var historyComplete = false;
+  var historyBeforeSeq = 0;
+  var historyChunks = [];
+  var pendingOutput = '';
 
   // --- Pairing / Login ---
 
@@ -1108,6 +1114,53 @@ html, body {
     }
   }
 
+  function resetHistoryState() {
+    historyLoading = false;
+    historyComplete = false;
+    historyBeforeSeq = 0;
+    historyChunks = [];
+    pendingOutput = '';
+  }
+
+  function requestHistoryPage() {
+    if (!term || historyLoading || historyComplete) return;
+    if (!activeTermSession || !activeTermDevice) return;
+    historyLoading = true;
+    wsSend({
+      type: 'terminal.history.request',
+      deviceId: activeTermDevice,
+      sessionId: activeTermSession,
+      beforeSeq: historyBeforeSeq,
+      maxChars: historyPageChars
+    });
+  }
+
+  function applyHistoryBuffer() {
+    if (!term) return;
+    var history = historyChunks.join('');
+    var merged = history + pendingOutput;
+    pendingOutput = '';
+    term.reset();
+    if (merged) {
+      term.write(merged);
+    }
+  }
+
+  function handleHistoryResponse(msg) {
+    if (msg.deviceId !== activeTermDevice || msg.sessionId !== activeTermSession) return;
+    historyLoading = false;
+    if (msg.data) {
+      historyChunks.unshift(msg.data);
+    }
+    if (msg.hasMore) {
+      historyBeforeSeq = msg.nextBeforeSeq || 0;
+      requestHistoryPage();
+      return;
+    }
+    historyComplete = true;
+    applyHistoryBuffer();
+  }
+
   function handleWsMessage(msg) {
     switch(msg.type) {
       case 'device.list':
@@ -1130,12 +1183,21 @@ html, body {
             term.resize(msg.cols, msg.rows);
             term.focus();
           }
+          resetHistoryState();
+          requestHistoryPage();
         }
         break;
       case 'terminal.output':
         if (term && msg.sessionId === activeTermSession) {
-          term.write(msg.data);
+          if (!historyComplete) {
+            pendingOutput += msg.data || '';
+          } else {
+            term.write(msg.data);
+          }
         }
+        break;
+      case 'terminal.history.response':
+        handleHistoryResponse(msg);
         break;
       case 'terminal.closed':
         if (msg.sessionId === activeTermSession) {
@@ -1419,6 +1481,8 @@ html, body {
         rows: term.rows
       });
     }
+    resetHistoryState();
+    requestHistoryPage();
   };
 
   function showTerminalView(deviceId, shellId) {
@@ -1469,7 +1533,7 @@ html, body {
       fontWeightBold: '600',
       letterSpacing: 0.3,
       lineHeight: 1.25,
-      scrollback: 5000,
+      scrollback: 1000000,
       theme: {
         background: '#0A0E14',
         foreground: '#CBD3E0',
@@ -1499,6 +1563,7 @@ html, body {
     fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
+    resetHistoryState();
 
     // Fit after a brief delay to ensure container is sized
     setTimeout(function() {
@@ -1554,6 +1619,7 @@ html, body {
     var container = document.getElementById('xterm-container');
     if (container) container.innerHTML = '';
     activeTermSession = null;
+    resetHistoryState();
   }
 
   // --- Sidebar ---
