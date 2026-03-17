@@ -51,9 +51,19 @@ struct TerminalPage {
   private terminalBridge: TerminalBridge = new TerminalBridge();
   private terminalPageUrl: string = 'resource://rawfile/terminal/index.html';
   private maxOutputLength: number = 200000;
+  private historyPageChars: number = 20000;
   private pendingTerminalOutput: string = '';
+  private pendingHistoryOutput: string = '';
+  private pendingHistoryReplace: string = '';
+  private historyChunks: Array<string> = [];
+  private historyBeforeSeq: number = 0;
+  private historyLoading: boolean = false;
+  private historyComplete: boolean = false;
+  private historyStarted: boolean = false;
+  private historyPlanned: boolean = false;
+  private historySessionId: string = '';
+  private historyDeviceId: string = '';
   private flushTimer: number = -1;
-  private seededCachedOutput: boolean = false;
   private lastReportedCols: number = 0;
   private lastReportedRows: number = 0;
   private viewedSessionId: string = '';
@@ -69,6 +79,34 @@ struct TerminalPage {
     const value: Object | undefined = data[key];
     if (typeof value === 'string') {
       return value as string;
+    }
+    return fallback;
+  }
+
+  private getMessageNumber(data: Record<string, Object>, key: string, fallback: number = 0): number {
+    const value: Object | undefined = data[key];
+    if (typeof value === 'number') {
+      return value as number;
+    }
+    if (typeof value === 'string') {
+      const parsed: number = Number(value as string);
+      return Number.isNaN(parsed) ? fallback : parsed;
+    }
+    return fallback;
+  }
+
+  private getMessageBoolean(data: Record<string, Object>, key: string, fallback: boolean = false): boolean {
+    const value: Object | undefined = data[key];
+    if (typeof value === 'boolean') {
+      return value as boolean;
+    }
+    if (typeof value === 'number') {
+      return (value as number) !== 0;
+    }
+    if (typeof value === 'string') {
+      const raw: string = (value as string).toLowerCase();
+      if (raw === 'true' || raw === '1') return true;
+      if (raw === 'false' || raw === '0') return false;
     }
     return fallback;
   }
@@ -90,8 +128,8 @@ struct TerminalPage {
   aboutToAppear(): void {
     hilog.info(DOMAIN, PAGE_TAG, 'aboutToAppear');
     // Reset state for fresh terminal view each time we enter
-    this.seededCachedOutput = false;
     this.pendingTerminalOutput = '';
+    this.resetHistoryState();
     this.terminalReady = false;
     this.terminalHint = '正在初始化终端...';
     this.showSessionClosedDialog = false;
@@ -137,13 +175,9 @@ struct TerminalPage {
     this.connectionState = ConnectionManager.getConnectionStateForDevice(ConnectionManager.getActiveDeviceId());
     this.viewedSessionId = this.normalizeString(ConnectionManager.getActiveSessionId(), this.viewedSessionId);
     this.sessionActive = this.viewedSessionId.length > 0;
+    this.historyPlanned = this.sessionActive && this.viewedSessionId.length > 0;
     hilog.info(DOMAIN, PAGE_TAG, 'activatePage connected=%{public}d sessionActive=%{public}s session=%{public}s',
       this.connectionState, this.sessionActive ? 'true' : 'false', this.viewedSessionId);
-
-    if (!this.seededCachedOutput) {
-      this.seededCachedOutput = true;
-      this.enqueueTerminalOutput(ConnectionManager.getBufferedTerminalOutput());
-    }
 
     if (this.stateListenerId === -1) {
       this.stateListenerId = ConnectionManager.addOnStateChange((state: ConnectionState, _deviceId: string) => {
@@ -160,8 +194,15 @@ struct TerminalPage {
       this.messageListenerId = ConnectionManager.addOnMessage((type: string, data: Record<string, Object>) => {
         if (type === 'terminal.output') {
           if (this.isCurrentSessionMessage(data)) {
-            this.enqueueTerminalOutput(this.getMessageString(data, 'data'));
+            const output: string = this.getMessageString(data, 'data');
+            if (this.historyPlanned && !this.historyComplete) {
+              this.appendPendingHistoryOutput(output);
+            } else {
+              this.enqueueTerminalOutput(output);
+            }
           }
+        } else if (type === 'terminal.history.response') {
+          this.handleHistoryResponse(data);
         } else if (type === 'terminal.closed') {
           if (this.isCurrentSessionMessage(data)) {
             this.sessionActive = false;
@@ -176,8 +217,9 @@ struct TerminalPage {
     }
 
     if (this.terminalReady) {
-      this.flushPendingTerminalOutput();
       this.requestRemoteResize();
+      this.startHistoryLoadIfNeeded();
+      this.flushPendingTerminalOutput();
     }
   }
 
@@ -234,6 +276,9 @@ struct TerminalPage {
     if (!this.terminalReady || this.pendingTerminalOutput.length === 0) {
       return;
     }
+    if (this.historyPlanned && !this.historyComplete) {
+      return;
+    }
 
     const payload: string = JSON.stringify(this.pendingTerminalOutput);
     this.pendingTerminalOutput = '';
@@ -252,6 +297,8 @@ struct TerminalPage {
     this.terminalReady = true;
     this.terminalHint = '等待终端输出...';
     this.handleTerminalResize(cols, rows);
+    this.startHistoryLoadIfNeeded();
+    this.applyPendingHistoryReplace();
     this.flushPendingTerminalOutput();
     this.runTerminalScript('window.phoneShell && window.phoneShell.focus();');
   }
@@ -280,6 +327,132 @@ struct TerminalPage {
     }
 
     ConnectionManager.sendTerminalResize(this.lastReportedCols, this.lastReportedRows);
+  }
+
+  private resetHistoryState(): void {
+    this.historyPlanned = false;
+    this.historyStarted = false;
+    this.historyLoading = false;
+    this.historyComplete = false;
+    this.historyBeforeSeq = 0;
+    this.historyChunks = [];
+    this.pendingHistoryOutput = '';
+    this.pendingHistoryReplace = '';
+    this.historySessionId = '';
+    this.historyDeviceId = '';
+  }
+
+  private startHistoryLoadIfNeeded(): void {
+    if (!this.historyPlanned || this.historyStarted) {
+      return;
+    }
+    if (!this.sessionActive || this.viewedSessionId.length === 0) {
+      return;
+    }
+    if (!this.terminalReady) {
+      return;
+    }
+
+    this.historyStarted = true;
+    this.historySessionId = this.viewedSessionId;
+    this.historyDeviceId = this.normalizeString(ConnectionManager.getActiveDeviceId());
+    this.historyLoading = false;
+    this.historyComplete = false;
+    this.historyBeforeSeq = 0;
+    this.historyChunks = [];
+    this.pendingHistoryReplace = '';
+
+    this.requestHistoryPage();
+  }
+
+  private requestHistoryPage(): void {
+    if (this.historyLoading || this.historyComplete) {
+      return;
+    }
+    if (this.historySessionId.length === 0 || this.historyDeviceId.length === 0) {
+      return;
+    }
+    this.historyLoading = true;
+    ConnectionManager.requestTerminalHistory(
+      this.historyDeviceId,
+      this.historySessionId,
+      this.historyBeforeSeq,
+      this.historyPageChars
+    );
+  }
+
+  private handleHistoryResponse(data: Record<string, Object>): void {
+    if (!this.historyPlanned || !this.isCurrentSessionMessage(data)) {
+      return;
+    }
+    this.historyLoading = false;
+
+    const chunk: string = this.getMessageString(data, 'data');
+    const nextBeforeSeq: number = this.getMessageNumber(data, 'nextBeforeSeq', 0);
+    const hasMore: boolean = this.getMessageBoolean(data, 'hasMore', false);
+
+    if (chunk.length > 0) {
+      this.historyChunks.unshift(chunk);
+    }
+
+    if (hasMore) {
+      this.historyBeforeSeq = nextBeforeSeq;
+      this.requestHistoryPage();
+      return;
+    }
+
+    this.historyComplete = true;
+    this.applyHistoryBuffer();
+  }
+
+  private appendPendingHistoryOutput(data: string): void {
+    const output: string = this.normalizeString(data);
+    if (output.length === 0) {
+      return;
+    }
+
+    this.pendingHistoryOutput += output;
+    if (this.pendingHistoryOutput.length > this.maxOutputLength) {
+      this.pendingHistoryOutput = this.pendingHistoryOutput.substring(
+        this.pendingHistoryOutput.length - this.maxOutputLength
+      );
+    }
+  }
+
+  private applyHistoryBuffer(): void {
+    const history: string = this.historyChunks.join('');
+    this.historyChunks = [];
+    const merged: string = history + this.pendingHistoryOutput;
+    this.pendingHistoryOutput = '';
+
+    if (!this.terminalReady) {
+      this.pendingHistoryReplace = merged;
+      return;
+    }
+
+    this.replaceTerminalBuffer(merged);
+  }
+
+  private applyPendingHistoryReplace(): void {
+    if (this.pendingHistoryReplace.length === 0) {
+      return;
+    }
+    const payload: string = this.pendingHistoryReplace;
+    this.pendingHistoryReplace = '';
+    this.replaceTerminalBuffer(payload);
+  }
+
+  private replaceTerminalBuffer(data: string): void {
+    if (!this.terminalReady) {
+      this.pendingHistoryReplace = data;
+      return;
+    }
+    if (data.length === 0) {
+      this.runTerminalScript('window.phoneShell && window.phoneShell.clear();');
+      return;
+    }
+    const payload: string = JSON.stringify(data);
+    this.runTerminalScript(`window.phoneShell && (window.phoneShell.clear(), window.phoneShell.write(${payload}));`);
   }
 
   private isCurrentSessionMessage(data: Record<string, Object>): boolean {
