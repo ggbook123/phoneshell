@@ -591,35 +591,70 @@ struct DeviceManagePage {
   }
 
   build() {
-    Stack() {
+    Stack({ alignContent: Alignment.TopStart }) {
       Column() {
-        // Top bar
-        Row() {
-          Text(AppStrings.APP_NAME)
-            .fontSize(AppSizes.FONT_SIZE_SUBTITLE)
-            .fontColor(AppColors.TEXT_PRIMARY)
-            .fontWeight(FontWeight.Bold)
+        Blank()
+          .height(140)
+          .width('100%')
+          .backgroundColor(AppColors.ACCENT_DIM)
+          .opacity(0.2)
+        Blank().layoutWeight(1)
+      }
+      .width('100%')
+      .height('100%')
+
+      Column() {
+        Column() {
+          Row() {
+            Column() {
+              Text(AppStrings.APP_NAME)
+                .fontSize(AppSizes.FONT_SIZE_SUBTITLE)
+                .fontColor(AppColors.TEXT_PRIMARY)
+                .fontWeight(FontWeight.Bold)
+            }
             .layoutWeight(1)
 
-          // Auth badge
-          if (this.pendingAuthCount > 0) {
-            Button(`${this.pendingAuthCount}`)
-              .height(24)
-              .fontSize(11)
-              .fontColor('#FFFFFF')
-              .backgroundColor(AppColors.ERROR_RED)
-              .borderRadius(12)
-              .padding({ left: 8, right: 8 })
-              .margin({ right: 8 })
-              .onClick(() => {
-                AuthManager.showPending();
-              })
+            Row({ space: 8 }) {
+              this.StatusChip(this.getModeLabel(), this.getModeColor())
+              if (this.pendingAuthCount > 0) {
+                Button(`AUTH ${this.pendingAuthCount}`)
+                  .height(26)
+                  .fontSize(11)
+                  .fontColor(AppColors.ACCENT_PINK)
+                  .backgroundColor(AppColors.HIGHLIGHT)
+                  .borderWidth(1)
+                  .borderColor(AppColors.ACCENT_PINK)
+                  .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+                  .padding({ left: 10, right: 10 })
+                  .onClick(() => {
+                    AuthManager.showPending();
+                  })
+              }
+            }
           }
+          .width('100%')
+          .margin({ bottom: 10 })
+
+          Row() {
+            Text(ConnectionManager.isInGroup()
+              ? `群组已连接 · ${this.groupMembers.length} 成员`
+              : '未加入群组')
+              .fontSize(12)
+              .fontColor(ConnectionManager.isInGroup() ? AppColors.ACCENT : AppColors.TEXT_MUTED)
+              .layoutWeight(1)
+
+            if (this.groupId.length > 0) {
+              Text(this.groupId)
+                .fontSize(11)
+                .fontColor(AppColors.TEXT_SECONDARY)
+                .fontFamily('monospace')
+            }
+          }
+          .width('100%')
         }
         .width('100%')
-        .height(56)
-        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE })
-        .alignItems(VerticalAlign.Center)
+        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 16, bottom: 12 })
+        .backgroundColor(AppColors.SURFACE_1)
 
         Divider().color(AppColors.DIVIDER).width('100%')
 
@@ -630,22 +665,40 @@ struct DeviceManagePage {
         if (ConnectionManager.isInGroup()) {
           Column() {
             Divider().color(AppColors.DIVIDER).width('100%')
-            Button('扫  码')
-              .width('100%')
-              .height(48)
-              .fontSize(AppSizes.FONT_SIZE_BODY)
-              .fontColor('#FFFFFF')
-              .backgroundColor(AppColors.ACCENT)
-              .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
-              .onClick(() => { this.startScan(); })
+            Row() {
+              Column() {
+                Text('快捷操作')
+                  .fontSize(12)
+                  .fontColor(AppColors.TEXT_MUTED)
+                  .fontFamily('monospace')
+                Text('扫描二维码绑定/登录')
+                  .fontSize(12)
+                  .fontColor(AppColors.TEXT_SECONDARY)
+              }
+              .layoutWeight(1)
+
+              Button('扫  码')
+                .height(40)
+                .fontSize(14)
+                .fontColor('#FFFFFF')
+                .backgroundColor(AppColors.ACCENT)
+                .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+                .padding({ left: 16, right: 16 })
+                .onClick(() => { this.startScan(); })
+            }
+            .width('100%')
+            .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+            .backgroundColor(AppColors.SURFACE_1)
+            .borderWidth(1)
+            .borderColor(AppColors.CARD_BORDER)
+            .borderRadius(AppSizes.BORDER_RADIUS_CARD)
           }
           .width('100%')
-          .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 8, bottom: 16 })
+          .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 10, bottom: 16 })
         }
       }
       .width('100%')
       .height('100%')
-      .backgroundColor(AppColors.BACKGROUND)
 
       // Settings sheet overlay
       if (this.showSettingsSheet) {
@@ -664,6 +717,7 @@ struct DeviceManagePage {
     }
     .width('100%')
     .height('100%')
+    .backgroundColor(AppColors.BACKGROUND)
   }
 
   @Builder
@@ -676,7 +730,7 @@ struct DeviceManagePage {
       .width('100%')
       .alignItems(HorizontalAlign.Start)
       .justifyContent(FlexAlign.Start)
-      .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 12, bottom: 12 })
+      .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 16, bottom: 16 })
     }
     .align(Alignment.TopStart)
     .width('100%')
@@ -689,25 +743,34 @@ struct DeviceManagePage {
       this.ScanConnectSection()
     } else {
       Column() {
-        // Group info header
         Row() {
-          Text(`群组 · ${this.groupMembers.length} 成员`)
-            .fontSize(AppSizes.FONT_SIZE_SMALL)
-            .fontColor(AppColors.ACCENT)
-            .layoutWeight(1)
+          Column() {
+            Text('群组设备')
+              .fontSize(AppSizes.FONT_SIZE_BODY)
+              .fontColor(AppColors.TEXT_PRIMARY)
+              .fontWeight(FontWeight.Medium)
+            Text(`已连接 · ${this.groupMembers.length} 成员`)
+              .fontSize(12)
+              .fontColor(AppColors.TEXT_SECONDARY)
+          }
+          .layoutWeight(1)
 
-          Button('解散')
-            .height(28)
-            .fontSize(12)
-            .fontColor(AppColors.ERROR_RED)
-            .backgroundColor(Color.Transparent)
-            .borderWidth(1)
-            .borderColor(AppColors.ERROR_RED)
-            .borderRadius(AppSizes.BORDER_RADIUS_TAG)
-            .onClick(() => { ConnectionManager.dissolveGroup(); })
+          Row({ space: 8 }) {
+            this.StatusChip(`${this.groupMembers.length} MEMBERS`, AppColors.ACCENT)
+            Button('解散')
+              .height(30)
+              .fontSize(12)
+              .fontColor(AppColors.ERROR_RED)
+              .backgroundColor(Color.Transparent)
+              .borderWidth(1)
+              .borderColor(AppColors.ERROR_RED)
+              .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+              .padding({ left: 10, right: 10 })
+              .onClick(() => { ConnectionManager.dissolveGroup(); })
+          }
         }
         .width('100%')
-        .margin({ bottom: 12 })
+        .margin({ bottom: 14 })
 
         if (this.getGroupDevices().length === 0) {
           Text('群组暂无设备')
@@ -730,6 +793,11 @@ struct DeviceManagePage {
       }
       .width('100%')
       .alignItems(HorizontalAlign.Start)
+      .padding(16)
+      .backgroundColor(AppColors.SURFACE_1)
+      .borderWidth(1)
+      .borderColor(AppColors.CARD_BORDER)
+      .borderRadius(AppSizes.BORDER_RADIUS_CARD)
       .margin({ bottom: 16 })
     }
   }
@@ -737,37 +805,50 @@ struct DeviceManagePage {
   @Builder
   ScanConnectSection() {
     Column() {
-      Text('扫描服务器二维码')
-        .fontSize(AppSizes.FONT_SIZE_BODY)
-        .fontColor(AppColors.TEXT_PRIMARY)
-        .margin({ bottom: 8 })
+      Row() {
+        Column() {
+          Text('扫码连接服务器')
+            .fontSize(AppSizes.FONT_SIZE_BODY)
+            .fontColor(AppColors.TEXT_PRIMARY)
+            .fontWeight(FontWeight.Medium)
+          Text('对准 PC 端命令中心生成的二维码')
+            .fontSize(12)
+            .fontColor(AppColors.TEXT_SECONDARY)
+        }
+        .layoutWeight(1)
 
-      Text('使用 PC 端生成的 QR 码进行扫码连接，自动加入群组并绑定手机。')
+        this.StatusChip('LINK', AppColors.ACCENT_BLUE)
+      }
+      .width('100%')
+      .margin({ bottom: 12 })
+
+      Text('将手机加入群组并绑定控制权限。')
         .fontSize(AppSizes.FONT_SIZE_SMALL)
         .fontColor(AppColors.TEXT_SECONDARY)
-        .textAlign(TextAlign.Center)
-        .margin({ bottom: 24 })
-        .padding({ left: 20, right: 20 })
+        .margin({ bottom: 20 })
 
       Button(this.isScanning ? '扫码中...' : '开始扫码')
-        .width(200)
+        .width('100%')
         .height(44)
         .fontSize(AppSizes.FONT_SIZE_BODY)
-        .fontColor(AppColors.BACKGROUND)
+        .fontColor('#FFFFFF')
         .backgroundColor(AppColors.ACCENT)
-        .borderRadius(AppSizes.BORDER_RADIUS_CARD)
+        .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
         .enabled(!this.isScanning)
         .onClick(() => {
           this.startScan();
         })
-        .margin({ bottom: 20 })
+        .margin({ bottom: 16 })
 
       this.ScanStatusPanel()
     }
     .width('100%')
-    .padding({ top: 12, bottom: 24 })
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
+    .padding(16)
+    .backgroundColor(AppColors.SURFACE_1)
+    .borderWidth(1)
+    .borderColor(AppColors.CARD_BORDER)
+    .borderRadius(AppSizes.BORDER_RADIUS_CARD)
+    .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
@@ -779,7 +860,7 @@ struct DeviceManagePage {
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.TEXT_SECONDARY)
             .margin({ bottom: 8 })
-            .textAlign(TextAlign.Center)
+            .textAlign(TextAlign.Start)
             .width('100%')
         }
 
@@ -788,7 +869,7 @@ struct DeviceManagePage {
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.ERROR_RED)
             .margin({ bottom: 8 })
-            .textAlign(TextAlign.Center)
+            .textAlign(TextAlign.Start)
             .width('100%')
         }
 
@@ -796,7 +877,7 @@ struct DeviceManagePage {
           Column() {
             Text('扫码结果')
               .fontSize(AppSizes.FONT_SIZE_SMALL)
-              .fontColor(AppColors.TEXT_SECONDARY)
+              .fontColor(AppColors.TEXT_MUTED)
               .margin({ bottom: 4 })
             Text(this.scanResult)
               .fontSize(12)
@@ -807,15 +888,22 @@ struct DeviceManagePage {
               .textOverflow({ overflow: TextOverflow.Ellipsis })
           }
           .width('100%')
-          .padding(AppSizes.PADDING_CARD)
-          .backgroundColor(AppColors.CARD_BACKGROUND)
+          .padding(12)
+          .backgroundColor(AppColors.SURFACE_2)
+          .borderWidth(1)
+          .borderColor(AppColors.CARD_BORDER)
           .borderRadius(AppSizes.BORDER_RADIUS_CARD)
           .alignItems(HorizontalAlign.Start)
         }
       }
       .width('100%')
       .margin({ top: 8 })
-      .alignItems(HorizontalAlign.Center)
+      .padding(12)
+      .backgroundColor(AppColors.SURFACE_2)
+      .borderWidth(1)
+      .borderColor(AppColors.CARD_BORDER)
+      .borderRadius(AppSizes.BORDER_RADIUS_CARD)
+      .alignItems(HorizontalAlign.Start)
     }
   }
 
@@ -824,16 +912,19 @@ struct DeviceManagePage {
     if (this.getSingleDevices().length > 0) {
       Column() {
         Row() {
-          Text('待加入设备')
-            .fontSize(AppSizes.FONT_SIZE_SMALL)
-            .fontColor(AppColors.TEXT_SECONDARY)
+          Column() {
+            Text('待加入设备')
+              .fontSize(AppSizes.FONT_SIZE_SMALL)
+              .fontColor(AppColors.TEXT_PRIMARY)
+              .fontWeight(FontWeight.Medium)
+          }
           Blank()
           Text('长按移入群组')
             .fontSize(12)
-            .fontColor(AppColors.TEXT_SECONDARY)
+            .fontColor(AppColors.TEXT_MUTED)
         }
         .width('100%')
-        .margin({ bottom: 8 })
+        .margin({ bottom: 12 })
 
         Column() {
           ForEach(this.getSingleDevices(), (device: DeviceInfo) => {
@@ -847,16 +938,33 @@ struct DeviceManagePage {
       }
       .width('100%')
       .alignItems(HorizontalAlign.Start)
+      .padding(16)
+      .backgroundColor(AppColors.SURFACE_1)
+      .borderWidth(1)
+      .borderColor(AppColors.CARD_BORDER)
+      .borderRadius(AppSizes.BORDER_RADIUS_CARD)
     }
   }
 
   @Builder
   DeviceCard(device: DeviceInfo, allowMoveToGroup: boolean, isPendingSingle: boolean) {
     Column() {
+      Blank()
+        .height(2)
+        .width('100%')
+        .backgroundColor(device.isOnline ? AppColors.ACCENT : AppColors.CARD_BORDER)
+        .margin({ bottom: 12 })
+
       Row() {
-        Text(this.getOsIcon(device.os))
-          .fontSize(24)
-          .margin({ right: 12 })
+        Stack({ alignContent: Alignment.Center }) {
+          Circle()
+            .width(38)
+            .height(38)
+            .fill(AppColors.SURFACE_3)
+          Text(this.getOsIcon(device.os))
+            .fontSize(18)
+        }
+        .margin({ right: 12 })
 
         Column() {
           Text(device.displayName)
@@ -870,28 +978,42 @@ struct DeviceManagePage {
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.TEXT_SECONDARY)
             .margin({ top: 4 })
+
+          Text(`ID ${device.deviceId}`)
+            .fontSize(11)
+            .fontColor(AppColors.TEXT_MUTED)
+            .fontFamily('monospace')
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .margin({ top: 4 })
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        // Settings gear
-        Text('⚙')
-          .fontSize(20)
-          .fontColor(AppColors.TEXT_SECONDARY)
-          .padding(8)
-          .onClick(() => { this.openDeviceSettings(device, isPendingSingle); })
+        Column() {
+          // Settings gear
+          Text('⚙')
+            .fontSize(18)
+            .fontColor(AppColors.TEXT_SECONDARY)
+            .padding(6)
+            .onClick(() => { this.openDeviceSettings(device, isPendingSingle); })
 
-        // Online status
-        Row() {
-          Circle()
-            .width(AppSizes.STATUS_DOT_SIZE)
-            .height(AppSizes.STATUS_DOT_SIZE)
-            .fill(device.isOnline ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
-            .margin({ right: 6 })
+          Row() {
+            Circle()
+              .width(6)
+              .height(6)
+              .fill(device.isOnline ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
+              .margin({ right: 6 })
 
-          Text(device.isOnline ? '在线' : '离线')
-            .fontSize(12)
-            .fontColor(device.isOnline ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
+            Text(device.isOnline ? '在线' : '离线')
+              .fontSize(11)
+              .fontColor(device.isOnline ? AppColors.ONLINE_GREEN : AppColors.TEXT_MUTED)
+          }
+          .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+          .backgroundColor(AppColors.CHIP_BG)
+          .borderWidth(1)
+          .borderColor(device.isOnline ? AppColors.ONLINE_GREEN : AppColors.CHIP_BORDER)
+          .borderRadius(AppSizes.BORDER_RADIUS_TAG)
         }
       }
       .width('100%')
@@ -903,7 +1025,9 @@ struct DeviceManagePage {
             Text(shell)
               .fontSize(12)
               .fontColor(AppColors.ACCENT)
-              .backgroundColor('#0F3460')
+              .backgroundColor(AppColors.HIGHLIGHT)
+              .borderWidth(1)
+              .borderColor(AppColors.ACCENT_DIM)
               .borderRadius(AppSizes.BORDER_RADIUS_TAG)
               .padding({ left: 8, right: 8, top: 4, bottom: 4 })
           }, (shell: string, index: number) => `${shell}_${index}`)
@@ -915,8 +1039,10 @@ struct DeviceManagePage {
     .width('100%')
     .padding(AppSizes.PADDING_CARD)
     .backgroundColor(AppColors.CARD_BACKGROUND)
+    .borderWidth(1)
+    .borderColor(AppColors.CARD_BORDER)
     .borderRadius(AppSizes.BORDER_RADIUS_CARD)
-    .opacity(device.isOnline ? 1.0 : 0.5)
+    .opacity(device.isOnline ? 1.0 : 0.7)
     .onClick(() => { this.onDeviceClick(device); })
     .gesture(
       LongPressGesture({ repeat: false, duration: 600 })
@@ -934,11 +1060,19 @@ struct DeviceManagePage {
       Blank().layoutWeight(1)
       Column() {
         // Title
-        Text(`── ${this.settingsDisplayName} ──`)
+        Text('设备设置')
           .fontSize(AppSizes.FONT_SIZE_SUBTITLE)
           .fontColor(AppColors.TEXT_PRIMARY)
           .fontWeight(FontWeight.Medium)
-          .margin({ bottom: 20 })
+          .margin({ bottom: 6 })
+          .textAlign(TextAlign.Center)
+          .width('100%')
+
+        Text(this.settingsDisplayName)
+          .fontSize(12)
+          .fontColor(AppColors.TEXT_MUTED)
+          .fontFamily('monospace')
+          .margin({ bottom: 18 })
           .textAlign(TextAlign.Center)
           .width('100%')
 
@@ -1020,7 +1154,7 @@ struct DeviceManagePage {
               .height(44)
               .fontSize(AppSizes.FONT_SIZE_BODY)
               .fontColor('#FFFFFF')
-              .backgroundColor('#0F3460')
+              .backgroundColor(AppColors.ACCENT_BLUE)
               .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
               .margin({ bottom: 8 })
               .onClick(() => { this.designateAsServer(); })
@@ -1054,12 +1188,14 @@ struct DeviceManagePage {
       }
       .width('100%')
       .padding(24)
-      .backgroundColor(AppColors.CARD_BACKGROUND)
+      .backgroundColor(AppColors.SURFACE_2)
+      .borderWidth(1)
+      .borderColor(AppColors.CARD_BORDER)
       .borderRadius({ topLeft: 16, topRight: 16 })
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#90000000')
+    .backgroundColor('#B0000000')
     .onClick(() => { this.closeSettingsSheet(); })
   }
 
@@ -1099,7 +1235,7 @@ struct DeviceManagePage {
             .fontColor(AppColors.TEXT_PRIMARY)
             .backgroundColor(Color.Transparent)
             .borderWidth(1)
-            .borderColor(AppColors.TEXT_SECONDARY)
+            .borderColor(AppColors.TEXT_MUTED)
             .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
             .onClick(() => { this.rejectAuth(); })
 
@@ -1116,14 +1252,16 @@ struct DeviceManagePage {
       }
       .width('100%')
       .padding(24)
-      .backgroundColor(AppColors.CARD_BACKGROUND)
+      .backgroundColor(AppColors.SURFACE_2)
+      .borderWidth(1)
+      .borderColor(AppColors.CARD_BORDER)
       .borderRadius(16)
       .alignItems(HorizontalAlign.Center)
     }
     .width('100%')
     .height('100%')
     .padding({ left: 24, right: 24 })
-    .backgroundColor('#90000000')
+    .backgroundColor('#B0000000')
     .justifyContent(FlexAlign.Center)
   }
 
@@ -1151,7 +1289,7 @@ struct DeviceManagePage {
             .fontColor(AppColors.TEXT_PRIMARY)
             .backgroundColor(Color.Transparent)
             .borderWidth(1)
-            .borderColor(AppColors.TEXT_SECONDARY)
+            .borderColor(AppColors.TEXT_MUTED)
             .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
             .onClick(() => {
               this.showInviteConfirmDialog = false;
@@ -1173,15 +1311,49 @@ struct DeviceManagePage {
       }
       .width('100%')
       .padding(24)
-      .backgroundColor(AppColors.CARD_BACKGROUND)
+      .backgroundColor(AppColors.SURFACE_2)
+      .borderWidth(1)
+      .borderColor(AppColors.CARD_BORDER)
       .borderRadius(16)
       .alignItems(HorizontalAlign.Center)
     }
     .width('100%')
     .height('100%')
     .padding({ left: 24, right: 24 })
-    .backgroundColor('#90000000')
+    .backgroundColor('#B0000000')
     .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
+  StatusChip(label: string, color: string) {
+    Row() {
+      Circle()
+        .width(6)
+        .height(6)
+        .fill(color)
+        .margin({ right: 6 })
+      Text(label)
+        .fontSize(11)
+        .fontColor(color)
+        .fontFamily('monospace')
+    }
+    .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+    .backgroundColor(AppColors.CHIP_BG)
+    .borderWidth(1)
+    .borderColor(color)
+    .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+  }
+
+  private getModeLabel(): string {
+    if (this.currentMode === DeviceMode.GROUP) return '群组';
+    if (this.currentMode === DeviceMode.SINGLE) return '单连';
+    return '待机';
+  }
+
+  private getModeColor(): string {
+    if (this.currentMode === DeviceMode.GROUP) return AppColors.ACCENT;
+    if (this.currentMode === DeviceMode.SINGLE) return AppColors.ACCENT_BLUE;
+    return AppColors.TEXT_MUTED;
   }
 
   private getAuthActionLabel(action: string): string {

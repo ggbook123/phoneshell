@@ -1,26 +1,39 @@
 // App-wide constants for PhoneShell HarmonyOS client
 
 export class AppColors {
-  static readonly BACKGROUND: string = '#1A1A2E';
-  static readonly CARD_BACKGROUND: string = '#16213E';
-  static readonly ACCENT: string = '#00D4AA';
-  static readonly ACCENT_PRESSED: string = '#00B894';
-  static readonly TEXT_PRIMARY: string = '#E0E0E0';
-  static readonly TEXT_SECONDARY: string = '#888888';
-  static readonly TERMINAL_BG: string = '#0E1116';
-  static readonly TERMINAL_TEXT: string = '#E6E6E6';
-  static readonly ONLINE_GREEN: string = '#00D4AA';
-  static readonly OFFLINE_GRAY: string = '#555555';
-  static readonly ERROR_RED: string = '#FF6B6B';
-  static readonly INPUT_BG: string = '#0F3460';
-  static readonly TOOLBAR_BG: string = '#16213E';
-  static readonly DIVIDER: string = '#2A2A4A';
-  static readonly STATUS_BAR_BG: string = '#1A1A2ECC'; // with alpha
+  static readonly BACKGROUND: string = '#07090D';
+  static readonly SURFACE_1: string = '#0B1017';
+  static readonly SURFACE_2: string = '#0F1520';
+  static readonly SURFACE_3: string = '#141B29';
+  static readonly CARD_BACKGROUND: string = '#0F1520';
+  static readonly CARD_BORDER: string = '#1C2A3C';
+  static readonly ACCENT: string = '#00E5C3';
+  static readonly ACCENT_PRESSED: string = '#00BFA4';
+  static readonly ACCENT_BLUE: string = '#4DA6FF';
+  static readonly ACCENT_PINK: string = '#FF2EC4';
+  static readonly ACCENT_YELLOW: string = '#F5C542';
+  static readonly ACCENT_DIM: string = '#0C2E2C';
+  static readonly TEXT_PRIMARY: string = '#F0F6FF';
+  static readonly TEXT_SECONDARY: string = '#B5C0D0';
+  static readonly TEXT_MUTED: string = '#6E7A8A';
+  static readonly TERMINAL_BG: string = '#07090D';
+  static readonly TERMINAL_TEXT: string = '#F0F6FF';
+  static readonly ONLINE_GREEN: string = '#00E5C3';
+  static readonly OFFLINE_GRAY: string = '#6E7A8A';
+  static readonly ERROR_RED: string = '#FF4757';
+  static readonly INPUT_BG: string = '#0C141E';
+  static readonly TOOLBAR_BG: string = '#0B1017';
+  static readonly DIVIDER: string = '#152232';
+  static readonly STATUS_BAR_BG: string = '#0B1017CC'; // with alpha
+  static readonly CHIP_BG: string = '#0A111A';
+  static readonly CHIP_BORDER: string = '#1B2A3A';
+  static readonly HIGHLIGHT: string = '#0D1B24';
+  static readonly GLOW: string = '#102632';
 }
 
 export class AppSizes {
   static readonly BORDER_RADIUS_CARD: number = 12;
-  static readonly BORDER_RADIUS_BUTTON: number = 24;
+  static readonly BORDER_RADIUS_BUTTON: number = 10;
   static readonly BORDER_RADIUS_INPUT: number = 8;
   static readonly BORDER_RADIUS_TAG: number = 6;
   static readonly FONT_SIZE_TITLE: number = 24;

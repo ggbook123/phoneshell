@@ -474,37 +474,60 @@ struct TerminalPage {
   build() {
     Stack({ alignContent: Alignment.Center }) {
       Column() {
+        Blank()
+          .height(2)
+          .width('100%')
+          .backgroundColor(AppColors.ACCENT)
+
         Row() {
-          Text('< 返回')
+          Text('‹ 返回')
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.ACCENT)
             .onClick(() => {
               this.goBack();
             })
-            .padding({ right: 16 })
+            .padding({ right: 12 })
 
-          Text(AppStrings.TERMINAL_TITLE)
-            .fontSize(AppSizes.FONT_SIZE_BODY)
-            .fontColor(AppColors.TEXT_PRIMARY)
-            .fontWeight(FontWeight.Medium)
-            .layoutWeight(1)
+          Column() {
+            Text(AppStrings.TERMINAL_TITLE)
+              .fontSize(AppSizes.FONT_SIZE_BODY)
+              .fontColor(AppColors.TEXT_PRIMARY)
+              .fontWeight(FontWeight.Medium)
+
+            if (this.viewedSessionId.length > 0) {
+              Text(this.viewedSessionId)
+                .fontSize(11)
+                .fontColor(AppColors.TEXT_MUTED)
+                .fontFamily('monospace')
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
 
           Row() {
             Circle()
-              .width(AppSizes.STATUS_DOT_SIZE)
-              .height(AppSizes.STATUS_DOT_SIZE)
+              .width(6)
+              .height(6)
               .fill(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
               .margin({ right: 6 })
 
-            Text(this.sessionActive ? '活动' : '已断开')
-              .fontSize(12)
-              .fontColor(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
+            Text(this.sessionActive ? 'ACTIVE' : 'OFFLINE')
+              .fontSize(11)
+              .fontColor(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.TEXT_MUTED)
+              .fontFamily('monospace')
           }
+          .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+          .backgroundColor(AppColors.CHIP_BG)
+          .borderWidth(1)
+          .borderColor(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.CHIP_BORDER)
+          .borderRadius(AppSizes.BORDER_RADIUS_TAG)
         }
         .width('100%')
-        .height(48)
-        .padding({ left: 16, right: 16 })
-        .backgroundColor(AppColors.STATUS_BAR_BG)
+        .height(54)
+        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE })
+        .backgroundColor(AppColors.SURFACE_1)
         .alignItems(VerticalAlign.Center)
 
         Stack({ alignContent: Alignment.Center }) {
@@ -535,30 +558,54 @@ struct TerminalPage {
         }
         .width('100%')
         .layoutWeight(1)
+        .padding({ left: 8, right: 8, top: 8, bottom: 8 })
         .backgroundColor(AppColors.TERMINAL_BG)
+        .borderWidth(1)
+        .borderColor(AppColors.CARD_BORDER)
+        .borderRadius(AppSizes.BORDER_RADIUS_CARD)
 
-        Scroll() {
-          Row({ space: 8 }) {
-            ForEach(this.shortcutKeys, (key: ShortcutKey) => {
-              Button(key.label)
-                .height(AppSizes.SHORTCUT_KEY_HEIGHT)
-                .fontSize(12)
-                .fontColor(AppColors.TEXT_PRIMARY)
-                .backgroundColor(AppColors.INPUT_BG)
-                .borderRadius(AppSizes.BORDER_RADIUS_TAG)
-                .padding({ left: 10, right: 10 })
-                .onClick(() => {
-                  this.sendShortcutKey(key.data);
-                })
-            }, (key: ShortcutKey, index: number) => `${key.label}_${index}`)
+        Column() {
+          Row() {
+            Text('SHORTCUT KEYS')
+              .fontSize(11)
+              .fontColor(AppColors.TEXT_MUTED)
+              .fontFamily('monospace')
+            Blank().layoutWeight(1)
+            Text('TAP TO SEND')
+              .fontSize(11)
+              .fontColor(AppColors.TEXT_MUTED)
+              .fontFamily('monospace')
           }
-          .padding({ left: 12, right: 12 })
+          .width('100%')
+          .padding({ left: 12, right: 12, top: 6, bottom: 2 })
+
+          Scroll() {
+            Row({ space: 8 }) {
+              ForEach(this.shortcutKeys, (key: ShortcutKey) => {
+                Button(key.label)
+                  .height(AppSizes.SHORTCUT_KEY_HEIGHT)
+                  .fontSize(12)
+                  .fontColor(AppColors.TEXT_PRIMARY)
+                  .backgroundColor(AppColors.HIGHLIGHT)
+                  .borderWidth(1)
+                  .borderColor(AppColors.CARD_BORDER)
+                  .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+                  .padding({ left: 10, right: 10 })
+                  .onClick(() => {
+                    this.sendShortcutKey(key.data);
+                  })
+              }, (key: ShortcutKey, index: number) => `${key.label}_${index}`)
+            }
+            .padding({ left: 12, right: 12, bottom: 8 })
+          }
+          .scrollable(ScrollDirection.Horizontal)
+          .scrollBar(BarState.Off)
         }
-        .scrollable(ScrollDirection.Horizontal)
-        .scrollBar(BarState.Off)
         .width('100%')
-        .height(52)
-        .backgroundColor(AppColors.TOOLBAR_BG)
+        .height(74)
+        .backgroundColor(AppColors.SURFACE_1)
+        .borderWidth(1)
+        .borderColor(AppColors.CARD_BORDER)
         .align(Alignment.Center)
       }
       .width('100%')
@@ -596,14 +643,16 @@ struct TerminalPage {
           }
           .width('100%')
           .padding(24)
-          .backgroundColor(AppColors.CARD_BACKGROUND)
+          .backgroundColor(AppColors.SURFACE_2)
+          .borderWidth(1)
+          .borderColor(AppColors.CARD_BORDER)
           .borderRadius(16)
           .alignItems(HorizontalAlign.Center)
         }
         .width('100%')
         .height('100%')
         .padding({ left: 24, right: 24 })
-        .backgroundColor('#90000000')
+        .backgroundColor('#B0000000')
         .justifyContent(FlexAlign.Center)
       }
     }

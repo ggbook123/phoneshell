@@ -239,40 +239,79 @@ struct SessionListPage {
   build() {
     Column() {
       // Top bar
-      Row() {
-        Text('< 返回')
-          .fontSize(AppSizes.FONT_SIZE_SMALL)
-          .fontColor(AppColors.ACCENT)
-          .onClick(() => {
-            this.goBack();
-          })
-          .padding({ right: 16 })
+      Column() {
+        Blank()
+          .height(2)
+          .width('100%')
+          .backgroundColor(AppColors.ACCENT)
 
-        Column() {
-          Text(this.displayName)
-            .fontSize(AppSizes.FONT_SIZE_BODY)
-            .fontColor(AppColors.TEXT_PRIMARY)
-            .fontWeight(FontWeight.Medium)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Row() {
+          Text('‹ 返回')
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor(AppColors.ACCENT)
+            .onClick(() => {
+              this.goBack();
+            })
+            .padding({ right: 12 })
 
-          Text(AppStrings.SESSION_LIST_TITLE)
-            .fontSize(12)
-            .fontColor(AppColors.TEXT_SECONDARY)
+          Column() {
+            Text(this.displayName)
+              .fontSize(AppSizes.FONT_SIZE_BODY)
+              .fontColor(AppColors.TEXT_PRIMARY)
+              .fontWeight(FontWeight.Medium)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+            Text(AppStrings.SESSION_LIST_TITLE)
+              .fontSize(12)
+              .fontColor(AppColors.TEXT_MUTED)
+              .fontFamily('monospace')
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+
+          Row() {
+            Circle()
+              .width(6)
+              .height(6)
+              .fill(this.connectionState === ConnectionState.CONNECTED ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
+              .margin({ right: 6 })
+            Text(this.connectionState === ConnectionState.CONNECTED ? '在线' : '断开')
+              .fontSize(11)
+              .fontColor(this.connectionState === ConnectionState.CONNECTED ? AppColors.ONLINE_GREEN : AppColors.TEXT_MUTED)
+          }
+          .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+          .backgroundColor(AppColors.CHIP_BG)
+          .borderWidth(1)
+          .borderColor(this.connectionState === ConnectionState.CONNECTED ? AppColors.ONLINE_GREEN : AppColors.CHIP_BORDER)
+          .borderRadius(AppSizes.BORDER_RADIUS_TAG)
         }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
+        .width('100%')
+        .height(56)
+          .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE })
+          .alignItems(VerticalAlign.Center)
 
-        // Connection status dot
-        Circle()
-          .width(AppSizes.STATUS_DOT_SIZE)
-          .height(AppSizes.STATUS_DOT_SIZE)
-          .fill(this.connectionState === ConnectionState.CONNECTED ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
+        Row() {
+          Text(`SESSIONS ${this.sessions.length}`)
+            .fontSize(11)
+            .fontColor(AppColors.TEXT_MUTED)
+            .fontFamily('monospace')
+            .layoutWeight(1)
+
+          if (this.deviceId.length > 0) {
+            Text(`DEVICE ${this.deviceId}`)
+              .fontSize(11)
+              .fontColor(AppColors.TEXT_SECONDARY)
+              .fontFamily('monospace')
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+        }
+        .width('100%')
+        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, bottom: 8 })
       }
+      .backgroundColor(AppColors.SURFACE_1)
       .width('100%')
-      .height(56)
-      .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE })
-      .alignItems(VerticalAlign.Center)
 
       // Divider
       Divider()
@@ -285,14 +324,20 @@ struct SessionListPage {
           if (this.sessions.length === 0) {
             ListItem() {
               Column() {
+                Text('NO ACTIVE SESSIONS')
+                  .fontSize(14)
+                  .fontColor(AppColors.TEXT_MUTED)
+                  .fontFamily('monospace')
+                  .margin({ bottom: 8 })
+
                 Text(AppStrings.EMPTY_SESSION_LIST)
                   .fontSize(AppSizes.FONT_SIZE_BODY)
                   .fontColor(AppColors.TEXT_SECONDARY)
-                  .margin({ bottom: 10 })
+                  .margin({ bottom: 6 })
 
-                Text('下拉可刷新')
+                Text('下拉刷新列表')
                   .fontSize(12)
-                  .fontColor(AppColors.TEXT_SECONDARY)
+                  .fontColor(AppColors.TEXT_MUTED)
               }
               .width('100%')
               .height(260)
@@ -326,20 +371,29 @@ struct SessionListPage {
         .width('100%')
 
       Column() {
+        Blank()
+          .height(2)
+          .width('100%')
+          .backgroundColor(AppColors.ACCENT_BLUE)
+          .margin({ bottom: 10 })
+
+        Text('NEW SESSION')
+          .fontSize(12)
+          .fontColor(AppColors.TEXT_MUTED)
+          .fontFamily('monospace')
+          .margin({ bottom: 8 })
+
         // Shell selector (if multiple shells available)
         if (this.availableShells.length > 1) {
-          Text('Shell:')
-            .fontSize(AppSizes.FONT_SIZE_SMALL)
-            .fontColor(AppColors.TEXT_SECONDARY)
-            .margin({ bottom: 8 })
-
           Flex({ wrap: FlexWrap.Wrap, space: { main: new LengthMetrics(8), cross: new LengthMetrics(8) } }) {
             ForEach(this.availableShells, (shell: string) => {
               Button(shell)
                 .height(32)
                 .fontSize(12)
                 .fontColor(this.selectedShell === shell ? '#FFFFFF' : AppColors.ACCENT)
-                .backgroundColor(this.selectedShell === shell ? AppColors.ACCENT : '#0F3460')
+                .backgroundColor(this.selectedShell === shell ? AppColors.ACCENT : AppColors.HIGHLIGHT)
+                .borderWidth(1)
+                .borderColor(this.selectedShell === shell ? AppColors.ACCENT : AppColors.ACCENT_DIM)
                 .borderRadius(AppSizes.BORDER_RADIUS_TAG)
                 .padding({ left: 12, right: 12 })
                 .onClick(() => {
@@ -369,6 +423,7 @@ struct SessionListPage {
         top: 12,
         bottom: 16
       })
+      .backgroundColor(AppColors.SURFACE_2)
     }
     .width('100%')
     .height('100%')
@@ -377,40 +432,77 @@ struct SessionListPage {
 
   @Builder
   SessionCard(session: SessionItem) {
-    Row() {
-      // Session icon
-      Text('>')
-        .fontSize(20)
-        .fontColor(AppColors.ACCENT)
-        .fontFamily('monospace')
-        .fontWeight(FontWeight.Bold)
+    Column() {
+      Blank()
+        .height(2)
+        .width('100%')
+        .backgroundColor(AppColors.ACCENT)
+        .margin({ bottom: 12 })
+
+      Row() {
+        // Session icon
+        Stack({ alignContent: Alignment.Center }) {
+          Circle()
+            .width(32)
+            .height(32)
+            .fill(AppColors.SURFACE_3)
+          Text('>')
+            .fontSize(16)
+            .fontColor(AppColors.ACCENT)
+            .fontFamily('monospace')
+            .fontWeight(FontWeight.Bold)
+        }
         .margin({ right: 12 })
 
-      Column() {
-        Text(session.title)
-          .fontSize(AppSizes.FONT_SIZE_BODY)
-          .fontColor(AppColors.TEXT_PRIMARY)
-          .fontWeight(FontWeight.Medium)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Column() {
+          Text(session.title)
+            .fontSize(AppSizes.FONT_SIZE_BODY)
+            .fontColor(AppColors.TEXT_PRIMARY)
+            .fontWeight(FontWeight.Medium)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-        Text(session.shellId)
-          .fontSize(AppSizes.FONT_SIZE_SMALL)
-          .fontColor(AppColors.TEXT_SECONDARY)
-          .margin({ top: 4 })
+          Text(session.shellId)
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor(AppColors.TEXT_SECONDARY)
+            .margin({ top: 4 })
+
+          Text(`ID ${session.sessionId}`)
+            .fontSize(11)
+            .fontColor(AppColors.TEXT_MUTED)
+            .fontFamily('monospace')
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .margin({ top: 4 })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        // Online indicator
+        Row() {
+          Circle()
+            .width(6)
+            .height(6)
+            .fill(AppColors.ONLINE_GREEN)
+            .margin({ right: 6 })
+          Text('ACTIVE')
+            .fontSize(10)
+            .fontColor(AppColors.ONLINE_GREEN)
+            .fontFamily('monospace')
+        }
+        .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+        .backgroundColor(AppColors.CHIP_BG)
+        .borderWidth(1)
+        .borderColor(AppColors.ONLINE_GREEN)
+        .borderRadius(AppSizes.BORDER_RADIUS_TAG)
       }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-
-      // Online indicator
-      Circle()
-        .width(AppSizes.STATUS_DOT_SIZE)
-        .height(AppSizes.STATUS_DOT_SIZE)
-        .fill(AppColors.ONLINE_GREEN)
+      .width('100%')
     }
     .width('100%')
     .padding(AppSizes.PADDING_CARD)
     .backgroundColor(AppColors.CARD_BACKGROUND)
+    .borderWidth(1)
+    .borderColor(AppColors.CARD_BORDER)
     .borderRadius(AppSizes.BORDER_RADIUS_CARD)
     .onClick(() => {
       this.onSessionClick(session);
