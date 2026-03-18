@@ -14,11 +14,16 @@ public sealed class TerminalHistoryStore : IDisposable
     private const int DefaultPageChars = 20_000;
     private const int DefaultMaxChars = 5_000_000;
     private const int MaxRecordBytes = 8 * 1024 * 1024;
+    private const int FlushIntervalMs = 150;
+    private const int FlushThresholdChars = 32 * 1024;
 
     private readonly string _historyDirectory;
     private readonly ConcurrentDictionary<string, object> _locks = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, PendingHistoryBuffer> _pendingBuffers = new(StringComparer.Ordinal);
     private readonly Encoding _encoding = new UTF8Encoding(false);
     private readonly int _maxChars;
+    private readonly CancellationTokenSource _flushCts = new();
+    private readonly Task _flushLoopTask;
 
     public TerminalHistoryStore(string baseDirectory, int maxChars = DefaultMaxChars)
     {
@@ -28,6 +33,7 @@ public sealed class TerminalHistoryStore : IDisposable
         _historyDirectory = Path.Combine(baseDirectory, "data", "history");
         Directory.CreateDirectory(_historyDirectory);
         _maxChars = Math.Max(0, maxChars);
+        _flushLoopTask = Task.Run(() => FlushLoopAsync(_flushCts.Token));
     }
 
     public void Append(string deviceId, string sessionId, string data)
@@ -37,25 +43,19 @@ public sealed class TerminalHistoryStore : IDisposable
             string.IsNullOrEmpty(data))
             return;
 
-        try
+        var key = BuildKey(deviceId, sessionId);
+        var buffer = _pendingBuffers.GetOrAdd(key, _ => new PendingHistoryBuffer(deviceId, sessionId));
+        var shouldFlush = false;
+
+        lock (buffer.Sync)
         {
-            var path = GetSessionPath(deviceId, sessionId);
-            var sync = GetLock(deviceId, sessionId);
-            lock (sync)
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                using (var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite))
-                {
-                    fs.Seek(0, SeekOrigin.End);
-                    WriteStringRecords(fs, data);
-                    fs.Flush();
-                }
-                TrimIfNeeded(path);
-            }
+            buffer.Buffer.Append(data);
+            shouldFlush = buffer.Buffer.Length >= FlushThresholdChars;
         }
-        catch
+
+        if (shouldFlush)
         {
-            // Best effort persistence.
+            FlushPendingBuffer(buffer);
         }
     }
 
@@ -63,6 +63,8 @@ public sealed class TerminalHistoryStore : IDisposable
     {
         if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(sessionId))
             return TerminalHistoryPage.Empty;
+
+        FlushPendingBuffer(deviceId, sessionId);
 
         try
         {
@@ -138,6 +140,8 @@ public sealed class TerminalHistoryStore : IDisposable
         if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(sessionId))
             return string.Empty;
 
+        FlushPendingBuffer(deviceId, sessionId);
+
         try
         {
             var path = GetSessionPath(deviceId, sessionId);
@@ -188,6 +192,8 @@ public sealed class TerminalHistoryStore : IDisposable
         if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(sessionId))
             return;
 
+        FlushPendingBuffer(deviceId, sessionId);
+
         try
         {
             var path = GetSessionPath(deviceId, sessionId);
@@ -209,6 +215,12 @@ public sealed class TerminalHistoryStore : IDisposable
         if (string.IsNullOrWhiteSpace(deviceId))
             return;
 
+        foreach (var entry in _pendingBuffers.Values.Where(buffer =>
+                     string.Equals(buffer.DeviceId, deviceId, StringComparison.Ordinal)))
+        {
+            FlushPendingBuffer(entry);
+        }
+
         try
         {
             var dir = GetDeviceDirectory(deviceId);
@@ -225,7 +237,83 @@ public sealed class TerminalHistoryStore : IDisposable
 
     public void Dispose()
     {
+        _flushCts.Cancel();
+        try
+        {
+            _flushLoopTask.Wait(TimeSpan.FromSeconds(2));
+        }
+        catch
+        {
+            // Ignore background loop shutdown errors.
+        }
+
+        FlushAllPendingBuffers();
+        _flushCts.Dispose();
+        _pendingBuffers.Clear();
         _locks.Clear();
+    }
+
+    private async Task FlushLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(FlushIntervalMs, ct);
+                FlushAllPendingBuffers();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown.
+        }
+    }
+
+    private void FlushAllPendingBuffers()
+    {
+        foreach (var buffer in _pendingBuffers.Values)
+            FlushPendingBuffer(buffer);
+    }
+
+    private void FlushPendingBuffer(string deviceId, string sessionId)
+    {
+        if (_pendingBuffers.TryGetValue(BuildKey(deviceId, sessionId), out var buffer))
+            FlushPendingBuffer(buffer);
+    }
+
+    private void FlushPendingBuffer(PendingHistoryBuffer buffer)
+    {
+        string data;
+        lock (buffer.Sync)
+        {
+            if (buffer.Buffer.Length == 0)
+                return;
+
+            data = buffer.Buffer.ToString();
+            buffer.Buffer.Clear();
+        }
+
+        try
+        {
+            var path = GetSessionPath(buffer.DeviceId, buffer.SessionId);
+            var sync = GetLock(buffer.DeviceId, buffer.SessionId);
+            lock (sync)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                using var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
+                fs.Seek(0, SeekOrigin.End);
+                WriteStringRecords(fs, data);
+                fs.Flush();
+                TrimIfNeeded(path);
+            }
+        }
+        catch
+        {
+            lock (buffer.Sync)
+            {
+                buffer.Buffer.Insert(0, data);
+            }
+        }
     }
 
     private void TrimIfNeeded(string path)
@@ -391,6 +479,20 @@ public sealed class TerminalHistoryStore : IDisposable
 
     private static string BuildKey(string deviceId, string sessionId) =>
         $"{deviceId}::{sessionId}";
+
+    private sealed class PendingHistoryBuffer
+    {
+        public PendingHistoryBuffer(string deviceId, string sessionId)
+        {
+            DeviceId = deviceId;
+            SessionId = sessionId;
+        }
+
+        public string DeviceId { get; }
+        public string SessionId { get; }
+        public object Sync { get; } = new();
+        public StringBuilder Buffer { get; } = new();
+    }
 
     private static string SanitizeKey(string value)
     {

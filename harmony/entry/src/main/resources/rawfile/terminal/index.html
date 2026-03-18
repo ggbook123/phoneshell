@@ -24,11 +24,18 @@
       font-family: "Cascadia Mono", "Cascadia Code", "Consolas", monospace;
     }
 
+    #terminal-shell {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
     #terminal {
       width: 100%;
       height: 100%;
       box-sizing: border-box;
-      padding: 6px 4px;
+      padding: 6px 22px 6px 4px;
       touch-action: none;
     }
 
@@ -41,14 +48,90 @@
     .xterm-helper-textarea {
       touch-action: manipulation;
     }
+
+    .xterm-viewport {
+      scrollbar-width: none;
+    }
+
+    .xterm-viewport::-webkit-scrollbar {
+      width: 0;
+      height: 0;
+    }
+
+    #terminal-scrollbar {
+      position: absolute;
+      top: 8px;
+      right: 0;
+      bottom: 8px;
+      width: 28px;
+      z-index: 30;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease;
+      touch-action: none;
+    }
+
+    #terminal-scrollbar.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    #terminal-scrollbar.active {
+      opacity: 1;
+    }
+
+    #terminal-scrollbar-track,
+    #terminal-scrollbar-thumb {
+      position: absolute;
+      right: 8px;
+      width: 8px;
+      border-radius: 999px;
+      transition: width 0.16s ease, right 0.16s ease, background 0.16s ease;
+    }
+
+    #terminal-scrollbar-track {
+      top: 0;
+      bottom: 0;
+      background: rgba(240, 246, 255, 0.1);
+    }
+
+    #terminal-scrollbar-thumb {
+      top: 0;
+      min-height: 36px;
+      background: rgba(0, 229, 195, 0.72);
+      box-shadow: 0 0 0 1px rgba(7, 9, 13, 0.35);
+      transform: translateY(0);
+    }
+
+    #terminal-scrollbar.expanded #terminal-scrollbar-track,
+    #terminal-scrollbar.expanded #terminal-scrollbar-thumb {
+      right: 2px;
+      width: 18px;
+    }
+
+    #terminal-scrollbar.expanded #terminal-scrollbar-track {
+      background: rgba(240, 246, 255, 0.16);
+    }
+
+    #terminal-scrollbar.expanded #terminal-scrollbar-thumb {
+      background: rgba(0, 229, 195, 0.9);
+    }
   </style>
   <script src="./xterm.min.js"></script>
   <script src="./addon-fit.min.js"></script>
 </head>
 <body>
-  <div id="terminal"></div>
+  <div id="terminal-shell">
+    <div id="terminal"></div>
+    <div id="terminal-scrollbar">
+      <div id="terminal-scrollbar-track"></div>
+      <div id="terminal-scrollbar-thumb"></div>
+    </div>
+  </div>
   <script>
     var terminalElement = document.getElementById('terminal');
+    var scrollbarElement = document.getElementById('terminal-scrollbar');
+    var scrollbarThumbElement = document.getElementById('terminal-scrollbar-thumb');
     var term = new Terminal({
       cursorBlink: true,
       cursorStyle: 'block',
@@ -68,6 +151,18 @@
     var fitAddon = new FitAddon.FitAddon();
     var lastCols = 0;
     var lastRows = 0;
+    var scrollbarSyncPending = false;
+    var scrollbarDragging = false;
+    var scrollbarExpanded = false;
+    var scrollbarPointerId = null;
+    var scrollbarTouchId = null;
+    var scrollbarDragOffset = 0;
+    var scrollbarGestureStartY = 0;
+    var scrollbarGestureMoved = false;
+    var scrollbarGestureStartedExpanded = false;
+    var scrollbarMoveThreshold = 4;
+    var suppressTerminalFocusUntil = 0;
+    var scrollbarCollapseTimerId = 0;
 
     term.loadAddon(fitAddon);
     term.open(terminalElement);
@@ -84,8 +179,55 @@
       }
     }
 
+    function blurTerminalFocus() {
+      try {
+        if (term && typeof term.blur === 'function') {
+          term.blur();
+        }
+      } catch (_error) {
+      }
+
+      try {
+        if (document.activeElement && typeof document.activeElement.blur === 'function') {
+          document.activeElement.blur();
+        }
+      } catch (_error) {
+      }
+    }
+
+    function suppressTerminalFocusFor(durationMs) {
+      suppressTerminalFocusUntil = Date.now() + durationMs;
+      blurTerminalFocus();
+    }
+
+    function shouldSuppressTerminalFocus() {
+      return Date.now() < suppressTerminalFocusUntil;
+    }
+
+    function clearScrollbarCollapseTimer() {
+      if (scrollbarCollapseTimerId) {
+        clearTimeout(scrollbarCollapseTimerId);
+        scrollbarCollapseTimerId = 0;
+      }
+    }
+
+    function scheduleScrollbarCollapse() {
+      clearScrollbarCollapseTimer();
+      if (!scrollbarExpanded) {
+        return;
+      }
+
+      scrollbarCollapseTimerId = setTimeout(function() {
+        scrollbarCollapseTimerId = 0;
+        if (scrollbarExpanded && !scrollbarDragging) {
+          setScrollbarExpanded(false);
+        }
+      }, 8000);
+    }
+
     function fitAndReport(isInitial) {
       fitAddon.fit();
+      requestScrollbarSync();
 
       if (!term.cols || !term.rows) {
         return;
@@ -109,11 +251,165 @@
       if (typeof data !== 'string' || data.length === 0) {
         return;
       }
-      term.write(data);
+      term.write(data, requestScrollbarSync);
+    }
+
+    function requestScrollbarSync() {
+      if (scrollbarSyncPending) {
+        return;
+      }
+
+      scrollbarSyncPending = true;
+      requestAnimationFrame(function() {
+        scrollbarSyncPending = false;
+        syncScrollbar();
+      });
+    }
+
+    function getScrollbarMetrics() {
+      var buffer = term.buffer && term.buffer.active;
+      var trackHeight = scrollbarElement ? scrollbarElement.clientHeight : 0;
+      var viewportRows = Math.max(term.rows || 0, 1);
+      var totalLines = buffer && typeof buffer.length === 'number'
+        ? Math.max(buffer.length, viewportRows)
+        : viewportRows;
+      var maxScrollableLines = buffer && typeof buffer.baseY === 'number'
+        ? Math.max(buffer.baseY, 0)
+        : 0;
+      var viewportY = buffer && typeof buffer.viewportY === 'number'
+        ? Math.max(Math.min(buffer.viewportY, maxScrollableLines), 0)
+        : 0;
+
+      return {
+        trackHeight: trackHeight,
+        viewportRows: viewportRows,
+        totalLines: totalLines,
+        maxScrollableLines: maxScrollableLines,
+        viewportY: viewportY
+      };
+    }
+
+    function syncScrollbar() {
+      if (!scrollbarElement || !scrollbarThumbElement) {
+        return;
+      }
+
+      var metrics = getScrollbarMetrics();
+      if (metrics.trackHeight <= 0 || metrics.maxScrollableLines <= 0 || metrics.totalLines <= metrics.viewportRows) {
+        scrollbarExpanded = false;
+        clearScrollbarCollapseTimer();
+        scrollbarElement.classList.remove('visible');
+        scrollbarElement.classList.remove('active');
+        scrollbarElement.classList.remove('expanded');
+        scrollbarThumbElement.style.height = '0px';
+        scrollbarThumbElement.style.transform = 'translateY(0px)';
+        return;
+      }
+
+      var thumbHeight = Math.max(36, Math.min(
+        metrics.trackHeight,
+        metrics.trackHeight * (metrics.viewportRows / metrics.totalLines)
+      ));
+      var maxThumbTop = Math.max(metrics.trackHeight - thumbHeight, 0);
+      var thumbTop = maxThumbTop <= 0
+        ? 0
+        : maxThumbTop * (metrics.viewportY / metrics.maxScrollableLines);
+
+      scrollbarElement.classList.add('visible');
+      scrollbarThumbElement.style.height = thumbHeight + 'px';
+      scrollbarThumbElement.style.transform = 'translateY(' + thumbTop + 'px)';
+    }
+
+    function setScrollbarExpanded(expanded) {
+      scrollbarExpanded = expanded;
+      if (!scrollbarElement) {
+        return;
+      }
+
+      if (expanded) {
+        scrollbarElement.classList.add('expanded');
+        scheduleScrollbarCollapse();
+      } else {
+        scrollbarElement.classList.remove('expanded');
+        clearScrollbarCollapseTimer();
+      }
+
+      requestScrollbarSync();
+    }
+
+    function scrollFromThumbTop(thumbTop) {
+      var metrics = getScrollbarMetrics();
+      var thumbHeight = scrollbarThumbElement ? (scrollbarThumbElement.offsetHeight || 36) : 36;
+      var maxThumbTop = Math.max(metrics.trackHeight - thumbHeight, 0);
+      if (metrics.maxScrollableLines <= 0 || maxThumbTop <= 0) {
+        return;
+      }
+
+      var clampedTop = Math.max(0, Math.min(maxThumbTop, thumbTop));
+      var targetLine = Math.round(metrics.maxScrollableLines * (clampedTop / maxThumbTop));
+      term.scrollToLine(targetLine);
+      requestScrollbarSync();
+    }
+
+    function beginScrollbarDrag(clientY, dragOffset) {
+      clearScrollbarCollapseTimer();
+      scrollbarDragging = true;
+      scrollbarDragOffset = dragOffset;
+      scrollbarGestureStartY = clientY;
+      scrollbarGestureMoved = false;
+      scrollbarGestureStartedExpanded = scrollbarExpanded;
+      suppressTerminalFocusFor(800);
+      scrollbarElement.classList.add('active');
+
+      if (!scrollbarExpanded) {
+        setScrollbarExpanded(true);
+        updateScrollbarDrag(clientY);
+      }
+    }
+
+    function updateScrollbarDrag(clientY) {
+      if (!scrollbarDragging || !scrollbarElement) {
+        return;
+      }
+
+      suppressTerminalFocusFor(800);
+
+      if (Math.abs(clientY - scrollbarGestureStartY) > scrollbarMoveThreshold) {
+        scrollbarGestureMoved = true;
+      }
+
+      var trackRect = scrollbarElement.getBoundingClientRect();
+      scrollFromThumbTop(clientY - trackRect.top - scrollbarDragOffset);
+    }
+
+    function endScrollbarDrag() {
+      var shouldCollapse = scrollbarGestureStartedExpanded && !scrollbarGestureMoved;
+      suppressTerminalFocusFor(250);
+      scrollbarDragging = false;
+      scrollbarPointerId = null;
+      scrollbarTouchId = null;
+      if (scrollbarElement) {
+        scrollbarElement.classList.remove('active');
+      }
+
+      if (shouldCollapse) {
+        setScrollbarExpanded(false);
+      } else {
+        scheduleScrollbarCollapse();
+        requestScrollbarSync();
+      }
     }
 
     term.onData(function(data) {
       callNative('sendInput', data);
+    });
+
+    term.onScroll(function() {
+      requestScrollbarSync();
+    });
+
+    term.onResize(function() {
+      requestScrollbarSync();
     });
 
     // Notify native side on first interaction only (for resize sync & focus)
@@ -149,6 +445,7 @@
             lineH = rows.children[0].getBoundingClientRect().height || 14;
           }
         } catch(e) {}
+        requestScrollbarSync();
       }, 200);
 
       function applyDelta(dy) {
@@ -203,6 +500,10 @@
         var activePointerId = null;
 
         terminalElement.addEventListener('pointerdown', function(e) {
+          if (shouldSuppressTerminalFocus()) {
+            if (e.cancelable) e.preventDefault();
+            return;
+          }
           notifyInteraction();
           term.focus();
           if (e.pointerType !== 'touch') {
@@ -235,6 +536,10 @@
         }, { passive: true });
       } else {
         terminalElement.addEventListener('touchstart', function(e) {
+          if (shouldSuppressTerminalFocus()) {
+            if (e.cancelable) e.preventDefault();
+            return;
+          }
           notifyInteraction();
           term.focus();
           if (e.touches.length === 1) {
@@ -265,6 +570,7 @@
       },
       clear: function() {
         term.reset();
+        requestScrollbarSync();
       },
       focus: function() {
         term.focus();
@@ -273,6 +579,123 @@
         fitAndReport(false);
       }
     };
+
+    if (window.PointerEvent) {
+      scrollbarElement.addEventListener('pointerdown', function(e) {
+        clearScrollbarCollapseTimer();
+        suppressTerminalFocusFor(800);
+        scrollbarPointerId = e.pointerId;
+        if (e.cancelable) {
+          e.preventDefault();
+        }
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') {
+          e.stopImmediatePropagation();
+        }
+
+        var thumbRect = scrollbarThumbElement.getBoundingClientRect();
+        var dragOffset = e.target === scrollbarThumbElement
+          ? e.clientY - thumbRect.top
+          : thumbRect.height / 2;
+        beginScrollbarDrag(e.clientY, dragOffset);
+      }, { passive: false, capture: true });
+
+      window.addEventListener('pointermove', function(e) {
+        if (!scrollbarDragging || e.pointerId !== scrollbarPointerId) {
+          return;
+        }
+        if (e.cancelable) {
+          e.preventDefault();
+        }
+        updateScrollbarDrag(e.clientY);
+      }, { passive: false });
+
+      window.addEventListener('pointerup', function(e) {
+        if (!scrollbarDragging || e.pointerId !== scrollbarPointerId) {
+          return;
+        }
+        endScrollbarDrag();
+      }, { passive: true });
+
+      window.addEventListener('pointercancel', function(e) {
+        if (!scrollbarDragging || e.pointerId !== scrollbarPointerId) {
+          return;
+        }
+        endScrollbarDrag();
+      }, { passive: true });
+    } else {
+      scrollbarElement.addEventListener('touchstart', function(e) {
+        if (e.touches.length !== 1) {
+          return;
+        }
+
+        clearScrollbarCollapseTimer();
+        suppressTerminalFocusFor(800);
+        scrollbarTouchId = e.touches[0].identifier;
+        if (e.cancelable) {
+          e.preventDefault();
+        }
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') {
+          e.stopImmediatePropagation();
+        }
+
+        var thumbRect = scrollbarThumbElement.getBoundingClientRect();
+        var dragOffset = e.target === scrollbarThumbElement
+          ? e.touches[0].clientY - thumbRect.top
+          : thumbRect.height / 2;
+        beginScrollbarDrag(e.touches[0].clientY, dragOffset);
+      }, { passive: false, capture: true });
+
+      window.addEventListener('touchmove', function(e) {
+        if (!scrollbarDragging) {
+          return;
+        }
+
+        var touch = null;
+        for (var i = 0; i < e.touches.length; i++) {
+          if (e.touches[i].identifier === scrollbarTouchId) {
+            touch = e.touches[i];
+            break;
+          }
+        }
+
+        if (!touch) {
+          return;
+        }
+
+        if (e.cancelable) {
+          e.preventDefault();
+        }
+        updateScrollbarDrag(touch.clientY);
+      }, { passive: false });
+
+      window.addEventListener('touchend', function(e) {
+        if (!scrollbarDragging) {
+          return;
+        }
+
+        for (var i = 0; i < e.changedTouches.length; i++) {
+          if (e.changedTouches[i].identifier === scrollbarTouchId) {
+            endScrollbarDrag();
+            return;
+          }
+        }
+      }, { passive: true });
+
+      window.addEventListener('touchcancel', function(e) {
+        if (!scrollbarDragging) {
+          return;
+        }
+
+        for (var i = 0; i < e.changedTouches.length; i++) {
+          if (e.changedTouches[i].identifier === scrollbarTouchId) {
+            endScrollbarDrag();
+            return;
+          }
+        }
+      }, { passive: true });
+    }
 
     new ResizeObserver(function() {
       fitAndReport(false);

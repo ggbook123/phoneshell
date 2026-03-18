@@ -68,6 +68,9 @@ public sealed class RelayClient : IDisposable
     /// <summary>Raised when a remote terminal is opened (for PC-to-PC remote terminal).</summary>
     public event Action<string, string, int, int>? TerminalOpenedReceived; // deviceId, sessionId, cols, rows
 
+    /// <summary>Raised when a device session list is received.</summary>
+    public event Action<string, List<SessionInfo>>? SessionListReceived; // deviceId, sessions
+
     /// <summary>Raised when terminal output is received from a remote device.</summary>
     public event Action<string, string, string>? TerminalOutputReceived; // deviceId, sessionId, data
 
@@ -205,6 +208,18 @@ public sealed class RelayClient : IDisposable
         {
             DeviceId = deviceId,
             Sessions = sessions ?? new List<SessionInfo>()
+        });
+        await SendAsync(msg);
+    }
+
+    /// <summary>Request the current session list from a device in the group.</summary>
+    public async Task SendSessionListRequestAsync(string deviceId)
+    {
+        if (_ws?.State != WebSocketState.Open) return;
+
+        var msg = MessageSerializer.Serialize(new SessionListRequestMessage
+        {
+            DeviceId = deviceId
         });
         await SendAsync(msg);
     }
@@ -437,6 +452,10 @@ public sealed class RelayClient : IDisposable
 
             case TerminalClosedMessage closed:
                 TerminalClosedReceived?.Invoke(closed.DeviceId, closed.SessionId);
+                break;
+
+            case SessionListMessage sessionList:
+                SessionListReceived?.Invoke(sessionList.DeviceId, sessionList.Sessions);
                 break;
 
             case SessionListRequestMessage sessionReq:

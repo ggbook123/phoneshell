@@ -348,6 +348,11 @@ public sealed class RelayServer : IDisposable
     public event Action<string, string, int, int>? RemoteTerminalOpenedReceived; // deviceId, sessionId, cols, rows
 
     /// <summary>
+    /// Event raised when a device session list is returned to the server PC.
+    /// </summary>
+    public event Action<string, List<SessionInfo>>? RemoteSessionListReceived; // deviceId, sessions
+
+    /// <summary>
     /// Event raised when a remote device sends terminal output back.
     /// Used by server-mode PC to display remote terminal output.
     /// </summary>
@@ -392,6 +397,28 @@ public sealed class RelayServer : IDisposable
         });
         await SendAsync(client, msg);
         Log?.Invoke($"Sent terminal.open to device {targetDeviceId} (shell={shellId}) requested by {requesterDeviceId}");
+    }
+
+    public async Task RequestSessionListFromDeviceAsync(string deviceId)
+    {
+        if (!_devices.TryGetValue(deviceId, out var device)) return;
+
+        if (device.IsLocal)
+        {
+            var localSessions = LocalSessionListProvider?.Invoke() ?? new List<SessionInfo>();
+            RemoteSessionListReceived?.Invoke(deviceId, localSessions);
+            return;
+        }
+
+        if (device.ClientId is null) return;
+        if (!_clients.TryGetValue(device.ClientId, out var client)) return;
+
+        var msg = MessageSerializer.Serialize(new SessionListRequestMessage
+        {
+            DeviceId = deviceId
+        });
+        await SendAsync(client, msg);
+        Log?.Invoke($"Requested session list from device {deviceId}");
     }
 
     public List<DeviceInfo> GetDeviceList()
@@ -969,7 +996,7 @@ public sealed class RelayServer : IDisposable
                 RemoteTerminalClosedReceived?.Invoke(closed.DeviceId, closed.SessionId);
                 break;
 
-            case SessionListMessage:
+            case SessionListMessage sessionList:
                 // Forward to subscribed clients
                 foreach (var c in _clients.Values)
                 {
@@ -978,6 +1005,7 @@ public sealed class RelayServer : IDisposable
                         await SendAsync(c, json);
                     }
                 }
+                RemoteSessionListReceived?.Invoke(sessionList.DeviceId, sessionList.Sessions);
                 break;
 
             case ControlForceDisconnectMessage:

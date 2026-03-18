@@ -268,14 +268,14 @@ public partial class MainWindow : Window
 
     private void UpdatePanelVisibility()
     {
-        var hasTabs = _viewModel.Tabs.Count > 0;
-        var showWelcome = !hasTabs || _forceWelcomeVisible;
+        var hasVisibleTabs = _viewModel.HasVisibleTabs;
+        var showWelcome = !hasVisibleTabs || _forceWelcomeVisible;
         if (WelcomePanel is not null)
             WelcomePanel.Visibility = showWelcome ? Visibility.Visible : Visibility.Collapsed;
         if (TerminalWebView is not null)
             TerminalWebView.Visibility = showWelcome ? Visibility.Collapsed : Visibility.Visible;
         if (TabBarHost is not null)
-            TabBarHost.Visibility = hasTabs ? Visibility.Visible : Visibility.Collapsed;
+            TabBarHost.Visibility = hasVisibleTabs ? Visibility.Visible : Visibility.Collapsed;
         if (TabContainer is not null)
             TabContainer.Visibility = Visibility.Visible;
     }
@@ -297,12 +297,22 @@ public partial class MainWindow : Window
 
     // --- Tab UI Event Handlers ---
 
-    private void ShellCard_Click(object sender, MouseButtonEventArgs e)
+    private async void ShellCard_Click(object sender, MouseButtonEventArgs e)
     {
         if (sender is FrameworkElement fe && fe.DataContext is ShellInfo shell)
         {
-            _viewModel.SelectedShell = shell;
-            _viewModel.CreateNewSession();
+            _forceWelcomeVisible = false;
+            await _viewModel.OpenSessionOnCurrentTargetAsync(shell.Id);
+        }
+    }
+
+    private async void GroupDeviceCard_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is GroupDeviceItem device)
+        {
+            _forceWelcomeVisible = false;
+            await _viewModel.SelectGroupDeviceAsync(device.DeviceId);
+            UpdatePanelVisibility();
         }
     }
 
@@ -355,11 +365,13 @@ public partial class MainWindow : Window
         if (sender is Button btn)
         {
             var shellId = btn.Content as string ?? "";
-            // Navigate up to the parent DataContext which is the GroupMemberInfo
-            var parent = btn.Tag as GroupMemberInfo;
+            var parent = btn.Tag as GroupDeviceItem;
             if (parent is not null)
             {
-                await _viewModel.OpenRemoteTerminalAsync(parent.DeviceId, shellId);
+                _forceWelcomeVisible = false;
+                await _viewModel.SelectGroupDeviceAsync(parent.DeviceId);
+                await _viewModel.OpenSessionOnCurrentTargetAsync(shellId);
+                UpdatePanelVisibility();
             }
         }
     }
@@ -509,13 +521,13 @@ public partial class MainWindow : Window
             if (ServerSettingsSaveButton is not null) ServerSettingsSaveButton.Content = "Save";
             if (ServerSettingsStartButton is not null) ServerSettingsStartButton.Content = "Start";
             if (ServerSettingsStopButton is not null) ServerSettingsStopButton.Content = "Stop";
+            if (ServerSettingsInitButton is not null) ServerSettingsInitButton.Content = "Initialize";
             if (ShellExpander is not null) ShellExpander.Header = "Shell";
             if (DeviceInfoExpander is not null) DeviceInfoExpander.Header = "Device Info";
             if (GroupDevicesExpander is not null) GroupDevicesExpander.Header = "Group Devices";
             if (QrCodeExpander is not null) QrCodeExpander.Header = "QR Code";
             if (AiSettingsExpander is not null) AiSettingsExpander.Header = "AI Settings";
             if (DebugLogExpander is not null) DebugLogExpander.Header = "Debug Log";
-            if (WelcomeNewSessionButton is not null) WelcomeNewSessionButton.Content = "+ New Session";
             if (NewTabButtonInline is not null) NewTabButtonInline.ToolTip = "New Session";
         }
         else
@@ -536,13 +548,13 @@ public partial class MainWindow : Window
             if (ServerSettingsSaveButton is not null) ServerSettingsSaveButton.Content = "保存";
             if (ServerSettingsStartButton is not null) ServerSettingsStartButton.Content = "启动";
             if (ServerSettingsStopButton is not null) ServerSettingsStopButton.Content = "停止";
+            if (ServerSettingsInitButton is not null) ServerSettingsInitButton.Content = "初始化";
             if (ShellExpander is not null) ShellExpander.Header = "终端选择";
             if (DeviceInfoExpander is not null) DeviceInfoExpander.Header = "设备信息";
             if (GroupDevicesExpander is not null) GroupDevicesExpander.Header = "群组设备";
             if (QrCodeExpander is not null) QrCodeExpander.Header = "二维码";
             if (AiSettingsExpander is not null) AiSettingsExpander.Header = "AI 设置";
             if (DebugLogExpander is not null) DebugLogExpander.Header = "调试日志";
-            if (WelcomeNewSessionButton is not null) WelcomeNewSessionButton.Content = "+ 新会话";
             if (NewTabButtonInline is not null) NewTabButtonInline.ToolTip = "新会话";
         }
     }

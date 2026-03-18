@@ -44,6 +44,7 @@ struct TerminalPage {
   @State connectionState: ConnectionState = ConnectionState.CONNECTED;
   @State terminalReady: boolean = false;
   @State terminalHint: string = '正在初始化终端...';
+  @State historyLoadingVisible: boolean = false;
   @State showSessionClosedDialog: boolean = false;
   private stateListenerId: number = -1;
   private messageListenerId: number = -1;
@@ -132,6 +133,7 @@ struct TerminalPage {
     this.resetHistoryState();
     this.terminalReady = false;
     this.terminalHint = '正在初始化终端...';
+    this.historyLoadingVisible = false;
     this.showSessionClosedDialog = false;
     this.viewedSessionId = this.normalizeString(ConnectionManager.getActiveSessionId());
     this.activatePage();
@@ -186,6 +188,7 @@ struct TerminalPage {
         if (state === ConnectionState.DISCONNECTED) {
           this.sessionActive = false;
           this.terminalHint = '连接已断开';
+          this.historyLoadingVisible = false;
         }
       });
     }
@@ -207,6 +210,7 @@ struct TerminalPage {
           if (this.isCurrentSessionMessage(data)) {
             this.sessionActive = false;
             this.terminalHint = 'PC 端已关闭当前会话';
+            this.historyLoadingVisible = false;
             this.showSessionClosedDialog = true;
           }
         } else if (type === 'error') {
@@ -340,6 +344,14 @@ struct TerminalPage {
     this.pendingHistoryReplace = '';
     this.historySessionId = '';
     this.historyDeviceId = '';
+    this.historyLoadingVisible = false;
+  }
+
+  private syncHistoryLoadingOverlay(): void {
+    this.historyLoadingVisible = this.terminalReady &&
+      this.historyStarted &&
+      !this.historyComplete &&
+      this.sessionActive;
   }
 
   private startHistoryLoadIfNeeded(): void {
@@ -363,6 +375,7 @@ struct TerminalPage {
     this.pendingHistoryReplace = '';
 
     this.requestHistoryPage();
+    this.syncHistoryLoadingOverlay();
   }
 
   private requestHistoryPage(): void {
@@ -397,12 +410,14 @@ struct TerminalPage {
 
     if (hasMore) {
       this.historyBeforeSeq = nextBeforeSeq;
+      this.syncHistoryLoadingOverlay();
       this.requestHistoryPage();
       return;
     }
 
     this.historyComplete = true;
     this.applyHistoryBuffer();
+    this.syncHistoryLoadingOverlay();
   }
 
   private appendPendingHistoryOutput(data: string): void {
@@ -544,9 +559,9 @@ struct TerminalPage {
               controller: this.terminalController
             })
 
-          if (!this.terminalReady) {
+          if (!this.terminalReady || this.historyLoadingVisible) {
             Column() {
-              Text(this.terminalHint)
+              Text(!this.terminalReady ? this.terminalHint : '内容较多，加载中，请等待')
                 .fontSize(AppSizes.FONT_SIZE_BODY)
                 .fontColor(AppColors.TEXT_SECONDARY)
             }
@@ -554,6 +569,7 @@ struct TerminalPage {
             .height('100%')
             .backgroundColor(AppColors.TERMINAL_BG)
             .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
           }
         }
         .width('100%')
