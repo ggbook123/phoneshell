@@ -7,6 +7,8 @@
             <!-- Converters -->
             <BooleanToVisibilityConverter x:Key="BoolToVisConverter" />
             <utils:InvertBoolConverter x:Key="InvertBoolConverter" />
+            <utils:CountAtLeastConverter x:Key="CountAtLeastConverter" />
+            <utils:TabBarAvailableWidthConverter x:Key="TabBarAvailableWidthConverter" />
 
             <!-- ============================================ -->
             <!-- COMMAND CENTER DARK THEME - Color Palette    -->

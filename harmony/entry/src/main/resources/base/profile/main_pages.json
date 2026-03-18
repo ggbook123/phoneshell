@@ -3,7 +3,6 @@
     "pages/LoginPage",
     "pages/DeviceManagePage",
     "pages/SessionListPage",
-    "pages/TerminalPage",
-    "pages/ScanPage"
+    "pages/TerminalPage"
   ]
 }

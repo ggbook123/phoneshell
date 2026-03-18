@@ -17,6 +17,14 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel;
     private bool _webViewReady;
+    private bool _forceWelcomeVisible;
+    private bool _isSidebarCollapsed;
+    private GridLength _sidebarExpandedWidth = new(320);
+    private const double SidebarCollapsedWidth = 8;
+    private const double SidebarExpandedMinWidth = 260;
+    private const double SidebarExpandedMaxWidth = 440;
+    private const string CompactModeIcon = "\U0001F4F1";
+    private const string ExpandModeIcon = "\U0001F4BB";
 
     public MainWindow()
     {
@@ -38,6 +46,8 @@ public partial class MainWindow : Window
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         await TerminalWebView.EnsureCoreWebView2Async();
+        TerminalWebView.DefaultBackgroundColor =
+            System.Drawing.Color.FromArgb(255, 0x0A, 0x0E, 0x14);
         TerminalWebView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
         var assetsPath = Path.Combine(AppContext.BaseDirectory, "Assets");
@@ -140,10 +150,7 @@ public partial class MainWindow : Window
 
         Dispatcher.InvokeAsync(() =>
         {
-            if (_viewModel.ActiveTab is not null)
-            {
-                CompactModeButton.Content = _viewModel.ActiveTab.IsCompactMode ? "Expand" : "Compact";
-            }
+            UpdateCompactModeButton();
 
             TerminalWebView.CoreWebView2.ExecuteScriptAsync(
                 $"window.setTerminalGeometry && window.setTerminalGeometry({cols}, {rows})");
@@ -156,10 +163,7 @@ public partial class MainWindow : Window
 
         Dispatcher.InvokeAsync(() =>
         {
-            if (_viewModel.ActiveTab is not null)
-            {
-                CompactModeButton.Content = _viewModel.ActiveTab.IsCompactMode ? "Expand" : "Compact";
-            }
+            UpdateCompactModeButton();
 
             TerminalWebView.CoreWebView2.ExecuteScriptAsync(
                 "window.fitTerminalToContainer && window.fitTerminalToContainer()");
@@ -198,8 +202,8 @@ public partial class MainWindow : Window
                 return;
             }
 
-            // Update compact mode button text
-            CompactModeButton.Content = tab.IsCompactMode ? "Expand" : "Compact";
+            // Update compact mode button icon
+            UpdateCompactModeButton();
 
             // Reset xterm.js and replay the new tab's buffered output
             if (_webViewReady)
@@ -265,20 +269,29 @@ public partial class MainWindow : Window
     private void UpdatePanelVisibility()
     {
         var hasTabs = _viewModel.Tabs.Count > 0;
-        WelcomePanel.Visibility = hasTabs ? Visibility.Collapsed : Visibility.Visible;
-        TabContainer.Visibility = hasTabs ? Visibility.Visible : Visibility.Collapsed;
+        var showWelcome = !hasTabs || _forceWelcomeVisible;
+        if (WelcomePanel is not null)
+            WelcomePanel.Visibility = showWelcome ? Visibility.Visible : Visibility.Collapsed;
+        if (TerminalWebView is not null)
+            TerminalWebView.Visibility = showWelcome ? Visibility.Collapsed : Visibility.Visible;
+        if (TabBarHost is not null)
+            TabBarHost.Visibility = hasTabs ? Visibility.Visible : Visibility.Collapsed;
+        if (TabContainer is not null)
+            TabContainer.Visibility = Visibility.Visible;
     }
+
 
     private void UpdateTabHighlighting()
     {
-        if (_viewModel.ActiveTab is not null)
-        {
-            CompactModeButton.Content = _viewModel.ActiveTab.IsCompactMode ? "Expand" : "Compact";
-        }
+        UpdateCompactModeButton();
     }
 
     private void Tabs_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        if (e.Action == NotifyCollectionChangedAction.Add)
+        {
+            _forceWelcomeVisible = false;
+        }
         Dispatcher.InvokeAsync(UpdatePanelVisibility);
     }
 
@@ -309,12 +322,18 @@ public partial class MainWindow : Window
         }
     }
 
+    private void NewTabButton_Click(object sender, RoutedEventArgs e)
+    {
+        _forceWelcomeVisible = true;
+        UpdatePanelVisibility();
+    }
+
     private void CompactModeButton_Click(object sender, RoutedEventArgs e)
     {
         if (_viewModel.ActiveTab is not null)
         {
             _viewModel.ToggleCompactModeCommand.Execute(_viewModel.ActiveTab.TabId);
-            CompactModeButton.Content = _viewModel.ActiveTab.IsCompactMode ? "Expand" : "Compact";
+            UpdateCompactModeButton();
         }
     }
 
@@ -420,6 +439,45 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SidebarToggleButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (SidebarColumn is null) return;
+
+        if (!_isSidebarCollapsed)
+        {
+            _sidebarExpandedWidth = SidebarColumn.Width;
+            SidebarColumn.Width = new GridLength(SidebarCollapsedWidth);
+            SidebarColumn.MinWidth = SidebarCollapsedWidth;
+            SidebarColumn.MaxWidth = SidebarCollapsedWidth;
+
+            if (SidebarContent is not null) SidebarContent.Visibility = Visibility.Collapsed;
+            if (SidebarSplitter is not null) SidebarSplitter.Visibility = Visibility.Collapsed;
+            if (SidebarToggleButton is not null)
+            {
+                SidebarToggleButton.Content = "\u276F";
+                SidebarToggleButton.ToolTip = "Expand sidebar";
+            }
+
+            _isSidebarCollapsed = true;
+        }
+        else
+        {
+            SidebarColumn.Width = _sidebarExpandedWidth;
+            SidebarColumn.MinWidth = SidebarExpandedMinWidth;
+            SidebarColumn.MaxWidth = SidebarExpandedMaxWidth;
+
+            if (SidebarContent is not null) SidebarContent.Visibility = Visibility.Visible;
+            if (SidebarSplitter is not null) SidebarSplitter.Visibility = Visibility.Visible;
+            if (SidebarToggleButton is not null)
+            {
+                SidebarToggleButton.Content = "\u276E";
+                SidebarToggleButton.ToolTip = "Collapse sidebar";
+            }
+
+            _isSidebarCollapsed = false;
+        }
+    }
+
     // --- Language Switching ---
 
     private void LanguageRadio_Checked(object sender, RoutedEventArgs e)
@@ -458,7 +516,7 @@ public partial class MainWindow : Window
             if (AiSettingsExpander is not null) AiSettingsExpander.Header = "AI Settings";
             if (DebugLogExpander is not null) DebugLogExpander.Header = "Debug Log";
             if (WelcomeNewSessionButton is not null) WelcomeNewSessionButton.Content = "+ New Session";
-            if (NewTabButton is not null) NewTabButton.ToolTip = "New Session";
+            if (NewTabButtonInline is not null) NewTabButtonInline.ToolTip = "New Session";
         }
         else
         {
@@ -485,7 +543,7 @@ public partial class MainWindow : Window
             if (AiSettingsExpander is not null) AiSettingsExpander.Header = "AI 设置";
             if (DebugLogExpander is not null) DebugLogExpander.Header = "调试日志";
             if (WelcomeNewSessionButton is not null) WelcomeNewSessionButton.Content = "+ 新会话";
-            if (NewTabButton is not null) NewTabButton.ToolTip = "新会话";
+            if (NewTabButtonInline is not null) NewTabButtonInline.ToolTip = "新会话";
         }
     }
 
@@ -496,5 +554,17 @@ public partial class MainWindow : Window
         LangEnRadio.IsChecked = isEnglish;
         LangZhRadio.IsChecked = !isEnglish;
         ApplyLanguage(isEnglish);
+    }
+
+    private void UpdateCompactModeButton()
+    {
+        if (CompactModeButton is null || _viewModel.ActiveTab is null)
+        {
+            return;
+        }
+
+        CompactModeButton.Content = _viewModel.ActiveTab.IsCompactMode
+            ? ExpandModeIcon
+            : CompactModeIcon;
     }
 }

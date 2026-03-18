@@ -716,6 +716,18 @@ class ConnectionManagerClass {
     return devices;
   }
 
+  getSingleDevices(): Array<DeviceInfo> {
+    let devices: Array<DeviceInfo> = [];
+    this.singleDeviceInfos.forEach((info: DeviceInfo) => {
+      devices.push(info);
+    });
+    return devices;
+  }
+
+  getGroupDevices(): Array<DeviceInfo> {
+    return this.groupDevices.slice();
+  }
+
   getGroupMembers(): Array<GroupMemberInfo> {
     return this.groupMembers.slice();
   }

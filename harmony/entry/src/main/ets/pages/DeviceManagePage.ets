@@ -1,8 +1,11 @@
 import { LengthMetrics } from '@kit.ArkUI';
+import { Context } from '@kit.AbilityKit';
+import { scanBarcode } from '@kit.ScanKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AppColors, AppSizes, AppStrings, ConnectionState, DeviceMode } from '../common/Constants';
+import { AppColors, AppSizes, AppStrings, ConnectionState, DeviceMode, StorageKeys } from '../common/Constants';
 import { ConnectionManager, SingleDeviceRecord } from '../services/ConnectionManager';
 import { AuthManager, AuthPendingRequest } from '../services/AuthManager';
+import { PreferencesUtil } from '../services/PreferencesUtil';
 import { DeviceInfo, GroupMemberInfo } from '../models/MessageTypes';
 
 const DOMAIN = 0x0000;
@@ -17,12 +20,18 @@ interface SessionListParams {
 @Entry
 @Component
 struct DeviceManagePage {
-  @State devices: Array<DeviceInfo> = [];
+  @State groupDevices: Array<DeviceInfo> = [];
+  @State singleDevices: Array<DeviceInfo> = [];
   @State currentMode: DeviceMode = DeviceMode.STANDALONE;
-  @State selectedTab: number = 0; // 0 = single, 1 = group
   @State isRefreshing: boolean = false;
   @State groupMembers: Array<GroupMemberInfo> = [];
   @State groupId: string = '';
+  @State scanResult: string = '';
+  @State scanStatus: string = '';
+  @State isScanning: boolean = false;
+  @State parseError: string = '';
+  @State showInviteConfirmDialog: boolean = false;
+  @State inviteDeviceName: string = '';
 
   // Device settings sheet
   @State showSettingsSheet: boolean = false;
@@ -49,6 +58,9 @@ struct DeviceManagePage {
   private authDialogCallbackId: number = -1;
   private pendingInviteDeviceId: string = '';
   private pendingInviteHttpUrl: string = '';
+  private scanMessageListenerId: number = -1;
+  private scanStateListenerId: number = -1;
+  private scanInviteHttpUrl: string = '';
 
   aboutToAppear(): void {
     this.activatePage();
@@ -68,19 +80,16 @@ struct DeviceManagePage {
 
   private activatePage(): void {
     this.currentMode = ConnectionManager.currentMode;
-    this.devices = ConnectionManager.getAllDevices();
+    this.groupDevices = ConnectionManager.getGroupDevices();
+    this.singleDevices = ConnectionManager.getSingleDevices();
     this.groupMembers = ConnectionManager.getGroupMembers();
     this.groupId = ConnectionManager.getGroupId();
     this.pendingAuthCount = AuthManager.getPendingCount();
 
-    // Auto-select tab based on mode
-    if (this.currentMode === DeviceMode.GROUP) {
-      this.selectedTab = 1;
-    }
-
     if (this.deviceListCallbackId === -1) {
-      this.deviceListCallbackId = ConnectionManager.addOnDeviceListChanged((devices: Array<DeviceInfo>) => {
-        this.devices = devices;
+      this.deviceListCallbackId = ConnectionManager.addOnDeviceListChanged((_devices: Array<DeviceInfo>) => {
+        this.groupDevices = ConnectionManager.getGroupDevices();
+        this.singleDevices = ConnectionManager.getSingleDevices();
         this.groupMembers = ConnectionManager.getGroupMembers();
         this.isRefreshing = false;
       });
@@ -89,10 +98,9 @@ struct DeviceManagePage {
     if (this.modeChangeCallbackId === -1) {
       this.modeChangeCallbackId = ConnectionManager.addOnModeChange((mode: DeviceMode) => {
         this.currentMode = mode;
-        if (mode === DeviceMode.GROUP) {
-          this.selectedTab = 1;
-        }
         this.groupId = ConnectionManager.getGroupId();
+        this.groupDevices = ConnectionManager.getGroupDevices();
+        this.singleDevices = ConnectionManager.getSingleDevices();
       });
     }
 
@@ -148,6 +156,7 @@ struct DeviceManagePage {
       AuthManager.removeOnShowDialog(this.authDialogCallbackId);
       this.authDialogCallbackId = -1;
     }
+    this.cleanupScanListeners();
   }
 
   private getOsIcon(os: string): string {
@@ -179,19 +188,19 @@ struct DeviceManagePage {
     }
   }
 
-  private openDeviceSettings(device: DeviceInfo): void {
+  private openDeviceSettings(device: DeviceInfo, isPendingSingle: boolean): void {
     this.settingsDeviceId = device.deviceId;
     this.settingsDisplayName = device.displayName;
     this.settingsOs = device.os;
     this.settingsEditName = device.displayName;
 
-    // Determine role from group members if in group mode
-    this.settingsIsGroupDevice = this.currentMode === DeviceMode.GROUP;
+    // Determine role from group members when available
+    this.settingsIsGroupDevice = !isPendingSingle && this.currentMode === DeviceMode.GROUP;
     if (this.settingsIsGroupDevice) {
       const member: GroupMemberInfo | undefined = this.findGroupMember(device.deviceId);
       this.settingsRole = member !== undefined ? member.role : 'Member';
     } else {
-      this.settingsRole = '单连';
+      this.settingsRole = 'Pending';
     }
 
     this.showSettingsSheet = true;
@@ -232,12 +241,353 @@ struct DeviceManagePage {
     this.pendingAuthCount = AuthManager.getPendingCount();
   }
 
-  private navigateToScan(): void {
-    try {
-      this.getUIContext().getRouter().pushUrl({ url: 'pages/ScanPage' });
-    } catch (_e) {
-      // Ignore navigation errors
+  private cleanupScanListeners(): void {
+    if (this.scanMessageListenerId !== -1) {
+      ConnectionManager.removeOnMessage(this.scanMessageListenerId);
+      this.scanMessageListenerId = -1;
     }
+    if (this.scanStateListenerId !== -1) {
+      ConnectionManager.removeOnStateChange(this.scanStateListenerId);
+      this.scanStateListenerId = -1;
+    }
+  }
+
+  private startScan(): void {
+    if (this.isScanning) return;
+    this.cleanupScanListeners();
+    this.isScanning = true;
+    this.scanStatus = '正在启动扫码...';
+    this.parseError = '';
+    this.scanResult = '';
+
+    let options: scanBarcode.ScanOptions = {
+      scanTypes: [],
+      enableMultiMode: false,
+      enableAlbum: true
+    };
+
+    const hostContext: Context | undefined = this.getUIContext().getHostContext();
+    if (hostContext === undefined) {
+      this.isScanning = false;
+      this.scanStatus = '无法获取上下文';
+      return;
+    }
+
+    scanBarcode.startScanForResult(hostContext, options)
+      .then((result: scanBarcode.ScanResult) => {
+        this.isScanning = false;
+        const value: string = result.originalValue;
+        hilog.info(DOMAIN, PAGE_TAG, 'scan result=%{public}s', value);
+        this.scanResult = value;
+        this.scanStatus = '扫码成功';
+        this.handleScanResult(value);
+      })
+      .catch((err: Error) => {
+        this.isScanning = false;
+        hilog.error(DOMAIN, PAGE_TAG, 'scan error=%{public}s', err.message);
+        this.scanStatus = '扫码失败: ' + err.message;
+      });
+  }
+
+  private async handleScanResult(payload: string): Promise<void> {
+    // Supported formats:
+    //   phoneshell://connect?http=...&ws=...&deviceId=...&displayName=...   (standalone device)
+    //   phoneshell://bind?server=...&groupId=...&groupSecret=...            (group bind)
+    //   phoneshell://login?server=...&groupId=...&requestId=...             (panel login)
+    if (!payload.startsWith('phoneshell://')) {
+      this.parseError = '无效的二维码格式';
+      return;
+    }
+
+    const params: Map<string, string> = this.parseQrParams(payload);
+
+    if (payload.startsWith('phoneshell://connect')) {
+      this.handleConnectQr(params);
+    } else if (payload.startsWith('phoneshell://login')) {
+      this.handleLoginQr(params);
+    } else if (payload.startsWith('phoneshell://bind')) {
+      await this.handleBindQr(params);
+    } else {
+      this.parseError = '未知的二维码类型';
+    }
+  }
+
+  // --- Standalone connect: phone directly connects to a device via WS ---
+  private handleConnectQr(params: Map<string, string>): void {
+    const wsUrl: string = params.get('ws') ?? '';
+    const httpUrl: string = params.get('http') ?? '';
+    const deviceId: string = params.get('deviceId') ?? '';
+    const displayName: string = params.get('displayName') ?? deviceId;
+
+    hilog.info(DOMAIN, PAGE_TAG, 'connect QR: ws=%{public}s deviceId=%{public}s', wsUrl, deviceId);
+
+    if (wsUrl.length === 0 || deviceId.length === 0) {
+      this.parseError = '二维码缺少必要参数 (ws/deviceId)';
+      return;
+    }
+
+    // If phone is already in a group, invite this standalone device into the group
+    if (ConnectionManager.isInGroup()) {
+      if (httpUrl.length === 0) {
+        this.parseError = '该设备不支持邀请加入群组（缺少HTTP地址）';
+        return;
+      }
+      hilog.info(DOMAIN, PAGE_TAG, 'Already in group, inviting device %{public}s to group', deviceId);
+      this.inviteDeviceName = displayName;
+      this.scanInviteHttpUrl = httpUrl;
+      this.showInviteConfirmDialog = true;
+      return;
+    }
+
+    this.scanStatus = `正在连接 ${displayName}...`;
+
+    // Use ConnectionManager to establish single connection
+    ConnectionManager.connectSingle(wsUrl, deviceId, displayName, httpUrl);
+
+    this.scanStatus = `已添加设备 ${displayName}`;
+  }
+
+  // --- Invite a standalone device into the current group ---
+  private inviteDeviceToGroup(): void {
+    this.showInviteConfirmDialog = false;
+    const httpUrl: string = this.scanInviteHttpUrl;
+    const deviceName: string = this.inviteDeviceName;
+
+    if (httpUrl.length === 0) return;
+
+    this.scanStatus = `正在邀请 ${deviceName} 加入群组...`;
+
+    // Listen for invite.create.response
+    this.cleanupScanListeners();
+    this.scanMessageListenerId = ConnectionManager.addOnMessage((type: string, data: Record<string, Object>) => {
+      if (type === 'invite.create.response') {
+        const inviteCode: string = (data['inviteCode'] ?? '') as string;
+        const relayUrl: string = (data['relayUrl'] ?? '') as string;
+        if (inviteCode.length > 0 && relayUrl.length > 0) {
+          hilog.info(DOMAIN, PAGE_TAG, 'Got invite code, sending to device %{public}s', httpUrl);
+          this.scanStatus = `正在发送邀请给 ${deviceName}...`;
+          ConnectionManager.inviteToGroup(httpUrl, inviteCode, relayUrl,
+            (success: boolean, message: string) => {
+              if (success) {
+                this.scanStatus = `已邀请 ${deviceName} 加入群组`;
+                this.cleanupScanListeners();
+              } else {
+                this.parseError = `邀请发送失败: ${message}`;
+                this.scanStatus = '邀请失败';
+                this.cleanupScanListeners();
+              }
+            });
+        }
+      } else if (type === 'error') {
+        const message: string = (data['message'] ?? '') as string;
+        this.parseError = `邀请失败: ${message}`;
+        this.scanStatus = '邀请失败';
+        this.cleanupScanListeners();
+      }
+    });
+
+    // Request invite code from relay server
+    ConnectionManager.requestInviteCode();
+  }
+
+  // --- Group bind: connect to relay server and join group ---
+  private async handleBindQr(params: Map<string, string>): Promise<void> {
+    const server: string = params.get('server') ?? '';
+    const groupId: string = params.get('groupId') ?? '';
+    const groupSecret: string = params.get('groupSecret') ?? '';
+
+    hilog.info(DOMAIN, PAGE_TAG, 'bind QR: server=%{public}s groupId=%{public}s', server, groupId);
+
+    if (server.length === 0 || groupSecret.length === 0) {
+      this.parseError = '二维码缺少必要参数 (server/groupSecret)';
+      return;
+    }
+
+    // If already in a group, invite this device into the current group
+    if (ConnectionManager.isInGroup()) {
+      const currentGroupId: string = ConnectionManager.getGroupId();
+      if (currentGroupId === groupId) {
+        // Same group - already connected
+        this.scanStatus = '已在该群组中';
+        return;
+      }
+      // Different server's bind QR — invite that device into our group
+      const httpUrl: string = this.wsUrlToHttpUrl(server);
+      if (httpUrl.length === 0) {
+        this.parseError = '无法解析设备HTTP地址';
+        return;
+      }
+      hilog.info(DOMAIN, PAGE_TAG, 'Already in group, inviting bind-QR device to current group, httpUrl=%{public}s', httpUrl);
+      this.inviteDeviceName = params.get('serverDeviceId') ?? '新设备';
+      this.scanInviteHttpUrl = httpUrl;
+      this.showInviteConfirmDialog = true;
+      return;
+    }
+
+    await this.executeBindQr(server, groupId, groupSecret);
+  }
+
+  // Derive HTTP URL from WebSocket URL (ws://host:port/ws/ -> http://host:port)
+  private wsUrlToHttpUrl(wsUrl: string): string {
+    let url: string = wsUrl;
+    // Strip query string
+    const qIdx: number = url.indexOf('?');
+    if (qIdx >= 0) url = url.substring(0, qIdx);
+    // Convert protocol
+    if (url.startsWith('wss://')) {
+      url = 'https://' + url.substring(6);
+    } else if (url.startsWith('ws://')) {
+      url = 'http://' + url.substring(5);
+    }
+    // Remove trailing /ws/ path if present
+    if (url.endsWith('/ws/')) {
+      url = url.substring(0, url.length - 4);
+    } else if (url.endsWith('/ws')) {
+      url = url.substring(0, url.length - 3);
+    }
+    // Ensure trailing slash removed
+    if (url.endsWith('/')) {
+      url = url.substring(0, url.length - 1);
+    }
+    return url;
+  }
+
+  private async executeBindQr(server: string, groupId: string, groupSecret: string): Promise<void> {
+    // Save settings
+    await PreferencesUtil.setLastServerUrl(server);
+    await PreferencesUtil.setString(StorageKeys.GROUP_SECRET, groupSecret);
+
+    this.scanStatus = `正在连接群组 ${server.substring(0, 40)}...`;
+
+    // Connect as group
+    const connectUrl: string = this.buildConnectUrlWithToken(server, groupSecret);
+    ConnectionManager.connectGroup(connectUrl, groupSecret, groupId);
+
+    // Listen for group join result
+    this.cleanupScanListeners();
+    this.scanMessageListenerId = ConnectionManager.addOnMessage((type: string, _data: Record<string, Object>) => {
+      if (type === 'group.join.accepted') {
+        this.cleanupScanListeners();
+        this.scanStatus = '已加入群组';
+        // Bind mobile
+        ConnectionManager.sendMobileBindRequest(groupId);
+      } else if (type === 'group.join.rejected') {
+        this.cleanupScanListeners();
+        this.parseError = '加入群组被拒绝';
+        this.scanStatus = '加入群组失败';
+      }
+    });
+
+    this.scanStateListenerId = ConnectionManager.addOnStateChange((state: ConnectionState, _deviceId: string) => {
+      if (state === ConnectionState.CONNECTED) {
+        ConnectionManager.sendGroupJoinRequest(groupSecret);
+      }
+    });
+
+    // If already connected, send join immediately
+    if (ConnectionManager.getConnectionStateForDevice('group') === ConnectionState.CONNECTED) {
+      ConnectionManager.sendGroupJoinRequest(groupSecret);
+    }
+  }
+
+  // --- Panel login: scan login QR from web panel ---
+  private handleLoginQr(params: Map<string, string>): void {
+    const server: string = params.get('server') ?? '';
+    const requestId: string = params.get('requestId') ?? '';
+
+    hilog.info(DOMAIN, PAGE_TAG, 'login QR: server=%{public}s requestId=%{public}s', server, requestId);
+
+    if (server.length === 0 || requestId.length === 0) {
+      this.parseError = '登录码缺少必要参数';
+      return;
+    }
+
+    this.scanStatus = '正在处理登录请求...';
+    // Listen for error responses from server
+    this.cleanupScanListeners();
+    this.scanMessageListenerId = ConnectionManager.addOnMessage((type: string, data: Record<string, Object>) => {
+      if (type === 'error') {
+        const code: string = (data['code'] ?? '') as string;
+        const message: string = (data['message'] ?? '') as string;
+        hilog.error(DOMAIN, PAGE_TAG, 'login scan error: code=%{public}s msg=%{public}s', code, message);
+        if (code === 'not_bound_mobile') {
+          this.scanStatus = '登录失败：需要重新连接群组';
+          this.parseError = '手机未在群组中注册，请返回设备管理页等待自动重连';
+        } else if (code === 'login_session_not_found') {
+          this.scanStatus = '登录失败：登录会话已过期';
+          this.parseError = '请刷新网页重新获取二维码';
+        } else {
+          this.scanStatus = '登录失败';
+          this.parseError = message.length > 0 ? message : '未知错误';
+        }
+        this.cleanupScanListeners();
+      } else if (type === 'panel.login.approved') {
+        this.scanStatus = '网页登录已批准';
+        this.cleanupScanListeners();
+      }
+    });
+
+    // Check if connected to group and joined
+    if (!ConnectionManager.isInGroup()) {
+      this.scanStatus = '正在重新连接群组...';
+      // Wait for group rejoin (auto-rejoin on reconnect), then send
+      this.scanStateListenerId = ConnectionManager.addOnStateChange((state: ConnectionState, _deviceId: string) => {
+        if (state === ConnectionState.CONNECTED) {
+          // After reconnect, wait a moment for group.join.accepted
+          // The auto-rejoin logic will fire group.join.request
+        }
+      });
+      // Also listen for group.join.accepted to then send the login scan
+      const joinListenerId: number = ConnectionManager.addOnMessage((type: string, _data: Record<string, Object>) => {
+        if (type === 'group.join.accepted') {
+          ConnectionManager.removeOnMessage(joinListenerId);
+          this.scanStatus = '已重新连接，正在发送登录确认...';
+          ConnectionManager.sendPanelLoginScan(requestId);
+        }
+      });
+      return;
+    }
+
+    // Send panel.login.scan through ConnectionManager
+    ConnectionManager.sendPanelLoginScan(requestId);
+    this.scanStatus = '已发送登录确认，等待服务器响应...';
+  }
+
+  private buildConnectUrlWithToken(baseUrl: string, groupSecret: string): string {
+    const trimmedSecret: string = groupSecret.trim();
+    if (trimmedSecret.length === 0) {
+      return baseUrl;
+    }
+
+    if (baseUrl.indexOf('token=') >= 0) {
+      return baseUrl;
+    }
+
+    const token: string = encodeURIComponent(trimmedSecret);
+    if (baseUrl.indexOf('?') >= 0) {
+      return baseUrl + '&token=' + token;
+    }
+    return baseUrl + '?token=' + token;
+  }
+
+  private parseQrParams(payload: string): Map<string, string> {
+    const result: Map<string, string> = new Map();
+    const questionIdx: number = payload.indexOf('?');
+    if (questionIdx < 0) {
+      return result;
+    }
+    const queryStr: string = payload.substring(questionIdx + 1);
+    const pairs: Array<string> = queryStr.split('&');
+    for (let i: number = 0; i < pairs.length; i++) {
+      const pair: string = pairs[i];
+      const eqIdx: number = pair.indexOf('=');
+      if (eqIdx > 0) {
+        const key: string = pair.substring(0, eqIdx);
+        const value: string = decodeURIComponent(pair.substring(eqIdx + 1));
+        result.set(key, value);
+      }
+    }
+    return result;
   }
 
   build() {
@@ -271,53 +621,27 @@ struct DeviceManagePage {
         .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE })
         .alignItems(VerticalAlign.Center)
 
-        // Tab selector
-        Row() {
-          Button('单连模式')
-            .height(36)
-            .fontSize(AppSizes.FONT_SIZE_SMALL)
-            .fontColor(this.selectedTab === 0 ? '#FFFFFF' : AppColors.TEXT_SECONDARY)
-            .backgroundColor(this.selectedTab === 0 ? AppColors.ACCENT : Color.Transparent)
-            .borderRadius(AppSizes.BORDER_RADIUS_INPUT)
-            .layoutWeight(1)
-            .onClick(() => { this.selectedTab = 0; })
-
-          Button('群组模式')
-            .height(36)
-            .fontSize(AppSizes.FONT_SIZE_SMALL)
-            .fontColor(this.selectedTab === 1 ? '#FFFFFF' : AppColors.TEXT_SECONDARY)
-            .backgroundColor(this.selectedTab === 1 ? AppColors.ACCENT : Color.Transparent)
-            .borderRadius(AppSizes.BORDER_RADIUS_INPUT)
-            .layoutWeight(1)
-            .onClick(() => { this.selectedTab = 1; })
-        }
-        .width('100%')
-        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, bottom: 8 })
-        .backgroundColor(AppColors.CARD_BACKGROUND)
-
         Divider().color(AppColors.DIVIDER).width('100%')
 
         // Content area
-        if (this.selectedTab === 0) {
-          this.SingleModeContent()
-        } else {
-          this.GroupModeContent()
-        }
+        this.MainContent()
 
-        // Bottom scan button
-        Column() {
-          Divider().color(AppColors.DIVIDER).width('100%')
-          Button('扫  码')
-            .width('100%')
-            .height(48)
-            .fontSize(AppSizes.FONT_SIZE_BODY)
-            .fontColor('#FFFFFF')
-            .backgroundColor(AppColors.ACCENT)
-            .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
-            .onClick(() => { this.navigateToScan(); })
+        // Bottom scan button (group mode)
+        if (ConnectionManager.isInGroup()) {
+          Column() {
+            Divider().color(AppColors.DIVIDER).width('100%')
+            Button('扫  码')
+              .width('100%')
+              .height(48)
+              .fontSize(AppSizes.FONT_SIZE_BODY)
+              .fontColor('#FFFFFF')
+              .backgroundColor(AppColors.ACCENT)
+              .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+              .onClick(() => { this.startScan(); })
+          }
+          .width('100%')
+          .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 8, bottom: 16 })
         }
-        .width('100%')
-        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 8, bottom: 16 })
       }
       .width('100%')
       .height('100%')
@@ -332,70 +656,37 @@ struct DeviceManagePage {
       if (this.showAuthDialog) {
         this.AuthDialog()
       }
+
+      // Scan invite confirm dialog
+      if (this.showInviteConfirmDialog) {
+        this.InviteConfirmDialog()
+      }
     }
     .width('100%')
     .height('100%')
   }
 
   @Builder
-  SingleModeContent() {
-    if (this.getSingleDevices().length === 0) {
+  MainContent() {
+    Scroll() {
       Column() {
-        Text('暂无连接设备')
-          .fontSize(AppSizes.FONT_SIZE_BODY)
-          .fontColor(AppColors.TEXT_SECONDARY)
-          .margin({ bottom: 12 })
-
-        Text('扫描设备二维码来添加设备')
-          .fontSize(AppSizes.FONT_SIZE_SMALL)
-          .fontColor(AppColors.TEXT_SECONDARY)
+        this.GroupSection()
+        this.PendingSection()
       }
       .width('100%')
-      .layoutWeight(1)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-    } else {
-      List({ space: 12 }) {
-        ForEach(this.getSingleDevices(), (device: DeviceInfo) => {
-          ListItem() {
-            this.DeviceCard(device)
-          }
-        }, (device: DeviceInfo, index: number) => `single_${device.deviceId}_${index}`)
-      }
-      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+      .justifyContent(FlexAlign.Start)
       .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 12, bottom: 12 })
-      .layoutWeight(1)
     }
+    .align(Alignment.TopStart)
+    .width('100%')
+    .layoutWeight(1)
   }
 
   @Builder
-  GroupModeContent() {
+  GroupSection() {
     if (!ConnectionManager.isInGroup()) {
-      Column() {
-        Text('当前没有群组')
-          .fontSize(AppSizes.FONT_SIZE_BODY)
-          .fontColor(AppColors.TEXT_SECONDARY)
-          .margin({ bottom: 8 })
-
-        Text('可将单连设备拉入群组')
-          .fontSize(AppSizes.FONT_SIZE_SMALL)
-          .fontColor(AppColors.TEXT_SECONDARY)
-          .margin({ bottom: 24 })
-
-        Button('创建群组')
-          .width(180)
-          .height(44)
-          .fontSize(AppSizes.FONT_SIZE_BODY)
-          .fontColor('#FFFFFF')
-          .backgroundColor(AppColors.ACCENT)
-          .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
-          .enabled(this.getSingleDevices().length > 0)
-          .onClick(() => { this.createGroupFromSingle(); })
-      }
-      .width('100%')
-      .layoutWeight(1)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
+      this.ScanConnectSection()
     } else {
       Column() {
         // Group info header
@@ -416,26 +707,151 @@ struct DeviceManagePage {
             .onClick(() => { ConnectionManager.dissolveGroup(); })
         }
         .width('100%')
-        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 8, bottom: 8 })
+        .margin({ bottom: 12 })
 
-        List({ space: 12 }) {
-          ForEach(this.getGroupDevices(), (device: DeviceInfo) => {
-            ListItem() {
-              this.DeviceCard(device)
-            }
-          }, (device: DeviceInfo, index: number) => `group_${device.deviceId}_${index}`)
+        if (this.getGroupDevices().length === 0) {
+          Text('群组暂无设备')
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor(AppColors.TEXT_SECONDARY)
+            .margin({ bottom: 12 })
+        } else {
+          Column() {
+            ForEach(this.getGroupDevices(), (device: DeviceInfo) => {
+              Column() {
+                this.DeviceCard(device, false, false)
+              }
+              .margin({ bottom: 12 })
+            }, (device: DeviceInfo, index: number) => `group_${device.deviceId}_${index}`)
+          }
+          .width('100%')
         }
-        .width('100%')
-        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 4, bottom: 12 })
-        .layoutWeight(1)
+
+        this.ScanStatusPanel()
       }
       .width('100%')
-      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+      .margin({ bottom: 16 })
     }
   }
 
   @Builder
-  DeviceCard(device: DeviceInfo) {
+  ScanConnectSection() {
+    Column() {
+      Text('扫描服务器二维码')
+        .fontSize(AppSizes.FONT_SIZE_BODY)
+        .fontColor(AppColors.TEXT_PRIMARY)
+        .margin({ bottom: 8 })
+
+      Text('使用 PC 端生成的 QR 码进行扫码连接，自动加入群组并绑定手机。')
+        .fontSize(AppSizes.FONT_SIZE_SMALL)
+        .fontColor(AppColors.TEXT_SECONDARY)
+        .textAlign(TextAlign.Center)
+        .margin({ bottom: 24 })
+        .padding({ left: 20, right: 20 })
+
+      Button(this.isScanning ? '扫码中...' : '开始扫码')
+        .width(200)
+        .height(44)
+        .fontSize(AppSizes.FONT_SIZE_BODY)
+        .fontColor(AppColors.BACKGROUND)
+        .backgroundColor(AppColors.ACCENT)
+        .borderRadius(AppSizes.BORDER_RADIUS_CARD)
+        .enabled(!this.isScanning)
+        .onClick(() => {
+          this.startScan();
+        })
+        .margin({ bottom: 20 })
+
+      this.ScanStatusPanel()
+    }
+    .width('100%')
+    .padding({ top: 12, bottom: 24 })
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+  }
+
+  @Builder
+  ScanStatusPanel() {
+    if (this.scanStatus.length > 0 || this.parseError.length > 0 || this.scanResult.length > 0) {
+      Column() {
+        if (this.scanStatus.length > 0) {
+          Text(this.scanStatus)
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor(AppColors.TEXT_SECONDARY)
+            .margin({ bottom: 8 })
+            .textAlign(TextAlign.Center)
+            .width('100%')
+        }
+
+        if (this.parseError.length > 0) {
+          Text(this.parseError)
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor(AppColors.ERROR_RED)
+            .margin({ bottom: 8 })
+            .textAlign(TextAlign.Center)
+            .width('100%')
+        }
+
+        if (this.scanResult.length > 0) {
+          Column() {
+            Text('扫码结果')
+              .fontSize(AppSizes.FONT_SIZE_SMALL)
+              .fontColor(AppColors.TEXT_SECONDARY)
+              .margin({ bottom: 4 })
+            Text(this.scanResult)
+              .fontSize(12)
+              .fontColor(AppColors.TEXT_PRIMARY)
+              .fontFamily('monospace')
+              .copyOption(CopyOptions.InApp)
+              .maxLines(3)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          .width('100%')
+          .padding(AppSizes.PADDING_CARD)
+          .backgroundColor(AppColors.CARD_BACKGROUND)
+          .borderRadius(AppSizes.BORDER_RADIUS_CARD)
+          .alignItems(HorizontalAlign.Start)
+        }
+      }
+      .width('100%')
+      .margin({ top: 8 })
+      .alignItems(HorizontalAlign.Center)
+    }
+  }
+
+  @Builder
+  PendingSection() {
+    if (this.getSingleDevices().length > 0) {
+      Column() {
+        Row() {
+          Text('待加入设备')
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor(AppColors.TEXT_SECONDARY)
+          Blank()
+          Text('长按移入群组')
+            .fontSize(12)
+            .fontColor(AppColors.TEXT_SECONDARY)
+        }
+        .width('100%')
+        .margin({ bottom: 8 })
+
+        Column() {
+          ForEach(this.getSingleDevices(), (device: DeviceInfo) => {
+            Column() {
+              this.DeviceCard(device, true, true)
+            }
+            .margin({ bottom: 12 })
+          }, (device: DeviceInfo, index: number) => `pending_${device.deviceId}_${index}`)
+        }
+        .width('100%')
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+    }
+  }
+
+  @Builder
+  DeviceCard(device: DeviceInfo, allowMoveToGroup: boolean, isPendingSingle: boolean) {
     Column() {
       Row() {
         Text(this.getOsIcon(device.os))
@@ -463,7 +879,7 @@ struct DeviceManagePage {
           .fontSize(20)
           .fontColor(AppColors.TEXT_SECONDARY)
           .padding(8)
-          .onClick(() => { this.openDeviceSettings(device); })
+          .onClick(() => { this.openDeviceSettings(device, isPendingSingle); })
 
         // Online status
         Row() {
@@ -505,7 +921,7 @@ struct DeviceManagePage {
     .gesture(
       LongPressGesture({ repeat: false, duration: 600 })
         .onAction(() => {
-          if (device.isOnline && this.selectedTab === 0) {
+          if (allowMoveToGroup && device.isOnline) {
             this.moveDeviceToGroup(device);
           }
         })
@@ -585,8 +1001,8 @@ struct DeviceManagePage {
           .margin({ bottom: 8 })
           .onClick(() => { this.saveDeviceName(); })
 
-        // Kick from group (group mode only)
-        if (this.currentMode === DeviceMode.GROUP) {
+        // Kick from group (group devices only)
+        if (this.settingsIsGroupDevice) {
           Button('踢出群组')
             .width('100%')
             .height(44)
@@ -611,8 +1027,8 @@ struct DeviceManagePage {
           }
         }
 
-        // Disconnect (single mode only)
-        if (this.currentMode !== DeviceMode.GROUP) {
+        // Disconnect (pending single devices only)
+        if (!this.settingsIsGroupDevice) {
           Button('断开连接')
             .width('100%')
             .height(44)
@@ -711,6 +1127,63 @@ struct DeviceManagePage {
     .justifyContent(FlexAlign.Center)
   }
 
+  @Builder
+  InviteConfirmDialog() {
+    Column() {
+      Column() {
+        Text('邀请设备加入群组')
+          .fontSize(18)
+          .fontColor(AppColors.TEXT_PRIMARY)
+          .fontWeight(FontWeight.Medium)
+          .margin({ bottom: 10 })
+
+        Text(`是否将 ${this.inviteDeviceName} 邀请加入当前群组？`)
+          .fontSize(13)
+          .fontColor(AppColors.TEXT_SECONDARY)
+          .textAlign(TextAlign.Center)
+          .margin({ bottom: 18 })
+
+        Row({ space: 12 }) {
+          Button('取消')
+            .width(120)
+            .height(40)
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor(AppColors.TEXT_PRIMARY)
+            .backgroundColor(Color.Transparent)
+            .borderWidth(1)
+            .borderColor(AppColors.TEXT_SECONDARY)
+            .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+            .onClick(() => {
+              this.showInviteConfirmDialog = false;
+            })
+
+          Button('邀请加入')
+            .width(140)
+            .height(40)
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor('#FFFFFF')
+            .backgroundColor(AppColors.ACCENT)
+            .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+            .onClick(() => {
+              this.inviteDeviceToGroup();
+            })
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.Center)
+      }
+      .width('100%')
+      .padding(24)
+      .backgroundColor(AppColors.CARD_BACKGROUND)
+      .borderRadius(16)
+      .alignItems(HorizontalAlign.Center)
+    }
+    .width('100%')
+    .height('100%')
+    .padding({ left: 24, right: 24 })
+    .backgroundColor('#90000000')
+    .justifyContent(FlexAlign.Center)
+  }
+
   private getAuthActionLabel(action: string): string {
     if (action === 'panel.login') return '面板登录';
     if (action === 'terminal.open.remote') return '打开远程终端';
@@ -718,27 +1191,11 @@ struct DeviceManagePage {
   }
 
   private getSingleDevices(): Array<DeviceInfo> {
-    if (this.currentMode === DeviceMode.GROUP) return [];
-    return this.devices;
+    return this.singleDevices;
   }
 
   private getGroupDevices(): Array<DeviceInfo> {
-    if (this.currentMode !== DeviceMode.GROUP) return [];
-    return this.devices;
-  }
-
-  private createGroupFromSingle(): void {
-    // Designate the first connected single device as relay
-    const singleDevices: Array<DeviceInfo> = this.getSingleDevices();
-    if (singleDevices.length === 0) return;
-
-    // Pick first online device
-    for (let i: number = 0; i < singleDevices.length; i++) {
-      if (singleDevices[i].isOnline) {
-        ConnectionManager.designateRelay(singleDevices[i].deviceId);
-        return;
-      }
-    }
+    return this.groupDevices;
   }
 
   private findGroupMember(deviceId: string): GroupMemberInfo | undefined {
@@ -754,7 +1211,8 @@ struct DeviceManagePage {
     if (role === 'Server') return '服务器';
     if (role === 'Member') return '成员';
     if (role === 'Mobile') return '手机';
-    if (role === '单连') return '单连';
+    if (role === 'Pending') return '待加入';
+    if (role === '单连') return '待加入';
     return role;
   }
 

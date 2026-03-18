@@ -95,6 +95,130 @@
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Margin" Value="0,0,6,0" />
         </Style>
+
+        <!-- Tab bar items control -->
+        <Style x:Key="TabItemsControlStyle" TargetType="ItemsControl">
+            <Setter Property="ItemsPanel">
+                <Setter.Value>
+                    <ItemsPanelTemplate>
+                        <StackPanel Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Tabs.Count, Converter={StaticResource CountAtLeastConverter}, ConverterParameter=5}" Value="True">
+                    <Setter Property="ItemsPanel">
+                        <Setter.Value>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Rows="1" Columns="{Binding Tabs.Count}" />
+                            </ItemsPanelTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Tab item template -->
+        <DataTemplate x:Key="TabItemTemplate">
+            <Border x:Name="TabItemBorder"
+                    CornerRadius="6,6,0,0"
+                    Cursor="Hand"
+                    MouseLeftButtonDown="TabItem_Click"
+                    Background="{StaticResource Surface3Brush}">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Padding" Value="12,6,6,6" />
+                        <Setter Property="Margin" Value="0,0,2,0" />
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="{StaticResource Surface4Brush}" />
+                            </Trigger>
+                            <DataTrigger Binding="{Binding IsActive}" Value="True">
+                                <Setter Property="Background" Value="#1A3A5C" />
+                                <Setter Property="BorderBrush" Value="#2A5A8C" />
+                                <Setter Property="BorderThickness" Value="1,1,1,0" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding DataContext.Tabs.Count, RelativeSource={RelativeSource AncestorType=ItemsControl}, Converter={StaticResource CountAtLeastConverter}, ConverterParameter=5}" Value="True">
+                                <Setter Property="Padding" Value="10,6,4,6" />
+                                <Setter Property="Margin" Value="0,0,1,0" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <!-- Small colored indicator -->
+                    <Ellipse Width="6" Height="6"
+                             VerticalAlignment="Center" Margin="0,0,7,0"
+                             Grid.Column="0">
+                        <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                                <Setter Property="Fill" Value="{StaticResource Text3Brush}" />
+                                <Setter Property="Opacity" Value="0.5" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsActive}" Value="True">
+                                        <Setter Property="Fill" Value="#4DA6FF" />
+                                        <Setter Property="Opacity" Value="1" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Ellipse.Style>
+                    </Ellipse>
+                    <!-- Remote terminal indicator -->
+                    <TextBlock Text="&#x2B21;" FontSize="8" VerticalAlignment="Center" Margin="0,0,4,0"
+                               Grid.Column="1">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="#FF9800" />
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsRemote}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <TextBlock Text="{Binding Title}" FontSize="12"
+                               VerticalAlignment="Center"
+                               Grid.Column="2"
+                               MinWidth="0"
+                               TextTrimming="CharacterEllipsis"
+                               TextWrapping="NoWrap"
+                               FontFamily="{StaticResource BodyFont}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="{StaticResource Text3Brush}" />
+                                <Setter Property="Margin" Value="0,0,8,0" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsActive}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource Text1Brush}" />
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding DataContext.Tabs.Count, RelativeSource={RelativeSource AncestorType=ItemsControl}, Converter={StaticResource CountAtLeastConverter}, ConverterParameter=5}" Value="True">
+                                        <Setter Property="Margin" Value="0,0,4,0" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <Button Content="&#x2715;" FontSize="9"
+                            Width="18" Height="18"
+                            Style="{StaticResource SubtleButton}"
+                            Padding="0" Cursor="Hand"
+                            Click="TabCloseButton_Click"
+                            Tag="{Binding TabId}"
+                            VerticalAlignment="Center"
+                            Grid.Column="3"
+                            ToolTip="Close Tab" />
+                </Grid>
+            </Border>
+        </DataTemplate>
     </Window.Resources>
 
     <!-- Outer border with shadow and rounded corners -->
@@ -160,7 +284,7 @@
                 <!-- LEFT SIDEBAR -->
                 <Border Grid.Column="0" Background="{StaticResource Surface1Brush}"
                         BorderThickness="0,0,1,0" BorderBrush="{StaticResource Border1Brush}">
-                    <DockPanel LastChildFill="True">
+                    <DockPanel x:Name="SidebarContent" LastChildFill="True">
 
                         <!-- ===== Language ===== -->
                         <Expander x:Name="LanguageExpander" DockPanel.Dock="Top" Header="Language / 语言"
@@ -324,7 +448,8 @@
                         <!-- ===== Shell Selector ===== -->
                         <Expander x:Name="ShellExpander" DockPanel.Dock="Top" Header="Shell"
                                   Style="{StaticResource SidebarExpander}" IsExpanded="False"
-                                  Expanded="SidebarExpander_Expanded">
+                                  Expanded="SidebarExpander_Expanded"
+                                  Visibility="Collapsed">
                             <StackPanel>
                                 <TextBlock Text="TERMINAL SHELL" Style="{StaticResource SectionLabel}" />
                                 <ComboBox ItemsSource="{Binding AvailableShells}"
@@ -343,7 +468,8 @@
                         <!-- ===== Device Info ===== -->
                         <Expander x:Name="DeviceInfoExpander" DockPanel.Dock="Top" Header="Device Info"
                                   Style="{StaticResource SidebarExpander}" IsExpanded="False"
-                                  Expanded="SidebarExpander_Expanded">
+                                  Expanded="SidebarExpander_Expanded"
+                                  Visibility="Collapsed">
                             <StackPanel>
                                 <TextBlock Text="DEVICE ID" Style="{StaticResource SectionLabel}" />
                                 <TextBlock Text="{Binding DeviceId}" Foreground="{StaticResource Text2Brush}"
@@ -370,8 +496,7 @@
                         <!-- ===== Group Devices ===== -->
                         <Expander x:Name="GroupDevicesExpander" DockPanel.Dock="Top" Header="Group Devices"
                                   Style="{StaticResource SidebarExpander}" IsExpanded="False"
-                                  Expanded="SidebarExpander_Expanded"
-                                  Visibility="{Binding IsGroupJoined, Converter={StaticResource BoolToVisConverter}}">
+                                  Expanded="SidebarExpander_Expanded">
                             <ItemsControl ItemsSource="{Binding GroupMembers}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
@@ -603,107 +728,44 @@
                 </Border>
 
                 <!-- GRID SPLITTER -->
-                <GridSplitter Grid.Column="1" Width="3" HorizontalAlignment="Center"
+                <GridSplitter x:Name="SidebarSplitter" Grid.Column="1" Width="3" HorizontalAlignment="Center"
                               VerticalAlignment="Stretch"
                               Background="{StaticResource Border1Brush}"
                               Cursor="SizeWE" />
 
+                <!-- Sidebar collapse toggle -->
+                <Grid Grid.Column="0" Grid.ColumnSpan="2"
+                      HorizontalAlignment="Right" VerticalAlignment="Center"
+                      Width="22" Height="48" Margin="0,0,-11,0"
+                      Panel.ZIndex="5">
+                    <Button x:Name="SidebarToggleButton"
+                            Style="{StaticResource GhostButton}"
+                            Width="20" Height="44" Padding="0"
+                            FontSize="11"
+                            Content="&#x276E;"
+                            Click="SidebarToggleButton_Click"
+                            ToolTip="Collapse sidebar" />
+                </Grid>
+
                 <!-- RIGHT PANEL: Terminal -->
                 <Border Grid.Column="2" Background="{StaticResource Surface0Brush}">
                     <Grid>
-                        <!-- Welcome Screen -->
-                        <StackPanel x:Name="WelcomePanel" VerticalAlignment="Center"
-                                    HorizontalAlignment="Center" Visibility="Visible">
-
-                            <!-- Hero icon -->
-                            <Border Width="64" Height="64" CornerRadius="16"
-                                    Background="{StaticResource AccentSubtleBrush}"
-                                    HorizontalAlignment="Center" Margin="0,0,0,20">
-                                <TextBlock Text="&#x276F;_" FontSize="26" FontWeight="Bold"
-                                           Foreground="{StaticResource AccentBrush}"
-                                           HorizontalAlignment="Center" VerticalAlignment="Center"
-                                           FontFamily="{StaticResource MonoFont}" />
-                            </Border>
-
-                            <TextBlock Text="Welcome to PhoneShell" FontSize="26" FontWeight="SemiBold"
-                                       HorizontalAlignment="Center" Foreground="{StaticResource Text1Brush}"
-                                       Margin="0,0,0,8" FontFamily="{StaticResource DisplayFont}" />
-                            <TextBlock Text="Select a shell type and create a new session to get started."
-                                       FontSize="13" Foreground="{StaticResource Text3Brush}"
-                                       HorizontalAlignment="Center" Margin="0,0,0,32"
-                                       TextWrapping="Wrap" TextAlignment="Center" MaxWidth="420"
-                                       FontFamily="{StaticResource BodyFont}" />
-
-                            <!-- Shell type cards -->
-                            <ItemsControl x:Name="ShellCardsPanel" ItemsSource="{Binding AvailableShells}"
-                                          HorizontalAlignment="Center" Margin="0,0,0,28">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <WrapPanel HorizontalAlignment="Center" />
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border CornerRadius="8" Padding="20,14" Margin="5"
-                                                BorderBrush="{StaticResource Border2Brush}" BorderThickness="1"
-                                                Background="{StaticResource Surface2Brush}"
-                                                Cursor="Hand"
-                                                MouseLeftButtonDown="ShellCard_Click">
-                                            <Border.Style>
-                                                <Style TargetType="Border">
-                                                    <Style.Triggers>
-                                                        <Trigger Property="IsMouseOver" Value="True">
-                                                            <Setter Property="Background" Value="{StaticResource Surface4Brush}" />
-                                                            <Setter Property="BorderBrush" Value="{StaticResource AccentDimBrush}" />
-                                                        </Trigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </Border.Style>
-                                            <StackPanel>
-                                                <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"
-                                                           FontSize="13.5" Foreground="{StaticResource Text1Brush}"
-                                                           HorizontalAlignment="Center"
-                                                           FontFamily="{StaticResource BodyFont}" />
-                                                <TextBlock Text="{Binding Id}" FontSize="10"
-                                                           Foreground="{StaticResource Text3Brush}"
-                                                           HorizontalAlignment="Center" Margin="0,3,0,0"
-                                                           FontFamily="{StaticResource MonoFont}" />
-                                            </StackPanel>
-                                        </Border>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-
-                            <!-- New Session button -->
-                            <Button x:Name="WelcomeNewSessionButton" Content="+ New Session" FontSize="14" Padding="24,11"
-                                    HorizontalAlignment="Center"
-                                    Style="{StaticResource AccentButton}"
-                                    FontFamily="{StaticResource BodyFont}"
-                                    Command="{Binding NewSessionCommand}" />
-                        </StackPanel>
-
                         <!-- Tab Container -->
-                        <DockPanel x:Name="TabContainer" Visibility="Collapsed">
+                        <DockPanel x:Name="TabContainer">
                             <!-- Tab Bar -->
-                            <Border DockPanel.Dock="Top" Background="{StaticResource Surface2Brush}"
-                                    Padding="6,4,6,0"
+                            <Border x:Name="TabBarHost" DockPanel.Dock="Top" Background="{StaticResource Surface2Brush}"
+                                    Padding="6,4,6,0" Visibility="Collapsed"
                                     BorderThickness="0,0,0,1" BorderBrush="{StaticResource Border1Brush}">
                                 <DockPanel>
                                     <!-- Right controls -->
-                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                                    <StackPanel x:Name="TabRightControls" DockPanel.Dock="Right" Orientation="Horizontal"
                                                 VerticalAlignment="Center" Margin="8,0,0,0">
-
-                                        <!-- New tab -->
-                                        <Button x:Name="NewTabButton" Content="+" FontSize="16" FontWeight="Bold"
-                                                Style="{StaticResource SubtleButton}"
-                                                Width="30" Height="26" Padding="0"
-                                                Command="{Binding NewSessionCommand}"
-                                                ToolTip="New Session" />
-
                                         <!-- Compact mode toggle -->
-                                        <Button x:Name="CompactModeButton" Content="Compact"
+                                        <Button x:Name="CompactModeButton" Content="&#x1F4F1;"
                                                 Style="{StaticResource GhostButton}"
-                                                FontSize="11" Padding="10,4" Margin="4,0,0,0"
+                                                FontFamily="Segoe UI Emoji"
+                                                Foreground="{StaticResource AccentBrush}"
+                                                FontSize="14" Padding="10,4" Margin="4,0,0,0"
                                                 Click="CompactModeButton_Click"
                                                 ToolTip="Toggle compact (mobile) size" />
 
@@ -714,98 +776,124 @@
                                                 ToolTip="Close this session" />
                                     </StackPanel>
 
-                                    <!-- Tab items -->
-                                    <ItemsControl x:Name="TabBar" ItemsSource="{Binding Tabs}">
+                                    <!-- Tab items + new tab -->
+                                    <Grid VerticalAlignment="Center">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <ItemsControl x:Name="TabBar"
+                                                      ItemsSource="{Binding Tabs}"
+                                                      Grid.Column="0"
+                                                      Style="{StaticResource TabItemsControlStyle}"
+                                                      ItemTemplate="{StaticResource TabItemTemplate}"
+                                                      HorizontalAlignment="Left"
+                                                      VerticalAlignment="Center"
+                                                      ClipToBounds="True">
+                                            <ItemsControl.MaxWidth>
+                                                <MultiBinding Converter="{StaticResource TabBarAvailableWidthConverter}">
+                                                    <Binding ElementName="TabBarHost" Path="ActualWidth" />
+                                                    <Binding ElementName="TabRightControls" Path="ActualWidth" />
+                                                    <Binding ElementName="NewTabButtonInline" Path="ActualWidth" />
+                                                    <Binding ElementName="TabBarHost" Path="Padding.Left" />
+                                                    <Binding ElementName="TabBarHost" Path="Padding.Right" />
+                                                    <Binding ElementName="TabRightControls" Path="Margin.Left" />
+                                                    <Binding ElementName="NewTabButtonInline" Path="Margin.Left" />
+                                                </MultiBinding>
+                                            </ItemsControl.MaxWidth>
+                                        </ItemsControl>
+
+                                        <!-- New tab (inline) -->
+                                        <Button x:Name="NewTabButtonInline" Content="+"
+                                                Grid.Column="1"
+                                                FontSize="16" FontWeight="Bold"
+                                                Style="{StaticResource SubtleButton}"
+                                                Width="30" Height="26" Padding="0"
+                                                Margin="6,0,0,0"
+                                                Click="NewTabButton_Click"
+                                                ToolTip="New Session" />
+                                    </Grid>
+                                </DockPanel>
+                            </Border>
+
+                            <Grid>
+                                <!-- Terminal WebView -->
+                                <wv2:WebView2 x:Name="TerminalWebView" />
+
+                                <!-- Welcome Screen -->
+                                <StackPanel x:Name="WelcomePanel" VerticalAlignment="Center"
+                                            HorizontalAlignment="Center" Visibility="Visible"
+                                            Panel.ZIndex="1">
+
+                                    <!-- Hero icon -->
+                                    <Border Width="64" Height="64" CornerRadius="16"
+                                            Background="{StaticResource AccentSubtleBrush}"
+                                            HorizontalAlignment="Center" Margin="0,0,0,20">
+                                        <TextBlock Text="&#x276F;_" FontSize="26" FontWeight="Bold"
+                                                   Foreground="{StaticResource AccentBrush}"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                   FontFamily="{StaticResource MonoFont}" />
+                                    </Border>
+
+                                    <TextBlock Text="Welcome to PhoneShell" FontSize="26" FontWeight="SemiBold"
+                                               HorizontalAlignment="Center" Foreground="{StaticResource Text1Brush}"
+                                               Margin="0,0,0,8" FontFamily="{StaticResource DisplayFont}" />
+                                    <TextBlock Text="Select a shell type and create a new session to get started."
+                                               FontSize="13" Foreground="{StaticResource Text3Brush}"
+                                               HorizontalAlignment="Center" Margin="0,0,0,32"
+                                               TextWrapping="Wrap" TextAlignment="Center" MaxWidth="420"
+                                               FontFamily="{StaticResource BodyFont}" />
+
+                                    <!-- Shell type cards -->
+                                    <ItemsControl x:Name="ShellCardsPanel" ItemsSource="{Binding AvailableShells}"
+                                                  HorizontalAlignment="Center" Margin="0,0,0,28">
                                         <ItemsControl.ItemsPanel>
                                             <ItemsPanelTemplate>
-                                                <StackPanel Orientation="Horizontal" />
+                                                <WrapPanel HorizontalAlignment="Center" />
                                             </ItemsPanelTemplate>
                                         </ItemsControl.ItemsPanel>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
-                                                <Border x:Name="TabItemBorder" Padding="12,6,6,6"
-                                                        Margin="0,0,2,0" CornerRadius="6,6,0,0"
+                                                <Border CornerRadius="8" Padding="20,14" Margin="5"
+                                                        BorderBrush="{StaticResource Border2Brush}" BorderThickness="1"
+                                                        Background="{StaticResource Surface2Brush}"
                                                         Cursor="Hand"
-                                                        MouseLeftButtonDown="TabItem_Click"
-                                                        Background="{StaticResource Surface3Brush}">
+                                                        MouseLeftButtonDown="ShellCard_Click">
                                                     <Border.Style>
                                                         <Style TargetType="Border">
                                                             <Style.Triggers>
                                                                 <Trigger Property="IsMouseOver" Value="True">
                                                                     <Setter Property="Background" Value="{StaticResource Surface4Brush}" />
+                                                                    <Setter Property="BorderBrush" Value="{StaticResource AccentDimBrush}" />
                                                                 </Trigger>
-                                                                <DataTrigger Binding="{Binding IsActive}" Value="True">
-                                                                    <Setter Property="Background" Value="#1A3A5C" />
-                                                                    <Setter Property="BorderBrush" Value="#2A5A8C" />
-                                                                    <Setter Property="BorderThickness" Value="1,1,1,0" />
-                                                                </DataTrigger>
                                                             </Style.Triggers>
                                                         </Style>
                                                     </Border.Style>
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <!-- Small colored indicator -->
-                                                        <Ellipse Width="6" Height="6"
-                                                                 VerticalAlignment="Center" Margin="0,0,7,0">
-                                                            <Ellipse.Style>
-                                                                <Style TargetType="Ellipse">
-                                                                    <Setter Property="Fill" Value="{StaticResource Text3Brush}" />
-                                                                    <Setter Property="Opacity" Value="0.5" />
-                                                                    <Style.Triggers>
-                                                                        <DataTrigger Binding="{Binding IsActive}" Value="True">
-                                                                            <Setter Property="Fill" Value="#4DA6FF" />
-                                                                            <Setter Property="Opacity" Value="1" />
-                                                                        </DataTrigger>
-                                                                    </Style.Triggers>
-                                                                </Style>
-                                                            </Ellipse.Style>
-                                                        </Ellipse>
-                                                        <!-- Remote terminal indicator -->
-                                                        <TextBlock Text="&#x2B21;" FontSize="8" VerticalAlignment="Center" Margin="0,0,4,0">
-                                                            <TextBlock.Style>
-                                                                <Style TargetType="TextBlock">
-                                                                    <Setter Property="Foreground" Value="#FF9800" />
-                                                                    <Setter Property="Visibility" Value="Collapsed" />
-                                                                    <Style.Triggers>
-                                                                        <DataTrigger Binding="{Binding IsRemote}" Value="True">
-                                                                            <Setter Property="Visibility" Value="Visible" />
-                                                                        </DataTrigger>
-                                                                    </Style.Triggers>
-                                                                </Style>
-                                                            </TextBlock.Style>
-                                                        </TextBlock>
-                                                        <TextBlock Text="{Binding Title}" FontSize="12"
-                                                                   VerticalAlignment="Center" Margin="0,0,8,0"
-                                                                   FontFamily="{StaticResource BodyFont}">
-                                                            <TextBlock.Style>
-                                                                <Style TargetType="TextBlock">
-                                                                    <Setter Property="Foreground" Value="{StaticResource Text3Brush}" />
-                                                                    <Style.Triggers>
-                                                                        <DataTrigger Binding="{Binding IsActive}" Value="True">
-                                                                            <Setter Property="Foreground" Value="{StaticResource Text1Brush}" />
-                                                                            <Setter Property="FontWeight" Value="SemiBold" />
-                                                                        </DataTrigger>
-                                                                    </Style.Triggers>
-                                                                </Style>
-                                                            </TextBlock.Style>
-                                                        </TextBlock>
-                                                        <Button Content="&#x2715;" FontSize="9"
-                                                                Width="18" Height="18"
-                                                                Style="{StaticResource SubtleButton}"
-                                                                Padding="0" Cursor="Hand"
-                                                                Click="TabCloseButton_Click"
-                                                                Tag="{Binding TabId}"
-                                                                VerticalAlignment="Center"
-                                                                ToolTip="Close Tab" />
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"
+                                                                   FontSize="13.5" Foreground="{StaticResource Text1Brush}"
+                                                                   HorizontalAlignment="Center"
+                                                                   FontFamily="{StaticResource BodyFont}" />
+                                                        <TextBlock Text="{Binding Id}" FontSize="10"
+                                                                   Foreground="{StaticResource Text3Brush}"
+                                                                   HorizontalAlignment="Center" Margin="0,3,0,0"
+                                                                   FontFamily="{StaticResource MonoFont}" />
                                                     </StackPanel>
                                                 </Border>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
-                                </DockPanel>
-                            </Border>
 
-                            <!-- Terminal WebView -->
-                            <wv2:WebView2 x:Name="TerminalWebView" />
+                                    <!-- New Session button -->
+                                    <Button x:Name="WelcomeNewSessionButton" Content="+ New Session" FontSize="14" Padding="24,11"
+                                            HorizontalAlignment="Center"
+                                            Style="{StaticResource AccentButton}"
+                                            FontFamily="{StaticResource BodyFont}"
+                                            Command="{Binding NewSessionCommand}" />
+                                </StackPanel>
+                            </Grid>
                         </DockPanel>
                     </Grid>
                 </Border>
