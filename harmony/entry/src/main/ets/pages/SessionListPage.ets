@@ -2,6 +2,7 @@ import { LengthMetrics } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppColors, AppSizes, ConnectionState } from '../common/Constants';
 import { I18n } from '../common/I18n';
+import { SafeAreaUtil } from '../common/SafeArea';
 import { ConnectionManager } from '../services/ConnectionManager';
 
 const DOMAIN = 0x0000;
@@ -37,6 +38,10 @@ struct SessionListPage {
   @State showCloseDialog: boolean = false;
   @State closeSessionId: string = '';
   @State closeSessionTitle: string = '';
+  @State safeAreaTop: number = 0;
+  @State safeAreaBottom: number = 0;
+  @State safeAreaLeft: number = 0;
+  @State safeAreaRight: number = 0;
   private stateListenerId: number = -1;
   private messageListenerId: number = -1;
   private pendingOpenRequestedAt: number = 0;
@@ -83,6 +88,7 @@ struct SessionListPage {
   }
 
   aboutToAppear(): void {
+    this.syncSafeArea();
     // Get params from router
     const params: Object | undefined = this.getUIContext().getRouter().getParams() as Object | undefined;
     if (params !== undefined && params !== null) {
@@ -106,6 +112,14 @@ struct SessionListPage {
       }
     }
     this.activatePage();
+  }
+
+  private async syncSafeArea(): Promise<void> {
+    const insets = await SafeAreaUtil.resolveInsets(this.getUIContext());
+    this.safeAreaTop = insets.top;
+    this.safeAreaBottom = insets.bottom;
+    this.safeAreaLeft = insets.left;
+    this.safeAreaRight = insets.right;
   }
 
   aboutToDisappear(): void {
@@ -419,7 +433,10 @@ struct SessionListPage {
         }
         .width('100%')
         .height(56)
-          .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE })
+          .padding({
+            left: AppSizes.PADDING_PAGE + this.safeAreaLeft,
+            right: AppSizes.PADDING_PAGE + this.safeAreaRight
+          })
           .alignItems(VerticalAlign.Center)
 
       }
@@ -467,8 +484,8 @@ struct SessionListPage {
         }
         .width('100%')
         .padding({
-          left: AppSizes.PADDING_PAGE,
-          right: AppSizes.PADDING_PAGE,
+          left: AppSizes.PADDING_PAGE + this.safeAreaLeft,
+          right: AppSizes.PADDING_PAGE + this.safeAreaRight,
           top: 12,
           bottom: 12
         })
@@ -531,8 +548,8 @@ struct SessionListPage {
       }
       .width('100%')
       .padding({
-        left: AppSizes.PADDING_PAGE,
-        right: AppSizes.PADDING_PAGE,
+        left: AppSizes.PADDING_PAGE + this.safeAreaLeft,
+        right: AppSizes.PADDING_PAGE + this.safeAreaRight,
         top: 12,
         bottom: 16
       })
@@ -540,6 +557,7 @@ struct SessionListPage {
       }
       .width('100%')
       .height('100%')
+      .padding({ top: this.safeAreaTop, bottom: this.safeAreaBottom })
       .backgroundColor(AppColors.BACKGROUND)
 
       if (this.showRenameDialog) {
@@ -735,7 +753,7 @@ struct SessionListPage {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 24, right: 24 })
+    .padding({ left: 24 + this.safeAreaLeft, right: 24 + this.safeAreaRight })
     .backgroundColor('#B0000000')
     .justifyContent(FlexAlign.Center)
   }
@@ -795,7 +813,7 @@ struct SessionListPage {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 24, right: 24 })
+    .padding({ left: 24 + this.safeAreaLeft, right: 24 + this.safeAreaRight })
     .backgroundColor('#B0000000')
     .justifyContent(FlexAlign.Center)
   }

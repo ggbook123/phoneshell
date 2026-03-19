@@ -1,5 +1,6 @@
 import { AppColors, AppSizes, AppStrings } from '../common/Constants';
 import { AppLanguage, I18n } from '../common/I18n';
+import { SafeAreaUtil } from '../common/SafeArea';
 import { PreferencesUtil } from '../services/PreferencesUtil';
 import { ConnectionManager } from '../services/ConnectionManager';
 import { AuthManager } from '../services/AuthManager';
@@ -9,9 +10,22 @@ import { AuthManager } from '../services/AuthManager';
 struct LoginPage {
   @State isReady: boolean = false;
   @State language: AppLanguage = I18n.getLanguage();
+  @State safeAreaTop: number = 0;
+  @State safeAreaBottom: number = 0;
+  @State safeAreaLeft: number = 0;
+  @State safeAreaRight: number = 0;
 
   aboutToAppear(): void {
+    this.syncSafeArea();
     this.initApp();
+  }
+
+  private async syncSafeArea(): Promise<void> {
+    const insets = await SafeAreaUtil.resolveInsets(this.getUIContext());
+    this.safeAreaTop = insets.top;
+    this.safeAreaBottom = insets.bottom;
+    this.safeAreaLeft = insets.left;
+    this.safeAreaRight = insets.right;
   }
 
   private async initApp(): Promise<void> {
@@ -311,7 +325,12 @@ struct LoginPage {
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
-        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 24, bottom: 28 })
+        .padding({
+          left: AppSizes.PADDING_PAGE + this.safeAreaLeft,
+          right: AppSizes.PADDING_PAGE + this.safeAreaRight,
+          top: 24 + this.safeAreaTop,
+          bottom: 28 + this.safeAreaBottom
+        })
       }
       .width('100%')
       .height('100%')

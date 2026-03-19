@@ -4,6 +4,7 @@ import { scanBarcode } from '@kit.ScanKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppColors, AppSizes, AppStrings, ConnectionState, DeviceMode, StorageKeys } from '../common/Constants';
 import { I18n } from '../common/I18n';
+import { SafeAreaUtil } from '../common/SafeArea';
 import { ConnectionManager, SingleDeviceRecord } from '../services/ConnectionManager';
 import { AuthManager, AuthPendingRequest } from '../services/AuthManager';
 import { PreferencesUtil } from '../services/PreferencesUtil';
@@ -43,6 +44,7 @@ struct DeviceManagePage {
   @State groupDevices: Array<DeviceItemModel> = [];
   @State singleDevices: Array<DeviceItemModel> = [];
   @State currentMode: DeviceMode = DeviceMode.STANDALONE;
+  @State isInGroup: boolean = false;
   @State isRefreshing: boolean = false;
   @State groupMembers: Array<GroupMemberModel> = [];
   @State groupId: string = '';
@@ -71,6 +73,10 @@ struct DeviceManagePage {
 
   // Pending auth badge
   @State pendingAuthCount: number = 0;
+  @State safeAreaTop: number = 0;
+  @State safeAreaBottom: number = 0;
+  @State safeAreaLeft: number = 0;
+  @State safeAreaRight: number = 0;
 
   private deviceListCallbackId: number = -1;
   private modeChangeCallbackId: number = -1;
@@ -83,6 +89,7 @@ struct DeviceManagePage {
   private scanInviteHttpUrl: string = '';
 
   aboutToAppear(): void {
+    this.syncSafeArea();
     this.activatePage();
   }
 
@@ -102,10 +109,17 @@ struct DeviceManagePage {
     return I18n.t(I18n.getLanguage(), zhText, enText);
   }
 
+  private async syncSafeArea(): Promise<void> {
+    const insets = await SafeAreaUtil.resolveInsets(this.getUIContext());
+    this.safeAreaTop = insets.top;
+    this.safeAreaBottom = insets.bottom;
+    this.safeAreaLeft = insets.left;
+    this.safeAreaRight = insets.right;
+  }
+
   private activatePage(): void {
     this.currentMode = ConnectionManager.currentMode;
     this.syncDeviceLists();
-    this.groupId = ConnectionManager.getGroupId();
     this.pendingAuthCount = AuthManager.getPendingCount();
 
     if (this.deviceListCallbackId === -1) {
@@ -118,7 +132,6 @@ struct DeviceManagePage {
     if (this.modeChangeCallbackId === -1) {
       this.modeChangeCallbackId = ConnectionManager.addOnModeChange((mode: DeviceMode) => {
         this.currentMode = mode;
-        this.groupId = ConnectionManager.getGroupId();
         this.syncDeviceLists();
       });
     }
@@ -137,8 +150,9 @@ struct DeviceManagePage {
             ConnectionManager.inviteToGroup(httpUrl, inviteCode, relayUrl);
           }
         } else if (type === 'group.join.accepted') {
-          this.groupId = ConnectionManager.getGroupId();
           this.syncDeviceLists();
+        } else if (type === 'group.dissolved' || type === 'device.kicked') {
+          this.applyGroupExitLocal();
         } else if (type === 'group.member.list' || type === 'group.member.joined' || type === 'group.member.left') {
           this.syncDeviceLists();
         }
@@ -250,20 +264,24 @@ struct DeviceManagePage {
         this.groupDevices[i].displayName = newName;
       }
     }
+    this.groupDevices = this.groupDevices.slice();
     for (let i: number = 0; i < this.singleDevices.length; i++) {
       if (this.singleDevices[i].deviceId === deviceId) {
         this.singleDevices[i].displayName = newName;
       }
     }
+    this.singleDevices = this.singleDevices.slice();
     for (let i: number = 0; i < this.groupMembers.length; i++) {
       if (this.groupMembers[i].deviceId === deviceId) {
         this.groupMembers[i].displayName = newName;
       }
     }
+    this.groupMembers = this.groupMembers.slice();
   }
 
   private kickDeviceFromGroup(): void {
     ConnectionManager.kickDevice(this.settingsDeviceId);
+    this.removeDeviceFromGroupLocal(this.settingsDeviceId);
     this.closeSettingsSheet();
   }
 
@@ -299,6 +317,8 @@ struct DeviceManagePage {
     this.groupDevices = this.buildDeviceModels(ConnectionManager.getGroupDevices(), this.groupDevices);
     this.singleDevices = this.buildDeviceModels(ConnectionManager.getSingleDevices(), this.singleDevices);
     this.groupMembers = this.buildGroupMemberModels(ConnectionManager.getGroupMembers(), this.groupMembers);
+    this.isInGroup = ConnectionManager.isInGroup();
+    this.groupId = ConnectionManager.getGroupId();
   }
 
   private buildDeviceModels(raw: Array<DeviceInfo>, current: Array<DeviceItemModel>): Array<DeviceItemModel> {
@@ -365,8 +385,7 @@ struct DeviceManagePage {
   private refreshDeviceView(): void {
     this.currentMode = ConnectionManager.currentMode;
     this.syncDeviceLists();
-    this.groupId = ConnectionManager.getGroupId();
-    if (ConnectionManager.isInGroup()) {
+    if (this.isInGroup) {
       ConnectionManager.requestDeviceList();
     }
   }
@@ -594,10 +613,16 @@ struct DeviceManagePage {
     this.scanMessageListenerId = ConnectionManager.addOnMessage((type: string, _data: Record<string, Object>) => {
       if (type === 'group.join.accepted') {
         this.cleanupScanListeners();
-        this.scanStatus = this.t('已加入群组', 'Joined the group');
+        this.scanStatus = '';
+        this.parseError = '';
+        this.scanResult = '';
+        this.syncDeviceLists();
+        this.isInGroup = true;
+        this.currentMode = DeviceMode.GROUP;
+        this.groupId = groupId.length > 0 ? groupId : ConnectionManager.getGroupId();
         // Bind mobile
         ConnectionManager.sendMobileBindRequest(groupId);
-        this.refreshDeviceView();
+        ConnectionManager.requestDeviceList();
       } else if (type === 'group.join.rejected') {
         this.cleanupScanListeners();
         this.parseError = this.t('加入群组被拒绝', 'Group join was rejected');
@@ -767,7 +792,12 @@ struct DeviceManagePage {
 
         }
         .width('100%')
-        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 16, bottom: 12 })
+        .padding({
+          left: AppSizes.PADDING_PAGE + this.safeAreaLeft,
+          right: AppSizes.PADDING_PAGE + this.safeAreaRight,
+          top: 16,
+          bottom: 12
+        })
         .backgroundColor(AppColors.SURFACE_1)
 
         Divider().color(AppColors.DIVIDER).width('100%')
@@ -776,7 +806,7 @@ struct DeviceManagePage {
         this.MainContent()
 
         // Bottom scan button (group mode)
-        if (ConnectionManager.isInGroup()) {
+        if (this.isInGroup) {
           Column() {
             Divider().color(AppColors.DIVIDER).width('100%')
             Row() {
@@ -808,11 +838,17 @@ struct DeviceManagePage {
             .borderRadius(AppSizes.BORDER_RADIUS_CARD)
           }
           .width('100%')
-          .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 10, bottom: 16 })
+          .padding({
+            left: AppSizes.PADDING_PAGE + this.safeAreaLeft,
+            right: AppSizes.PADDING_PAGE + this.safeAreaRight,
+            top: 10,
+            bottom: 16
+          })
         }
       }
       .width('100%')
       .height('100%')
+      .padding({ top: this.safeAreaTop, bottom: this.safeAreaBottom })
 
       // Settings sheet overlay
       if (this.showSettingsSheet) {
@@ -844,7 +880,12 @@ struct DeviceManagePage {
       .width('100%')
       .alignItems(HorizontalAlign.Start)
       .justifyContent(FlexAlign.Start)
-      .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 16, bottom: 16 })
+      .padding({
+        left: AppSizes.PADDING_PAGE + this.safeAreaLeft,
+        right: AppSizes.PADDING_PAGE + this.safeAreaRight,
+        top: 16,
+        bottom: 16
+      })
     }
     .align(Alignment.TopStart)
     .width('100%')
@@ -853,7 +894,7 @@ struct DeviceManagePage {
 
   @Builder
   GroupSection() {
-    if (!ConnectionManager.isInGroup()) {
+    if (!this.isInGroup) {
       this.ScanConnectSection()
     } else {
       Column() {
@@ -880,7 +921,7 @@ struct DeviceManagePage {
               .borderColor(AppColors.ERROR_RED)
               .borderRadius(AppSizes.BORDER_RADIUS_TAG)
               .padding({ left: 10, right: 10 })
-              .onClick(() => { ConnectionManager.dissolveGroup(); })
+              .onClick(() => { this.dissolveGroup(); })
           }
         }
         .width('100%')
@@ -1303,7 +1344,12 @@ struct DeviceManagePage {
           .onClick(() => { this.closeSettingsSheet(); })
       }
       .width('100%')
-      .padding(24)
+      .padding({
+        left: 24 + this.safeAreaLeft,
+        right: 24 + this.safeAreaRight,
+        top: 24,
+        bottom: 24 + this.safeAreaBottom
+      })
       .backgroundColor(AppColors.SURFACE_2)
       .borderWidth(1)
       .borderColor(AppColors.CARD_BORDER)
@@ -1379,7 +1425,7 @@ struct DeviceManagePage {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 24, right: 24 })
+    .padding({ left: 24 + this.safeAreaLeft, right: 24 + this.safeAreaRight })
     .backgroundColor('#B0000000')
     .justifyContent(FlexAlign.Center)
   }
@@ -1441,7 +1487,7 @@ struct DeviceManagePage {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 24, right: 24 })
+    .padding({ left: 24 + this.safeAreaLeft, right: 24 + this.safeAreaRight })
     .backgroundColor('#B0000000')
     .justifyContent(FlexAlign.Center)
   }
@@ -1513,6 +1559,25 @@ struct DeviceManagePage {
   private designateAsServer(): void {
     ConnectionManager.designateRelay(this.settingsDeviceId);
     this.closeSettingsSheet();
+  }
+
+  private dissolveGroup(): void {
+    ConnectionManager.dissolveGroup();
+    this.applyGroupExitLocal();
+  }
+
+  private applyGroupExitLocal(): void {
+    this.isInGroup = false;
+    this.groupId = '';
+    this.groupDevices = [];
+    this.groupMembers = [];
+    this.currentMode = this.singleDevices.length > 0 ? DeviceMode.SINGLE : DeviceMode.STANDALONE;
+  }
+
+  private removeDeviceFromGroupLocal(deviceId: string): void {
+    if (deviceId.length === 0) return;
+    this.groupDevices = this.groupDevices.filter((item: DeviceItemModel) => item.deviceId !== deviceId);
+    this.groupMembers = this.groupMembers.filter((item: GroupMemberModel) => item.deviceId !== deviceId);
   }
 
   private moveDeviceToGroup(device: DeviceItemModel): void {

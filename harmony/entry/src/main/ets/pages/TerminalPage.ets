@@ -2,6 +2,7 @@ import { webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppColors, AppSizes, ConnectionState } from '../common/Constants';
 import { I18n } from '../common/I18n';
+import { SafeAreaUtil } from '../common/SafeArea';
 import { ConnectionManager } from '../services/ConnectionManager';
 
 const DOMAIN = 0x0000;
@@ -47,6 +48,10 @@ struct TerminalPage {
   @State terminalHint: string = I18n.t(I18n.getLanguage(), '正在初始化终端...', 'Initializing terminal...');
   @State historyLoadingVisible: boolean = false;
   @State showSessionClosedDialog: boolean = false;
+  @State safeAreaTop: number = 0;
+  @State safeAreaBottom: number = 0;
+  @State safeAreaLeft: number = 0;
+  @State safeAreaRight: number = 0;
   private stateListenerId: number = -1;
   private messageListenerId: number = -1;
   private terminalController: webview.WebviewController = new webview.WebviewController();
@@ -133,6 +138,7 @@ struct TerminalPage {
 
   aboutToAppear(): void {
     hilog.info(DOMAIN, PAGE_TAG, 'aboutToAppear');
+    this.syncSafeArea();
     // Reset state for fresh terminal view each time we enter
     this.pendingTerminalOutput = '';
     this.resetHistoryState();
@@ -142,6 +148,14 @@ struct TerminalPage {
     this.showSessionClosedDialog = false;
     this.viewedSessionId = this.normalizeString(ConnectionManager.getActiveSessionId());
     this.activatePage();
+  }
+
+  private async syncSafeArea(): Promise<void> {
+    const insets = await SafeAreaUtil.resolveInsets(this.getUIContext());
+    this.safeAreaTop = insets.top;
+    this.safeAreaBottom = insets.bottom;
+    this.safeAreaLeft = insets.left;
+    this.safeAreaRight = insets.right;
   }
 
   aboutToDisappear(): void {
@@ -547,7 +561,10 @@ struct TerminalPage {
         }
         .width('100%')
         .height(54)
-        .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE })
+        .padding({
+          left: AppSizes.PADDING_PAGE + this.safeAreaLeft,
+          right: AppSizes.PADDING_PAGE + this.safeAreaRight
+        })
         .backgroundColor(AppColors.SURFACE_1)
         .alignItems(VerticalAlign.Center)
 
@@ -582,7 +599,12 @@ struct TerminalPage {
         }
         .width('100%')
         .layoutWeight(1)
-        .padding({ left: 8, right: 8, top: 8, bottom: 8 })
+        .padding({
+          left: 8 + this.safeAreaLeft,
+          right: 8 + this.safeAreaRight,
+          top: 8,
+          bottom: 8
+        })
         .backgroundColor(AppColors.TERMINAL_BG)
         .borderWidth(1)
         .borderColor(AppColors.CARD_BORDER)
@@ -601,7 +623,12 @@ struct TerminalPage {
               .fontFamily('monospace')
           }
           .width('100%')
-          .padding({ left: 12, right: 12, top: 6, bottom: 2 })
+          .padding({
+            left: 12 + this.safeAreaLeft,
+            right: 12 + this.safeAreaRight,
+            top: 6,
+            bottom: 2
+          })
 
           Scroll() {
             Row({ space: 8 }) {
@@ -619,8 +646,12 @@ struct TerminalPage {
                     this.sendShortcutKey(key.data);
                   })
               }, (key: ShortcutKey, index: number) => `${key.label}_${index}`)
-            }
-            .padding({ left: 12, right: 12, bottom: 8 })
+          }
+            .padding({
+              left: 12 + this.safeAreaLeft,
+              right: 12 + this.safeAreaRight,
+              bottom: 8
+            })
           }
           .scrollable(ScrollDirection.Horizontal)
           .scrollBar(BarState.Off)
@@ -634,6 +665,7 @@ struct TerminalPage {
       }
       .width('100%')
       .height('100%')
+      .padding({ top: this.safeAreaTop, bottom: this.safeAreaBottom })
       .backgroundColor(AppColors.TERMINAL_BG)
 
       if (this.showSessionClosedDialog) {
@@ -675,7 +707,7 @@ struct TerminalPage {
         }
         .width('100%')
         .height('100%')
-        .padding({ left: 24, right: 24 })
+        .padding({ left: 24 + this.safeAreaLeft, right: 24 + this.safeAreaRight })
         .backgroundColor('#B0000000')
         .justifyContent(FlexAlign.Center)
       }

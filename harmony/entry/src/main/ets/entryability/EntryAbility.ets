@@ -1,6 +1,6 @@
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { window } from '@kit.ArkUI';
+import window from '@ohos.window';
 
 const DOMAIN = 0x0000;
 
@@ -21,6 +21,21 @@ export default class EntryAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     // Main window is created, set main page for this ability
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
+
+    windowStage.getMainWindow()
+      .then((mainWindow: window.Window) => {
+        mainWindow.setWindowLayoutFullScreen(true)
+          .catch((err: Error) => {
+            hilog.warn(DOMAIN, 'testTag', 'setWindowLayoutFullScreen failed: %{public}s', err.message);
+          });
+        mainWindow.setWindowSystemBarEnable(['status', 'navigation'])
+          .catch((err: Error) => {
+            hilog.warn(DOMAIN, 'testTag', 'setWindowSystemBarEnable failed: %{public}s', err.message);
+          });
+      })
+      .catch((err: Error) => {
+        hilog.warn(DOMAIN, 'testTag', 'getMainWindow failed: %{public}s', err.message);
+      });
 
     windowStage.loadContent('pages/LoginPage', (err) => {
       if (err.code) {
