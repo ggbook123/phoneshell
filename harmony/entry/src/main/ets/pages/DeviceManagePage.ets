@@ -109,6 +109,14 @@ struct DeviceManagePage {
     return I18n.t(I18n.getLanguage(), zhText, enText);
   }
 
+  private openSettingsPage(): void {
+    try {
+      this.getUIContext().getRouter().pushUrl({ url: 'pages/SettingsPage' });
+    } catch (_e) {
+      // Ignore navigation errors
+    }
+  }
+
   private async syncSafeArea(): Promise<void> {
     const insets = await SafeAreaUtil.resolveInsets(this.getUIContext());
     this.safeAreaTop = insets.top;
@@ -745,6 +753,11 @@ struct DeviceManagePage {
     return result;
   }
 
+  private getBottomScanMargin(): number {
+    const minOffset: number = 28;
+    return Math.max(minOffset - this.safeAreaBottom, 0);
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       Column() {
@@ -770,7 +783,7 @@ struct DeviceManagePage {
             .layoutWeight(1)
 
             Row({ space: 8 }) {
-              this.StatusChip(this.getModeLabel(), this.getModeColor())
+              this.SettingsChip()
               if (this.pendingAuthCount > 0) {
                 Button(`AUTH ${this.pendingAuthCount}`)
                   .height(26)
@@ -844,6 +857,7 @@ struct DeviceManagePage {
             top: 10,
             bottom: 16
           })
+          .margin({ bottom: this.getBottomScanMargin() })
         }
       }
       .width('100%')
@@ -1490,6 +1504,24 @@ struct DeviceManagePage {
     .padding({ left: 24 + this.safeAreaLeft, right: 24 + this.safeAreaRight })
     .backgroundColor('#B0000000')
     .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
+  SettingsChip() {
+    Row() {
+      Text(this.t('设置', 'Settings'))
+        .fontSize(11)
+        .fontColor(AppColors.ACCENT)
+        .fontFamily('monospace')
+    }
+    .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+    .backgroundColor(AppColors.CHIP_BG)
+    .borderWidth(1)
+    .borderColor(AppColors.ACCENT)
+    .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+    .onClick(() => {
+      this.openSettingsPage();
+    })
   }
 
   @Builder

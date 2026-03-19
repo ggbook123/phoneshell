@@ -2,6 +2,9 @@
   "src": [
     "pages/LoginPage",
     "pages/DeviceManagePage",
+    "pages/SettingsPage",
+    "pages/UsageGuidePage",
+    "pages/AboutPage",
     "pages/SessionListPage",
     "pages/TerminalPage"
   ]
