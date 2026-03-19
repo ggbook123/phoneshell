@@ -662,6 +662,7 @@ struct DeviceManagePage {
       return;
     }
 
+    this.scanResult = '';
     this.scanStatus = this.t('正在处理登录请求...', 'Processing login request...');
     // Listen for error responses from server
     this.cleanupScanListeners();
@@ -712,8 +713,7 @@ struct DeviceManagePage {
 
     // Send panel.login.scan through ConnectionManager
     ConnectionManager.sendPanelLoginScan(requestId);
-    this.scanStatus = this.t('已发送登录确认，等待服务器响应...',
-      'Login confirmation sent. Waiting for server response...');
+    this.scanStatus = this.t('已发送登录确认', 'Login confirmation sent.');
   }
 
   private buildConnectUrlWithToken(baseUrl: string, groupSecret: string): string {
@@ -1031,7 +1031,7 @@ struct DeviceManagePage {
 
   @Builder
   ScanStatusPanel() {
-    if (this.scanStatus.length > 0 || this.parseError.length > 0 || this.scanResult.length > 0) {
+    if (this.scanStatus.length > 0 || this.parseError.length > 0) {
       Column() {
         if (this.scanStatus.length > 0) {
           Text(this.scanStatus)
@@ -1051,28 +1051,6 @@ struct DeviceManagePage {
             .width('100%')
         }
 
-        if (this.scanResult.length > 0) {
-          Column() {
-            Text(this.t('扫码结果', 'Scan Result'))
-              .fontSize(AppSizes.FONT_SIZE_SMALL)
-              .fontColor(AppColors.TEXT_MUTED)
-              .margin({ bottom: 4 })
-            Text(this.scanResult)
-              .fontSize(12)
-              .fontColor(AppColors.TEXT_PRIMARY)
-              .fontFamily('monospace')
-              .copyOption(CopyOptions.InApp)
-              .maxLines(3)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-          .width('100%')
-          .padding(12)
-          .backgroundColor(AppColors.SURFACE_2)
-          .borderWidth(1)
-          .borderColor(AppColors.CARD_BORDER)
-          .borderRadius(AppSizes.BORDER_RADIUS_CARD)
-          .alignItems(HorizontalAlign.Start)
-        }
       }
       .width('100%')
       .margin({ top: 8 })

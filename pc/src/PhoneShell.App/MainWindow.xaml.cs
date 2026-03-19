@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Specialized;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -39,6 +40,7 @@ public partial class MainWindow : Window
         _viewModel.TerminalViewportAutoFitRequested += OnTerminalViewportAutoFitRequested;
         _viewModel.ChatMessages.CollectionChanged += ChatMessages_CollectionChanged;
         _viewModel.Tabs.CollectionChanged += Tabs_CollectionChanged;
+        _viewModel.PropertyChanged += ViewModel_PropertyChanged;
 
         Loaded += MainWindow_Loaded;
     }
@@ -269,13 +271,19 @@ public partial class MainWindow : Window
     private void UpdatePanelVisibility()
     {
         var hasVisibleTabs = _viewModel.HasVisibleTabs;
+        var requiresCrossDeviceAuth = _viewModel.IsCrossDeviceAuthRequired;
         var showWelcome = !hasVisibleTabs || _forceWelcomeVisible;
+        if (requiresCrossDeviceAuth)
+            showWelcome = false;
+
+        if (CrossDeviceGatePanel is not null)
+            CrossDeviceGatePanel.Visibility = requiresCrossDeviceAuth ? Visibility.Visible : Visibility.Collapsed;
         if (WelcomePanel is not null)
-            WelcomePanel.Visibility = showWelcome ? Visibility.Visible : Visibility.Collapsed;
+            WelcomePanel.Visibility = (!requiresCrossDeviceAuth && showWelcome) ? Visibility.Visible : Visibility.Collapsed;
         if (TerminalWebView is not null)
-            TerminalWebView.Visibility = showWelcome ? Visibility.Collapsed : Visibility.Visible;
+            TerminalWebView.Visibility = (!requiresCrossDeviceAuth && !showWelcome) ? Visibility.Visible : Visibility.Collapsed;
         if (TabBarHost is not null)
-            TabBarHost.Visibility = hasVisibleTabs ? Visibility.Visible : Visibility.Collapsed;
+            TabBarHost.Visibility = (!requiresCrossDeviceAuth && hasVisibleTabs) ? Visibility.Visible : Visibility.Collapsed;
         if (TabContainer is not null)
             TabContainer.Visibility = Visibility.Visible;
     }
@@ -293,6 +301,14 @@ public partial class MainWindow : Window
             _forceWelcomeVisible = false;
         }
         Dispatcher.InvokeAsync(UpdatePanelVisibility);
+    }
+
+    private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(MainViewModel.IsCrossDeviceAuthRequired))
+        {
+            Dispatcher.InvokeAsync(UpdatePanelVisibility);
+        }
     }
 
     // --- Tab UI Event Handlers ---
@@ -421,6 +437,7 @@ public partial class MainWindow : Window
         _viewModel.ActiveTabChanged -= OnActiveTabChanged;
         _viewModel.TerminalViewportLockRequested -= OnTerminalViewportLockRequested;
         _viewModel.TerminalViewportAutoFitRequested -= OnTerminalViewportAutoFitRequested;
+        _viewModel.PropertyChanged -= ViewModel_PropertyChanged;
         _viewModel.Dispose();
         base.OnClosed(e);
     }
@@ -546,6 +563,7 @@ public partial class MainWindow : Window
             if (AiSettingsExpander is not null) AiSettingsExpander.Header = "AI Settings";
             if (DebugLogExpander is not null) DebugLogExpander.Header = "Debug Log";
             if (NewTabButtonInline is not null) NewTabButtonInline.ToolTip = "New Session";
+            if (CrossDevicePromptText is not null) CrossDevicePromptText.Text = "Scan with your phone to continue cross-device access.";
         }
         else
         {
@@ -573,6 +591,7 @@ public partial class MainWindow : Window
             if (AiSettingsExpander is not null) AiSettingsExpander.Header = "AI 设置";
             if (DebugLogExpander is not null) DebugLogExpander.Header = "调试日志";
             if (NewTabButtonInline is not null) NewTabButtonInline.ToolTip = "新会话";
+            if (CrossDevicePromptText is not null) CrossDevicePromptText.Text = "跨设备连接请先用手机扫码。";
         }
     }
 

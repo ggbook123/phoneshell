@@ -4,7 +4,9 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -255,6 +257,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly GroupStore _groupStore;
     private readonly TerminalHistoryStore _historyStore;
     private readonly Dispatcher _dispatcher;
+    private readonly HttpClient _httpClient;
 
     private DeviceIdentity _identity = new();
     private string _deviceId = string.Empty;
@@ -281,6 +284,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private const int AutoExecMaxSteps = 10;
     private const int MaxDebugLogEntries = 100;
     private const int HistoryPageChars = 20000;
+    private const string CrossDevicePromptText = "跨设备连接请先用手机扫码。";
+    private const int CrossDeviceAuthValidHours = 18;
+    private static readonly JsonSerializerOptions _panelJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
     private string _autoExecStatus = string.Empty;
 
     // Server/Client fields
@@ -304,6 +313,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _groupStatus = string.Empty;
     private string? _selectedGroupDeviceId;
 
+    // Cross-device auth fields
+    private bool _isCrossDeviceAuthorized;
+    private bool _crossDeviceAuthInProgress;
+    private string _crossDeviceAuthStatus = string.Empty;
+    private BitmapImage? _crossDeviceQrImage;
+    private string _crossDeviceBindQrPayload = string.Empty;
+    private DateTimeOffset? _crossDeviceAuthExpiresAt;
+    private CancellationTokenSource? _crossDeviceAuthCts;
+
     // Shell selection fields
     private readonly IShellLocator _shellLocator;
     private ObservableCollection<ShellInfo> _availableShells = new();
@@ -325,6 +343,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _historyStore = new TerminalHistoryStore(AppContext.BaseDirectory);
         _shellLocator = new WindowsShellLocator();
         _dispatcher = Application.Current.Dispatcher;
+        _httpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(8)
+        };
 
         _aiSettings = _aiSettingsStore.Load();
         _aiEndpoint = _aiSettings.ApiEndpoint;
@@ -604,6 +626,39 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _groupStatus, value);
     }
 
+    public bool IsCrossDeviceAuthorized
+    {
+        get => _isCrossDeviceAuthorized;
+        private set
+        {
+            if (SetProperty(ref _isCrossDeviceAuthorized, value))
+            {
+                OnPropertyChanged(nameof(IsCrossDeviceAuthRequired));
+                NewSessionCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool IsCrossDeviceAuthRequired => IsCurrentSessionTargetRemote && !IsCrossDeviceAuthValid;
+    private bool IsCrossDeviceAuthValid =>
+        IsCrossDeviceAuthorized &&
+        _crossDeviceAuthExpiresAt.HasValue &&
+        _crossDeviceAuthExpiresAt.Value > DateTimeOffset.UtcNow;
+
+    public BitmapImage? CrossDeviceQrImage
+    {
+        get => _crossDeviceQrImage;
+        private set => SetProperty(ref _crossDeviceQrImage, value);
+    }
+
+    public string CrossDeviceAuthStatus
+    {
+        get => _crossDeviceAuthStatus;
+        private set => SetProperty(ref _crossDeviceAuthStatus, value);
+    }
+
+    public string CrossDeviceAuthPrompt => CrossDevicePromptText;
+
     public ObservableCollection<GroupDeviceItem> GroupMembers { get; } = new();
     public ObservableCollection<ShellInfo> SessionTargetShells { get; } = new();
 
@@ -682,6 +737,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _autoExecCts?.Dispose();
         _aiChatService.Dispose();
         _historyStore.Dispose();
+        StopCrossDeviceAuthFlow(clearUi: false);
+        _httpClient.Dispose();
 
         foreach (var tab in Tabs)
             tab.Dispose();
@@ -701,6 +758,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         if (IsCurrentSessionTargetRemote)
         {
+            if (!await EnsureCrossDeviceAuthorizationAsync())
+                return;
             await OpenRemoteTerminalAsync(CurrentSessionTargetDeviceId, shell.Id);
             return;
         }
@@ -813,6 +872,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (!IsCurrentSessionTargetRemote)
             return;
 
+        if (!await EnsureCrossDeviceAuthorizationAsync())
+            return;
+
         await RequestRemoteSessionListAsync(CurrentSessionTargetDeviceId);
     }
 
@@ -827,6 +889,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         if (IsCurrentSessionTargetRemote)
         {
+            if (!await EnsureCrossDeviceAuthorizationAsync())
+                return;
             await OpenRemoteTerminalAsync(CurrentSessionTargetDeviceId, shell.Id);
             return;
         }
@@ -848,6 +912,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CurrentSessionTargetDisplayName));
         OnPropertyChanged(nameof(NewSessionTargetButtonText));
         OnPropertyChanged(nameof(IsCurrentSessionTargetRemote));
+        OnPropertyChanged(nameof(IsCrossDeviceAuthRequired));
     }
 
     private void RefreshSessionTargetShells()
@@ -903,7 +968,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         return SelectedShell ?? AvailableShells.FirstOrDefault() ?? _shellLocator.GetDefaultShell();
     }
 
-    private bool CanCreateNewSession() => ResolveSessionTargetShell() is not null;
+    private bool CanCreateNewSession()
+    {
+        if (ResolveSessionTargetShell() is null)
+            return false;
+
+        if (IsCrossDeviceAuthRequired)
+            return false;
+
+        return true;
+    }
 
     private bool IsTabInCurrentTarget(TerminalTab tab)
     {
@@ -1037,6 +1111,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CurrentSessionTargetDisplayName));
         OnPropertyChanged(nameof(NewSessionTargetButtonText));
         OnPropertyChanged(nameof(IsCurrentSessionTargetRemote));
+        OnPropertyChanged(nameof(IsCrossDeviceAuthRequired));
         RefreshVisibleTabs();
     }
 
@@ -1444,6 +1519,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ControlOwner = ControlOwner.Pc;
         IsMobileConnected = false;
         ConnectionStatus = "Local only";
+        IsCrossDeviceAuthorized = false;
+        _crossDeviceAuthExpiresAt = null;
+        CrossDeviceAuthStatus = string.Empty;
+        CrossDeviceQrImage = null;
     }
 
     private void RefreshQr()
@@ -1470,6 +1549,320 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             QrPayload = _payloadBuilder.Build(_identity);
         }
         QrImage = _qrCodeService.Generate(QrPayload);
+    }
+
+    // --- Cross-device authorization (mobile scan required) ---
+
+    private async Task<bool> EnsureCrossDeviceAuthorizationAsync()
+    {
+        if (!IsCurrentSessionTargetRemote)
+            return true;
+
+        if (!IsCrossDeviceAuthRequired)
+            return true;
+
+        if (IsCrossDeviceAuthorized && !IsCrossDeviceAuthValid)
+        {
+            ResetCrossDeviceAuthorization();
+        }
+
+        if (_crossDeviceAuthInProgress)
+            return false;
+
+        await StartCrossDeviceAuthFlowAsync();
+        return IsCrossDeviceAuthorized;
+    }
+
+    private async Task StartCrossDeviceAuthFlowAsync()
+    {
+        if (_crossDeviceAuthInProgress)
+            return;
+
+        _crossDeviceAuthInProgress = true;
+        _crossDeviceAuthCts?.Cancel();
+        _crossDeviceAuthCts?.Dispose();
+        _crossDeviceAuthCts = new CancellationTokenSource();
+        var ct = _crossDeviceAuthCts.Token;
+
+        await _dispatcher.InvokeAsync(() =>
+        {
+            CrossDeviceAuthStatus = "正在生成二维码...";
+            CrossDeviceQrImage = null;
+        });
+
+        var baseUrl = GetPanelBaseUrl();
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "无法获取服务器地址");
+            StopCrossDeviceAuthFlow(clearUi: false);
+            return;
+        }
+
+        var pairing = await GetPanelPairingInfoAsync(baseUrl, ct);
+        if (pairing is null)
+        {
+            await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "无法连接服务器");
+            StopCrossDeviceAuthFlow(clearUi: false);
+            return;
+        }
+
+        if (!pairing.HasGroup)
+        {
+            await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "服务器未初始化群组");
+            StopCrossDeviceAuthFlow(clearUi: false);
+            return;
+        }
+
+        _crossDeviceBindQrPayload = pairing.QrPayload ?? string.Empty;
+        if (!pairing.HasBoundMobile && !string.IsNullOrWhiteSpace(_crossDeviceBindQrPayload))
+        {
+            await _dispatcher.InvokeAsync(() =>
+            {
+                CrossDeviceQrImage = _qrCodeService.Generate(_crossDeviceBindQrPayload);
+                CrossDeviceAuthStatus = "等待手机扫码加入群组";
+            });
+        }
+
+        var login = await GetPanelLoginStartAsync(baseUrl, ct);
+        if (login is null || string.IsNullOrWhiteSpace(login.RequestId))
+        {
+            await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "无法创建登录会话");
+            StopCrossDeviceAuthFlow(clearUi: false);
+            return;
+        }
+
+        await ApplyPanelLoginStatusAsync(login, baseUrl, ct);
+
+        _ = Task.Run(() => PollPanelLoginStatusAsync(baseUrl, login.RequestId, ct));
+    }
+
+    private async Task PollPanelLoginStatusAsync(string baseUrl, string requestId, CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested && _crossDeviceAuthInProgress)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+            }
+            catch (TaskCanceledException)
+            {
+                break;
+            }
+
+            if (ct.IsCancellationRequested || !_crossDeviceAuthInProgress)
+                break;
+
+            var status = await GetPanelLoginStatusAsync(baseUrl, requestId, ct);
+            if (status is null)
+                continue;
+
+            await ApplyPanelLoginStatusAsync(status, baseUrl, ct);
+
+            if (IsCrossDeviceAuthorized || !_crossDeviceAuthInProgress)
+                break;
+        }
+    }
+
+    private async Task ApplyPanelLoginStatusAsync(PanelLoginResponse status, string baseUrl, CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested)
+            return;
+
+        var state = status.Status?.Trim().ToLowerInvariant();
+        switch (state)
+        {
+            case "approved":
+                await _dispatcher.InvokeAsync(() =>
+                {
+                    IsCrossDeviceAuthorized = true;
+                    _crossDeviceAuthExpiresAt = DateTimeOffset.UtcNow.AddHours(CrossDeviceAuthValidHours);
+                    CrossDeviceAuthStatus = string.Empty;
+                    CrossDeviceQrImage = null;
+                });
+                StopCrossDeviceAuthFlow(clearUi: false);
+                return;
+            case "rejected":
+                await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "手机端已拒绝，请重新扫码");
+                ScheduleCrossDeviceAuthRestart(TimeSpan.FromSeconds(2));
+                return;
+            case "expired":
+                await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "登录会话已过期，正在刷新...");
+                ScheduleCrossDeviceAuthRestart(TimeSpan.FromSeconds(1));
+                return;
+            case "awaiting_scan":
+                if (!string.IsNullOrWhiteSpace(status.LoginQrPayload))
+                {
+                    var qr = _qrCodeService.Generate(status.LoginQrPayload);
+                    await _dispatcher.InvokeAsync(() => CrossDeviceQrImage = qr);
+                }
+                await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "请使用绑定的手机扫描二维码");
+                return;
+            case "awaiting_mobile":
+                if (!string.IsNullOrWhiteSpace(_crossDeviceBindQrPayload))
+                {
+                    var qr = _qrCodeService.Generate(_crossDeviceBindQrPayload);
+                    await _dispatcher.InvokeAsync(() => CrossDeviceQrImage = qr);
+                }
+                await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "等待手机扫码加入群组");
+                return;
+            case "awaiting_approval":
+                await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "请在手机端确认登录");
+                return;
+            default:
+                if (!string.IsNullOrWhiteSpace(status.Message))
+                    await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = status.Message);
+                return;
+        }
+    }
+
+    private void ScheduleCrossDeviceAuthRestart(TimeSpan delay)
+    {
+        StopCrossDeviceAuthFlow(clearUi: false);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(delay);
+            }
+            catch
+            {
+                return;
+            }
+
+            if (!IsCrossDeviceAuthRequired || IsCrossDeviceAuthorized)
+                return;
+
+            if (_dispatcher.HasShutdownStarted)
+                return;
+
+            await StartCrossDeviceAuthFlowAsync();
+        });
+    }
+
+    private string? GetPanelBaseUrl()
+    {
+        var wsUrl = IsRelayServer ? PrimaryRelayAddress : RelayServerAddress;
+        if (string.IsNullOrWhiteSpace(wsUrl))
+            return null;
+
+        var httpUrl = wsUrl
+            .Replace("ws://", "http://", StringComparison.OrdinalIgnoreCase)
+            .Replace("wss://", "https://", StringComparison.OrdinalIgnoreCase)
+            .TrimEnd('/');
+
+        if (httpUrl.EndsWith("/ws", StringComparison.OrdinalIgnoreCase))
+            httpUrl = httpUrl[..^3];
+
+        return httpUrl;
+    }
+
+    private async Task<PanelPairingInfo?> GetPanelPairingInfoAsync(string baseUrl, CancellationToken ct)
+    {
+        var url = $"{baseUrl}/api/panel/pairing";
+        return await GetPanelJsonAsync<PanelPairingInfo>(url, ct);
+    }
+
+    private async Task<PanelLoginResponse?> GetPanelLoginStartAsync(string baseUrl, CancellationToken ct)
+    {
+        var url = $"{baseUrl}/api/panel/login/start";
+        return await GetPanelJsonAsync<PanelLoginResponse>(url, ct);
+    }
+
+    private async Task<PanelLoginResponse?> GetPanelLoginStatusAsync(string baseUrl, string requestId, CancellationToken ct)
+    {
+        var safeId = Uri.EscapeDataString(requestId);
+        var url = $"{baseUrl}/api/panel/login/status/{safeId}";
+        return await GetPanelJsonAsync<PanelLoginResponse>(url, ct);
+    }
+
+    private async Task<T?> GetPanelJsonAsync<T>(string url, CancellationToken ct)
+    {
+        try
+        {
+            using var response = await _httpClient.GetAsync(url, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                OnNetworkLog($"[panel] HTTP {(int)response.StatusCode} for {url}");
+                return default;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            return await JsonSerializer.DeserializeAsync<T>(stream, _panelJsonOptions, ct);
+        }
+        catch (TaskCanceledException)
+        {
+            return default;
+        }
+        catch (Exception ex)
+        {
+            OnNetworkLog($"[panel] Request failed: {ex.Message}");
+            return default;
+        }
+    }
+
+    private void StopCrossDeviceAuthFlow(bool clearUi)
+    {
+        _crossDeviceAuthCts?.Cancel();
+        _crossDeviceAuthCts?.Dispose();
+        _crossDeviceAuthCts = null;
+        _crossDeviceAuthInProgress = false;
+        _crossDeviceBindQrPayload = string.Empty;
+
+        if (!clearUi)
+            return;
+
+        if (_dispatcher.CheckAccess())
+        {
+            CrossDeviceQrImage = null;
+            CrossDeviceAuthStatus = string.Empty;
+        }
+        else
+        {
+            _dispatcher.InvokeAsync(() =>
+            {
+                CrossDeviceQrImage = null;
+                CrossDeviceAuthStatus = string.Empty;
+            });
+        }
+    }
+
+    private void ResetCrossDeviceAuthorization()
+    {
+        if (_dispatcher.CheckAccess())
+        {
+            IsCrossDeviceAuthorized = false;
+            _crossDeviceAuthExpiresAt = null;
+            StopCrossDeviceAuthFlow(clearUi: true);
+            return;
+        }
+
+        _dispatcher.InvokeAsync(() =>
+        {
+            IsCrossDeviceAuthorized = false;
+            _crossDeviceAuthExpiresAt = null;
+            StopCrossDeviceAuthFlow(clearUi: true);
+        });
+    }
+
+    private sealed class PanelPairingInfo
+    {
+        public bool RequiresAuth { get; set; }
+        public bool HasGroup { get; set; }
+        public string GroupId { get; set; } = string.Empty;
+        public string ServerUrl { get; set; } = string.Empty;
+        public string QrPayload { get; set; } = string.Empty;
+        public bool HasBoundMobile { get; set; }
+        public bool BoundMobileOnline { get; set; }
+    }
+
+    private sealed class PanelLoginResponse
+    {
+        public string RequestId { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+        public string LoginQrPayload { get; set; } = string.Empty;
+        public string? Token { get; set; }
     }
 
     private void ForceDisconnect()
@@ -1690,7 +2083,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             if (IsRelayServer)
             {
-                _relayServer = new RelayServer();
+                _relayServer = new RelayServer
+                {
+                    WebPanelEnabled = true
+                };
                 _relayServer.HistoryStore = _historyStore;
                 _relayServer.PreserveTerminalHistoryOnClose = true;
                 _relayServer.Log += OnNetworkLog;
@@ -1817,7 +2213,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 // No relay server address configured - start in standalone mode
                 // Standalone mode: start local WS server without group secret, show connect QR
                 _isStandaloneMode = true;
-                _relayServer = new RelayServer();
+                _relayServer = new RelayServer
+                {
+                    WebPanelEnabled = true
+                };
                 _relayServer.HistoryStore = _historyStore;
                 _relayServer.PreserveTerminalHistoryOnClose = true;
                 _relayServer.Log += OnNetworkLog;
@@ -2037,6 +2436,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher.InvokeAsync(() =>
         {
+            ResetCrossDeviceAuthorization();
             GroupSecret = string.Empty;
             SaveServerSettings();
 
@@ -2203,6 +2603,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher.InvokeAsync(() =>
         {
+            ResetCrossDeviceAuthorization();
             OnNetworkLog($"Kicked from group: {reason}");
             StopNetwork();
             GroupStatus = $"Kicked: {reason}";
@@ -2214,6 +2615,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher.InvokeAsync(() =>
         {
+            ResetCrossDeviceAuthorization();
             OnNetworkLog($"Group dissolved: {reason}");
             StopNetwork();
             GroupStatus = $"Group dissolved: {reason}";
@@ -3409,6 +3811,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher.InvokeAsync(async () =>
         {
+            ResetCrossDeviceAuthorization();
             OnNetworkLog($"[standalone] Kicked from group: {reason}");
             StopNetwork();
             GroupStatus = $"Kicked: {reason}";
@@ -3425,6 +3828,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher.InvokeAsync(async () =>
         {
+            ResetCrossDeviceAuthorization();
             OnNetworkLog($"[standalone] Group dissolved: {reason}");
             StopNetwork();
             GroupStatus = $"Group dissolved: {reason}";
