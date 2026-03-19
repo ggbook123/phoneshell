@@ -4,6 +4,7 @@ import { AppColors, AppSizes, ConnectionState } from '../common/Constants';
 import { I18n } from '../common/I18n';
 import { SafeAreaUtil } from '../common/SafeArea';
 import { ConnectionManager } from '../services/ConnectionManager';
+import window from '@ohos.window';
 
 const DOMAIN = 0x0000;
 const PAGE_TAG = 'TerminalPage';
@@ -11,6 +12,11 @@ const PAGE_TAG = 'TerminalPage';
 interface ShortcutKey {
   label: string;
   data: string;
+}
+
+interface KeyboardAvoidAreaChangeInfo {
+  type: window.AvoidAreaType;
+  area: window.AvoidArea;
 }
 
 class TerminalBridge {
@@ -52,6 +58,7 @@ struct TerminalPage {
   @State safeAreaBottom: number = 0;
   @State safeAreaLeft: number = 0;
   @State safeAreaRight: number = 0;
+  @State keyboardHeight: number = 0;
   private stateListenerId: number = -1;
   private messageListenerId: number = -1;
   private terminalController: webview.WebviewController = new webview.WebviewController();
@@ -74,6 +81,8 @@ struct TerminalPage {
   private lastReportedCols: number = 0;
   private lastReportedRows: number = 0;
   private viewedSessionId: string = '';
+  private keyboardWindow: window.Window | null = null;
+  private keyboardAvoidAreaCallback: ((data: KeyboardAvoidAreaChangeInfo) => void) | null = null;
 
   private normalizeString(value: string | undefined | null, fallback: string = ''): string {
     if (typeof value === 'string') {
@@ -139,6 +148,7 @@ struct TerminalPage {
   aboutToAppear(): void {
     hilog.info(DOMAIN, PAGE_TAG, 'aboutToAppear');
     this.syncSafeArea();
+    this.registerKeyboardAvoidArea();
     // Reset state for fresh terminal view each time we enter
     this.pendingTerminalOutput = '';
     this.resetHistoryState();
@@ -158,10 +168,58 @@ struct TerminalPage {
     this.safeAreaRight = insets.right;
   }
 
+  private async registerKeyboardAvoidArea(): Promise<void> {
+    if (this.keyboardWindow !== null) {
+      return;
+    }
+    const uiContext = this.getUIContext();
+    const context = uiContext.getHostContext();
+    if (context === undefined) {
+      return;
+    }
+
+    try {
+      const mainWindow: window.Window = await window.getLastWindow(context);
+      this.keyboardWindow = mainWindow;
+      const keyboardArea: window.AvoidArea = mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD);
+      this.keyboardHeight = uiContext.px2vp(keyboardArea.bottomRect.height);
+
+      this.keyboardAvoidAreaCallback = (data: KeyboardAvoidAreaChangeInfo) => {
+        if (data.type !== window.AvoidAreaType.TYPE_KEYBOARD) {
+          return;
+        }
+        this.keyboardHeight = uiContext.px2vp(data.area.bottomRect.height);
+      };
+
+      mainWindow.on('avoidAreaChange', this.keyboardAvoidAreaCallback);
+    } catch (err) {
+      hilog.warn(DOMAIN, PAGE_TAG, 'Failed to register keyboard avoid area: %{public}s', JSON.stringify(err));
+    }
+  }
+
+  private unregisterKeyboardAvoidArea(): void {
+    if (this.keyboardWindow !== null && this.keyboardAvoidAreaCallback !== null) {
+      try {
+        this.keyboardWindow.off('avoidAreaChange', this.keyboardAvoidAreaCallback);
+      } catch (_err) {
+        // Ignore errors during page transitions.
+      }
+    }
+    this.keyboardWindow = null;
+    this.keyboardAvoidAreaCallback = null;
+    this.keyboardHeight = 0;
+  }
+
+  private getShortcutBarOffset(): number {
+    const offset: number = this.keyboardHeight - this.safeAreaBottom;
+    return offset > 0 ? offset : 0;
+  }
+
   aboutToDisappear(): void {
     hilog.warn(DOMAIN, PAGE_TAG, 'aboutToDisappear sessionActive=%{public}s',
       this.sessionActive ? 'true' : 'false');
     this.deactivatePage();
+    this.unregisterKeyboardAvoidArea();
 
     // In multi-session mode, do NOT close the terminal when navigating away.
     // The session stays alive on the PC side.
@@ -658,6 +716,7 @@ struct TerminalPage {
         }
         .width('100%')
         .height(74)
+        .margin({ bottom: this.getShortcutBarOffset() })
         .backgroundColor(AppColors.SURFACE_1)
         .borderWidth(1)
         .borderColor(AppColors.CARD_BORDER)
