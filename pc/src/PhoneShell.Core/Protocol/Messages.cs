@@ -65,6 +65,14 @@ public sealed class SessionInfo
     public string Title { get; init; } = string.Empty;
 }
 
+public sealed class SessionRenameMessage
+{
+    public string Type => "session.rename";
+    public string DeviceId { get; init; } = string.Empty;
+    public string SessionId { get; init; } = string.Empty;
+    public string Title { get; init; } = string.Empty;
+}
+
 // --- Terminal session management ---
 
 public sealed class TerminalOpenMessage

@@ -3,6 +3,7 @@ import { Context } from '@kit.AbilityKit';
 import { scanBarcode } from '@kit.ScanKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppColors, AppSizes, AppStrings, ConnectionState, DeviceMode, StorageKeys } from '../common/Constants';
+import { I18n } from '../common/I18n';
 import { ConnectionManager, SingleDeviceRecord } from '../services/ConnectionManager';
 import { AuthManager, AuthPendingRequest } from '../services/AuthManager';
 import { PreferencesUtil } from '../services/PreferencesUtil';
@@ -10,6 +11,25 @@ import { DeviceInfo, GroupMemberInfo } from '../models/MessageTypes';
 
 const DOMAIN = 0x0000;
 const PAGE_TAG = 'DeviceManagePage';
+
+@Observed
+class DeviceItemModel {
+  deviceId: string = '';
+  displayName: string = '';
+  os: string = '';
+  isOnline: boolean = false;
+  availableShells: Array<string> = [];
+}
+
+@Observed
+class GroupMemberModel {
+  deviceId: string = '';
+  displayName: string = '';
+  os: string = '';
+  role: string = '';
+  isOnline: boolean = false;
+  availableShells: Array<string> = [];
+}
 
 interface SessionListParams {
   deviceId: string;
@@ -20,11 +40,11 @@ interface SessionListParams {
 @Entry
 @Component
 struct DeviceManagePage {
-  @State groupDevices: Array<DeviceInfo> = [];
-  @State singleDevices: Array<DeviceInfo> = [];
+  @State groupDevices: Array<DeviceItemModel> = [];
+  @State singleDevices: Array<DeviceItemModel> = [];
   @State currentMode: DeviceMode = DeviceMode.STANDALONE;
   @State isRefreshing: boolean = false;
-  @State groupMembers: Array<GroupMemberInfo> = [];
+  @State groupMembers: Array<GroupMemberModel> = [];
   @State groupId: string = '';
   @State scanResult: string = '';
   @State scanStatus: string = '';
@@ -78,19 +98,19 @@ struct DeviceManagePage {
     this.deactivatePage();
   }
 
+  private t(zhText: string, enText: string): string {
+    return I18n.t(I18n.getLanguage(), zhText, enText);
+  }
+
   private activatePage(): void {
     this.currentMode = ConnectionManager.currentMode;
-    this.groupDevices = ConnectionManager.getGroupDevices();
-    this.singleDevices = ConnectionManager.getSingleDevices();
-    this.groupMembers = ConnectionManager.getGroupMembers();
+    this.syncDeviceLists();
     this.groupId = ConnectionManager.getGroupId();
     this.pendingAuthCount = AuthManager.getPendingCount();
 
     if (this.deviceListCallbackId === -1) {
       this.deviceListCallbackId = ConnectionManager.addOnDeviceListChanged((_devices: Array<DeviceInfo>) => {
-        this.groupDevices = ConnectionManager.getGroupDevices();
-        this.singleDevices = ConnectionManager.getSingleDevices();
-        this.groupMembers = ConnectionManager.getGroupMembers();
+        this.syncDeviceLists();
         this.isRefreshing = false;
       });
     }
@@ -99,8 +119,7 @@ struct DeviceManagePage {
       this.modeChangeCallbackId = ConnectionManager.addOnModeChange((mode: DeviceMode) => {
         this.currentMode = mode;
         this.groupId = ConnectionManager.getGroupId();
-        this.groupDevices = ConnectionManager.getGroupDevices();
-        this.singleDevices = ConnectionManager.getSingleDevices();
+        this.syncDeviceLists();
       });
     }
 
@@ -119,9 +138,9 @@ struct DeviceManagePage {
           }
         } else if (type === 'group.join.accepted') {
           this.groupId = ConnectionManager.getGroupId();
-          this.groupMembers = ConnectionManager.getGroupMembers();
+          this.syncDeviceLists();
         } else if (type === 'group.member.list' || type === 'group.member.joined' || type === 'group.member.left') {
-          this.groupMembers = ConnectionManager.getGroupMembers();
+          this.syncDeviceLists();
         }
       });
     }
@@ -167,7 +186,7 @@ struct DeviceManagePage {
     return '💻';
   }
 
-  private onDeviceClick(device: DeviceInfo): void {
+  private onDeviceClick(device: DeviceItemModel): void {
     if (!device.isOnline) return;
     const deviceId: string = device.deviceId;
     if (deviceId.length === 0) return;
@@ -188,7 +207,7 @@ struct DeviceManagePage {
     }
   }
 
-  private openDeviceSettings(device: DeviceInfo, isPendingSingle: boolean): void {
+  private openDeviceSettings(device: DeviceItemModel, isPendingSingle: boolean): void {
     this.settingsDeviceId = device.deviceId;
     this.settingsDisplayName = device.displayName;
     this.settingsOs = device.os;
@@ -197,7 +216,7 @@ struct DeviceManagePage {
     // Determine role from group members when available
     this.settingsIsGroupDevice = !isPendingSingle && this.currentMode === DeviceMode.GROUP;
     if (this.settingsIsGroupDevice) {
-      const member: GroupMemberInfo | undefined = this.findGroupMember(device.deviceId);
+      const member: GroupMemberModel | undefined = this.findGroupMember(device.deviceId);
       this.settingsRole = member !== undefined ? member.role : 'Member';
     } else {
       this.settingsRole = 'Pending';
@@ -212,11 +231,35 @@ struct DeviceManagePage {
   }
 
   private saveDeviceName(): void {
-    if (this.settingsEditName.trim().length === 0) return;
-    if (this.settingsEditName.trim() !== this.settingsDisplayName) {
-      ConnectionManager.updateDeviceDisplayName(this.settingsDeviceId, this.settingsEditName.trim());
+    const trimmed: string = this.settingsEditName.trim();
+    if (trimmed.length === 0) return;
+    if (trimmed !== this.settingsDisplayName) {
+      ConnectionManager.updateDeviceDisplayName(this.settingsDeviceId, trimmed);
+      this.updateDeviceNameLocal(this.settingsDeviceId, trimmed);
+      this.settingsDisplayName = trimmed;
     }
     this.closeSettingsSheet();
+  }
+
+  private updateDeviceNameLocal(deviceId: string, newName: string): void {
+    if (deviceId.length === 0 || newName.length === 0) {
+      return;
+    }
+    for (let i: number = 0; i < this.groupDevices.length; i++) {
+      if (this.groupDevices[i].deviceId === deviceId) {
+        this.groupDevices[i].displayName = newName;
+      }
+    }
+    for (let i: number = 0; i < this.singleDevices.length; i++) {
+      if (this.singleDevices[i].deviceId === deviceId) {
+        this.singleDevices[i].displayName = newName;
+      }
+    }
+    for (let i: number = 0; i < this.groupMembers.length; i++) {
+      if (this.groupMembers[i].deviceId === deviceId) {
+        this.groupMembers[i].displayName = newName;
+      }
+    }
   }
 
   private kickDeviceFromGroup(): void {
@@ -252,11 +295,87 @@ struct DeviceManagePage {
     }
   }
 
+  private syncDeviceLists(): void {
+    this.groupDevices = this.buildDeviceModels(ConnectionManager.getGroupDevices(), this.groupDevices);
+    this.singleDevices = this.buildDeviceModels(ConnectionManager.getSingleDevices(), this.singleDevices);
+    this.groupMembers = this.buildGroupMemberModels(ConnectionManager.getGroupMembers(), this.groupMembers);
+  }
+
+  private buildDeviceModels(raw: Array<DeviceInfo>, current: Array<DeviceItemModel>): Array<DeviceItemModel> {
+    const existing: Map<string, DeviceItemModel> = new Map();
+    for (let i: number = 0; i < current.length; i++) {
+      const item: DeviceItemModel = current[i];
+      if (item.deviceId.length > 0) {
+        existing.set(item.deviceId, item);
+      }
+    }
+
+    let result: Array<DeviceItemModel> = [];
+    for (let i: number = 0; i < raw.length; i++) {
+      const info: DeviceInfo = raw[i];
+      if (info.deviceId.length === 0) {
+        continue;
+      }
+      let model: DeviceItemModel | undefined = existing.get(info.deviceId);
+      if (model === undefined) {
+        model = new DeviceItemModel();
+        model.deviceId = info.deviceId;
+      }
+      model.displayName = info.displayName;
+      model.os = info.os;
+      model.isOnline = info.isOnline;
+      model.availableShells = info.availableShells.length > 0 ? info.availableShells.slice() : [];
+      result.push(model);
+    }
+
+    return result;
+  }
+
+  private buildGroupMemberModels(raw: Array<GroupMemberInfo>, current: Array<GroupMemberModel>): Array<GroupMemberModel> {
+    const existing: Map<string, GroupMemberModel> = new Map();
+    for (let i: number = 0; i < current.length; i++) {
+      const item: GroupMemberModel = current[i];
+      if (item.deviceId.length > 0) {
+        existing.set(item.deviceId, item);
+      }
+    }
+
+    let result: Array<GroupMemberModel> = [];
+    for (let i: number = 0; i < raw.length; i++) {
+      const info: GroupMemberInfo = raw[i];
+      if (info.deviceId.length === 0) {
+        continue;
+      }
+      let model: GroupMemberModel | undefined = existing.get(info.deviceId);
+      if (model === undefined) {
+        model = new GroupMemberModel();
+        model.deviceId = info.deviceId;
+      }
+      model.displayName = info.displayName;
+      model.os = info.os;
+      model.role = info.role;
+      model.isOnline = info.isOnline;
+      model.availableShells = info.availableShells.length > 0 ? info.availableShells.slice() : [];
+      result.push(model);
+    }
+
+    return result;
+  }
+
+  private refreshDeviceView(): void {
+    this.currentMode = ConnectionManager.currentMode;
+    this.syncDeviceLists();
+    this.groupId = ConnectionManager.getGroupId();
+    if (ConnectionManager.isInGroup()) {
+      ConnectionManager.requestDeviceList();
+    }
+  }
+
   private startScan(): void {
     if (this.isScanning) return;
     this.cleanupScanListeners();
     this.isScanning = true;
-    this.scanStatus = '正在启动扫码...';
+    this.scanStatus = this.t('正在启动扫码...', 'Starting scan...');
     this.parseError = '';
     this.scanResult = '';
 
@@ -269,7 +388,7 @@ struct DeviceManagePage {
     const hostContext: Context | undefined = this.getUIContext().getHostContext();
     if (hostContext === undefined) {
       this.isScanning = false;
-      this.scanStatus = '无法获取上下文';
+      this.scanStatus = this.t('无法获取上下文', 'Unable to get context');
       return;
     }
 
@@ -279,13 +398,13 @@ struct DeviceManagePage {
         const value: string = result.originalValue;
         hilog.info(DOMAIN, PAGE_TAG, 'scan result=%{public}s', value);
         this.scanResult = value;
-        this.scanStatus = '扫码成功';
+        this.scanStatus = this.t('扫码成功', 'Scan successful');
         this.handleScanResult(value);
       })
       .catch((err: Error) => {
         this.isScanning = false;
         hilog.error(DOMAIN, PAGE_TAG, 'scan error=%{public}s', err.message);
-        this.scanStatus = '扫码失败: ' + err.message;
+        this.scanStatus = this.t('扫码失败: ', 'Scan failed: ') + err.message;
       });
   }
 
@@ -295,7 +414,7 @@ struct DeviceManagePage {
     //   phoneshell://bind?server=...&groupId=...&groupSecret=...            (group bind)
     //   phoneshell://login?server=...&groupId=...&requestId=...             (panel login)
     if (!payload.startsWith('phoneshell://')) {
-      this.parseError = '无效的二维码格式';
+      this.parseError = this.t('无效的二维码格式', 'Invalid QR code format');
       return;
     }
 
@@ -308,7 +427,7 @@ struct DeviceManagePage {
     } else if (payload.startsWith('phoneshell://bind')) {
       await this.handleBindQr(params);
     } else {
-      this.parseError = '未知的二维码类型';
+      this.parseError = this.t('未知的二维码类型', 'Unknown QR code type');
     }
   }
 
@@ -322,14 +441,15 @@ struct DeviceManagePage {
     hilog.info(DOMAIN, PAGE_TAG, 'connect QR: ws=%{public}s deviceId=%{public}s', wsUrl, deviceId);
 
     if (wsUrl.length === 0 || deviceId.length === 0) {
-      this.parseError = '二维码缺少必要参数 (ws/deviceId)';
+      this.parseError = this.t('二维码缺少必要参数 (ws/deviceId)', 'QR code missing required params (ws/deviceId)');
       return;
     }
 
     // If phone is already in a group, invite this standalone device into the group
     if (ConnectionManager.isInGroup()) {
       if (httpUrl.length === 0) {
-        this.parseError = '该设备不支持邀请加入群组（缺少HTTP地址）';
+        this.parseError = this.t('该设备不支持邀请加入群组（缺少HTTP地址）',
+          'This device cannot be invited (missing HTTP address)');
         return;
       }
       hilog.info(DOMAIN, PAGE_TAG, 'Already in group, inviting device %{public}s to group', deviceId);
@@ -339,12 +459,13 @@ struct DeviceManagePage {
       return;
     }
 
-    this.scanStatus = `正在连接 ${displayName}...`;
+    this.scanStatus = this.t(`正在连接 ${displayName}...`, `Connecting to ${displayName}...`);
 
     // Use ConnectionManager to establish single connection
     ConnectionManager.connectSingle(wsUrl, deviceId, displayName, httpUrl);
 
-    this.scanStatus = `已添加设备 ${displayName}`;
+    this.scanStatus = this.t(`已添加设备 ${displayName}`, `Added device ${displayName}`);
+    this.refreshDeviceView();
   }
 
   // --- Invite a standalone device into the current group ---
@@ -355,7 +476,7 @@ struct DeviceManagePage {
 
     if (httpUrl.length === 0) return;
 
-    this.scanStatus = `正在邀请 ${deviceName} 加入群组...`;
+    this.scanStatus = this.t(`正在邀请 ${deviceName} 加入群组...`, `Inviting ${deviceName} to join the group...`);
 
     // Listen for invite.create.response
     this.cleanupScanListeners();
@@ -365,23 +486,24 @@ struct DeviceManagePage {
         const relayUrl: string = (data['relayUrl'] ?? '') as string;
         if (inviteCode.length > 0 && relayUrl.length > 0) {
           hilog.info(DOMAIN, PAGE_TAG, 'Got invite code, sending to device %{public}s', httpUrl);
-          this.scanStatus = `正在发送邀请给 ${deviceName}...`;
+          this.scanStatus = this.t(`正在发送邀请给 ${deviceName}...`, `Sending invite to ${deviceName}...`);
           ConnectionManager.inviteToGroup(httpUrl, inviteCode, relayUrl,
             (success: boolean, message: string) => {
               if (success) {
-                this.scanStatus = `已邀请 ${deviceName} 加入群组`;
+                this.scanStatus = this.t(`已邀请 ${deviceName} 加入群组`, `Invited ${deviceName} to join the group`);
                 this.cleanupScanListeners();
+                this.refreshDeviceView();
               } else {
-                this.parseError = `邀请发送失败: ${message}`;
-                this.scanStatus = '邀请失败';
+                this.parseError = this.t(`邀请发送失败: ${message}`, `Invite failed: ${message}`);
+                this.scanStatus = this.t('邀请失败', 'Invite failed');
                 this.cleanupScanListeners();
               }
             });
         }
       } else if (type === 'error') {
         const message: string = (data['message'] ?? '') as string;
-        this.parseError = `邀请失败: ${message}`;
-        this.scanStatus = '邀请失败';
+        this.parseError = this.t(`邀请失败: ${message}`, `Invite failed: ${message}`);
+        this.scanStatus = this.t('邀请失败', 'Invite failed');
         this.cleanupScanListeners();
       }
     });
@@ -399,7 +521,8 @@ struct DeviceManagePage {
     hilog.info(DOMAIN, PAGE_TAG, 'bind QR: server=%{public}s groupId=%{public}s', server, groupId);
 
     if (server.length === 0 || groupSecret.length === 0) {
-      this.parseError = '二维码缺少必要参数 (server/groupSecret)';
+      this.parseError = this.t('二维码缺少必要参数 (server/groupSecret)',
+        'QR code missing required params (server/groupSecret)');
       return;
     }
 
@@ -408,17 +531,17 @@ struct DeviceManagePage {
       const currentGroupId: string = ConnectionManager.getGroupId();
       if (currentGroupId === groupId) {
         // Same group - already connected
-        this.scanStatus = '已在该群组中';
+        this.scanStatus = this.t('已在该群组中', 'Already in this group');
         return;
       }
       // Different server's bind QR — invite that device into our group
       const httpUrl: string = this.wsUrlToHttpUrl(server);
       if (httpUrl.length === 0) {
-        this.parseError = '无法解析设备HTTP地址';
+        this.parseError = this.t('无法解析设备HTTP地址', 'Unable to parse device HTTP address');
         return;
       }
       hilog.info(DOMAIN, PAGE_TAG, 'Already in group, inviting bind-QR device to current group, httpUrl=%{public}s', httpUrl);
-      this.inviteDeviceName = params.get('serverDeviceId') ?? '新设备';
+      this.inviteDeviceName = params.get('serverDeviceId') ?? this.t('新设备', 'New Device');
       this.scanInviteHttpUrl = httpUrl;
       this.showInviteConfirmDialog = true;
       return;
@@ -457,7 +580,10 @@ struct DeviceManagePage {
     await PreferencesUtil.setLastServerUrl(server);
     await PreferencesUtil.setString(StorageKeys.GROUP_SECRET, groupSecret);
 
-    this.scanStatus = `正在连接群组 ${server.substring(0, 40)}...`;
+    this.scanStatus = this.t(
+      `正在连接群组 ${server.substring(0, 40)}...`,
+      `Connecting to group ${server.substring(0, 40)}...`
+    );
 
     // Connect as group
     const connectUrl: string = this.buildConnectUrlWithToken(server, groupSecret);
@@ -468,13 +594,14 @@ struct DeviceManagePage {
     this.scanMessageListenerId = ConnectionManager.addOnMessage((type: string, _data: Record<string, Object>) => {
       if (type === 'group.join.accepted') {
         this.cleanupScanListeners();
-        this.scanStatus = '已加入群组';
+        this.scanStatus = this.t('已加入群组', 'Joined the group');
         // Bind mobile
         ConnectionManager.sendMobileBindRequest(groupId);
+        this.refreshDeviceView();
       } else if (type === 'group.join.rejected') {
         this.cleanupScanListeners();
-        this.parseError = '加入群组被拒绝';
-        this.scanStatus = '加入群组失败';
+        this.parseError = this.t('加入群组被拒绝', 'Group join was rejected');
+        this.scanStatus = this.t('加入群组失败', 'Failed to join group');
       }
     });
 
@@ -498,11 +625,11 @@ struct DeviceManagePage {
     hilog.info(DOMAIN, PAGE_TAG, 'login QR: server=%{public}s requestId=%{public}s', server, requestId);
 
     if (server.length === 0 || requestId.length === 0) {
-      this.parseError = '登录码缺少必要参数';
+      this.parseError = this.t('登录码缺少必要参数', 'Login code missing required params');
       return;
     }
 
-    this.scanStatus = '正在处理登录请求...';
+    this.scanStatus = this.t('正在处理登录请求...', 'Processing login request...');
     // Listen for error responses from server
     this.cleanupScanListeners();
     this.scanMessageListenerId = ConnectionManager.addOnMessage((type: string, data: Record<string, Object>) => {
@@ -511,25 +638,26 @@ struct DeviceManagePage {
         const message: string = (data['message'] ?? '') as string;
         hilog.error(DOMAIN, PAGE_TAG, 'login scan error: code=%{public}s msg=%{public}s', code, message);
         if (code === 'not_bound_mobile') {
-          this.scanStatus = '登录失败：需要重新连接群组';
-          this.parseError = '手机未在群组中注册，请返回设备管理页等待自动重连';
+          this.scanStatus = this.t('登录失败：需要重新连接群组', 'Login failed: reconnect to the group');
+          this.parseError = this.t('手机未在群组中注册，请返回设备管理页等待自动重连',
+            'This phone is not registered in the group. Return to Device Center and wait for auto-reconnect.');
         } else if (code === 'login_session_not_found') {
-          this.scanStatus = '登录失败：登录会话已过期';
-          this.parseError = '请刷新网页重新获取二维码';
+          this.scanStatus = this.t('登录失败：登录会话已过期', 'Login failed: session expired');
+          this.parseError = this.t('请刷新网页重新获取二维码', 'Please refresh the web page to get a new QR code');
         } else {
-          this.scanStatus = '登录失败';
-          this.parseError = message.length > 0 ? message : '未知错误';
+          this.scanStatus = this.t('登录失败', 'Login failed');
+          this.parseError = message.length > 0 ? message : this.t('未知错误', 'Unknown error');
         }
         this.cleanupScanListeners();
       } else if (type === 'panel.login.approved') {
-        this.scanStatus = '网页登录已批准';
+        this.scanStatus = this.t('网页登录已批准', 'Web login approved');
         this.cleanupScanListeners();
       }
     });
 
     // Check if connected to group and joined
     if (!ConnectionManager.isInGroup()) {
-      this.scanStatus = '正在重新连接群组...';
+      this.scanStatus = this.t('正在重新连接群组...', 'Reconnecting to group...');
       // Wait for group rejoin (auto-rejoin on reconnect), then send
       this.scanStateListenerId = ConnectionManager.addOnStateChange((state: ConnectionState, _deviceId: string) => {
         if (state === ConnectionState.CONNECTED) {
@@ -541,7 +669,8 @@ struct DeviceManagePage {
       const joinListenerId: number = ConnectionManager.addOnMessage((type: string, _data: Record<string, Object>) => {
         if (type === 'group.join.accepted') {
           ConnectionManager.removeOnMessage(joinListenerId);
-          this.scanStatus = '已重新连接，正在发送登录确认...';
+          this.scanStatus = this.t('已重新连接，正在发送登录确认...',
+            'Reconnected. Sending login confirmation...');
           ConnectionManager.sendPanelLoginScan(requestId);
         }
       });
@@ -550,7 +679,8 @@ struct DeviceManagePage {
 
     // Send panel.login.scan through ConnectionManager
     ConnectionManager.sendPanelLoginScan(requestId);
-    this.scanStatus = '已发送登录确认，等待服务器响应...';
+    this.scanStatus = this.t('已发送登录确认，等待服务器响应...',
+      'Login confirmation sent. Waiting for server response...');
   }
 
   private buildConnectUrlWithToken(baseUrl: string, groupSecret: string): string {
@@ -635,22 +765,6 @@ struct DeviceManagePage {
           .width('100%')
           .margin({ bottom: 10 })
 
-          Row() {
-            Text(ConnectionManager.isInGroup()
-              ? `群组已连接 · ${this.groupMembers.length} 成员`
-              : '未加入群组')
-              .fontSize(12)
-              .fontColor(ConnectionManager.isInGroup() ? AppColors.ACCENT : AppColors.TEXT_MUTED)
-              .layoutWeight(1)
-
-            if (this.groupId.length > 0) {
-              Text(this.groupId)
-                .fontSize(11)
-                .fontColor(AppColors.TEXT_SECONDARY)
-                .fontFamily('monospace')
-            }
-          }
-          .width('100%')
         }
         .width('100%')
         .padding({ left: AppSizes.PADDING_PAGE, right: AppSizes.PADDING_PAGE, top: 16, bottom: 12 })
@@ -667,17 +781,17 @@ struct DeviceManagePage {
             Divider().color(AppColors.DIVIDER).width('100%')
             Row() {
               Column() {
-                Text('快捷操作')
+                Text(this.t('快捷操作', 'Quick Actions'))
                   .fontSize(12)
                   .fontColor(AppColors.TEXT_MUTED)
                   .fontFamily('monospace')
-                Text('扫描二维码绑定/登录')
+                Text(this.t('扫描二维码绑定/登录', 'Scan QR to bind/login'))
                   .fontSize(12)
                   .fontColor(AppColors.TEXT_SECONDARY)
               }
               .layoutWeight(1)
 
-              Button('扫  码')
+              Button(this.t('扫  码', 'Scan'))
                 .height(40)
                 .fontSize(14)
                 .fontColor('#FFFFFF')
@@ -745,19 +859,19 @@ struct DeviceManagePage {
       Column() {
         Row() {
           Column() {
-            Text('群组设备')
+            Text(this.t('群组设备', 'Group Devices'))
               .fontSize(AppSizes.FONT_SIZE_BODY)
               .fontColor(AppColors.TEXT_PRIMARY)
               .fontWeight(FontWeight.Medium)
-            Text(`已连接 · ${this.groupMembers.length} 成员`)
-              .fontSize(12)
-              .fontColor(AppColors.TEXT_SECONDARY)
           }
           .layoutWeight(1)
 
           Row({ space: 8 }) {
-            this.StatusChip(`${this.groupMembers.length} MEMBERS`, AppColors.ACCENT)
-            Button('解散')
+            this.StatusChip(
+              this.t(`${this.groupMembers.length} 成员`, `${this.groupMembers.length} MEMBERS`),
+              AppColors.ACCENT
+            )
+            Button(this.t('解散', 'Dissolve'))
               .height(30)
               .fontSize(12)
               .fontColor(AppColors.ERROR_RED)
@@ -773,18 +887,18 @@ struct DeviceManagePage {
         .margin({ bottom: 14 })
 
         if (this.getGroupDevices().length === 0) {
-          Text('群组暂无设备')
+          Text(this.t('群组暂无设备', 'No devices in the group'))
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.TEXT_SECONDARY)
             .margin({ bottom: 12 })
         } else {
           Column() {
-            ForEach(this.getGroupDevices(), (device: DeviceInfo) => {
+            ForEach(this.getGroupDevices(), (device: DeviceItemModel) => {
               Column() {
                 this.DeviceCard(device, false, false)
               }
               .margin({ bottom: 12 })
-            }, (device: DeviceInfo, index: number) => `group_${device.deviceId}_${index}`)
+            }, (device: DeviceItemModel) => `group_${device.deviceId}`)
           }
           .width('100%')
         }
@@ -807,27 +921,29 @@ struct DeviceManagePage {
     Column() {
       Row() {
         Column() {
-          Text('扫码连接服务器')
+          Text(this.t('扫码连接服务器', 'Scan to Connect Server'))
             .fontSize(AppSizes.FONT_SIZE_BODY)
             .fontColor(AppColors.TEXT_PRIMARY)
             .fontWeight(FontWeight.Medium)
-          Text('对准 PC 端命令中心生成的二维码')
+          Text(this.t('对准 PC 端命令中心生成的二维码', 'Aim at the QR code generated by the PC command center'))
             .fontSize(12)
             .fontColor(AppColors.TEXT_SECONDARY)
         }
         .layoutWeight(1)
 
-        this.StatusChip('LINK', AppColors.ACCENT_BLUE)
+        this.StatusChip(this.t('连接', 'LINK'), AppColors.ACCENT_BLUE)
       }
       .width('100%')
       .margin({ bottom: 12 })
 
-      Text('将手机加入群组并绑定控制权限。')
+      Text(this.t('将手机加入群组并绑定控制权限。', 'Join the group and bind control permissions.'))
         .fontSize(AppSizes.FONT_SIZE_SMALL)
         .fontColor(AppColors.TEXT_SECONDARY)
         .margin({ bottom: 20 })
 
-      Button(this.isScanning ? '扫码中...' : '开始扫码')
+      Button(this.isScanning
+        ? this.t('扫码中...', 'Scanning...')
+        : this.t('开始扫码', 'Start Scan'))
         .width('100%')
         .height(44)
         .fontSize(AppSizes.FONT_SIZE_BODY)
@@ -875,7 +991,7 @@ struct DeviceManagePage {
 
         if (this.scanResult.length > 0) {
           Column() {
-            Text('扫码结果')
+            Text(this.t('扫码结果', 'Scan Result'))
               .fontSize(AppSizes.FONT_SIZE_SMALL)
               .fontColor(AppColors.TEXT_MUTED)
               .margin({ bottom: 4 })
@@ -913,13 +1029,13 @@ struct DeviceManagePage {
       Column() {
         Row() {
           Column() {
-            Text('待加入设备')
+            Text(this.t('待加入设备', 'Pending Devices'))
               .fontSize(AppSizes.FONT_SIZE_SMALL)
               .fontColor(AppColors.TEXT_PRIMARY)
               .fontWeight(FontWeight.Medium)
           }
           Blank()
-          Text('长按移入群组')
+          Text(this.t('长按移入群组', 'Long press to move into group'))
             .fontSize(12)
             .fontColor(AppColors.TEXT_MUTED)
         }
@@ -927,12 +1043,12 @@ struct DeviceManagePage {
         .margin({ bottom: 12 })
 
         Column() {
-          ForEach(this.getSingleDevices(), (device: DeviceInfo) => {
+          ForEach(this.getSingleDevices(), (device: DeviceItemModel) => {
             Column() {
               this.DeviceCard(device, true, true)
             }
             .margin({ bottom: 12 })
-          }, (device: DeviceInfo, index: number) => `pending_${device.deviceId}_${index}`)
+          }, (device: DeviceItemModel) => `pending_${device.deviceId}`)
         }
         .width('100%')
       }
@@ -947,7 +1063,7 @@ struct DeviceManagePage {
   }
 
   @Builder
-  DeviceCard(device: DeviceInfo, allowMoveToGroup: boolean, isPendingSingle: boolean) {
+  DeviceCard(device: DeviceItemModel, allowMoveToGroup: boolean, isPendingSingle: boolean) {
     Column() {
       Blank()
         .height(2)
@@ -1005,7 +1121,7 @@ struct DeviceManagePage {
               .fill(device.isOnline ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
               .margin({ right: 6 })
 
-            Text(device.isOnline ? '在线' : '离线')
+            Text(device.isOnline ? this.t('在线', 'Online') : this.t('离线', 'Offline'))
               .fontSize(11)
               .fontColor(device.isOnline ? AppColors.ONLINE_GREEN : AppColors.TEXT_MUTED)
           }
@@ -1060,7 +1176,7 @@ struct DeviceManagePage {
       Blank().layoutWeight(1)
       Column() {
         // Title
-        Text('设备设置')
+        Text(this.t('设备设置', 'Device Settings'))
           .fontSize(AppSizes.FONT_SIZE_SUBTITLE)
           .fontColor(AppColors.TEXT_PRIMARY)
           .fontWeight(FontWeight.Medium)
@@ -1078,7 +1194,7 @@ struct DeviceManagePage {
 
         // Name edit
         Row() {
-          Text('名称:')
+          Text(this.t('名称:', 'Name:'))
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.TEXT_SECONDARY)
             .width(48)
@@ -1098,7 +1214,7 @@ struct DeviceManagePage {
 
         // OS info
         Row() {
-          Text('系统:')
+          Text(this.t('系统:', 'OS:'))
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.TEXT_SECONDARY)
             .width(48)
@@ -1112,7 +1228,7 @@ struct DeviceManagePage {
 
         // Role info
         Row() {
-          Text('角色:')
+          Text(this.t('角色:', 'Role:'))
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.TEXT_SECONDARY)
             .width(48)
@@ -1125,7 +1241,7 @@ struct DeviceManagePage {
         .margin({ bottom: 20 })
 
         // Rename button
-        Button('重命名')
+        Button(this.t('重命名', 'Rename'))
           .width('100%')
           .height(44)
           .fontSize(AppSizes.FONT_SIZE_BODY)
@@ -1137,7 +1253,7 @@ struct DeviceManagePage {
 
         // Kick from group (group devices only)
         if (this.settingsIsGroupDevice) {
-          Button('踢出群组')
+          Button(this.t('踢出群组', 'Remove from Group'))
             .width('100%')
             .height(44)
             .fontSize(AppSizes.FONT_SIZE_BODY)
@@ -1149,7 +1265,7 @@ struct DeviceManagePage {
 
           // Designate as relay server (group mode, non-server devices only)
           if (this.settingsRole !== 'Server') {
-            Button('指定为服务器')
+            Button(this.t('指定为服务器', 'Set as Server'))
               .width('100%')
               .height(44)
               .fontSize(AppSizes.FONT_SIZE_BODY)
@@ -1163,7 +1279,7 @@ struct DeviceManagePage {
 
         // Disconnect (pending single devices only)
         if (!this.settingsIsGroupDevice) {
-          Button('断开连接')
+          Button(this.t('断开连接', 'Disconnect'))
             .width('100%')
             .height(44)
             .fontSize(AppSizes.FONT_SIZE_BODY)
@@ -1177,7 +1293,7 @@ struct DeviceManagePage {
         }
 
         // Cancel
-        Button('取消')
+        Button(this.t('取消', 'Cancel'))
           .width('100%')
           .height(44)
           .fontSize(AppSizes.FONT_SIZE_BODY)
@@ -1203,13 +1319,15 @@ struct DeviceManagePage {
   AuthDialog() {
     Column() {
       Column() {
-        Text('授权请求')
+        Text(this.t('授权请求', 'Authorization Request'))
           .fontSize(AppSizes.FONT_SIZE_SUBTITLE)
           .fontColor(AppColors.TEXT_PRIMARY)
           .fontWeight(FontWeight.Medium)
           .margin({ bottom: 16 })
 
-        Text(this.authRequesterName.length > 0 ? `${this.authRequesterName} 请求` : '收到授权请求')
+        Text(this.authRequesterName.length > 0
+          ? this.t(`${this.authRequesterName} 请求`, `${this.authRequesterName} request`)
+          : this.t('收到授权请求', 'Authorization request received'))
           .fontSize(AppSizes.FONT_SIZE_BODY)
           .fontColor(AppColors.TEXT_PRIMARY)
           .margin({ bottom: 8 })
@@ -1222,13 +1340,14 @@ struct DeviceManagePage {
             .margin({ bottom: 8 })
         }
 
-        Text(`操作: ${this.getAuthActionLabel(this.authAction)}`)
+        Text(this.t(`操作: ${this.getAuthActionLabel(this.authAction)}`,
+          `Action: ${this.getAuthActionLabel(this.authAction)}`))
           .fontSize(AppSizes.FONT_SIZE_SMALL)
           .fontColor(AppColors.TEXT_SECONDARY)
           .margin({ bottom: 20 })
 
         Row({ space: 12 }) {
-          Button(AppStrings.AUTH_REJECT_BUTTON)
+          Button(this.t('拒绝', 'Reject'))
             .width(120)
             .height(44)
             .fontSize(AppSizes.FONT_SIZE_BODY)
@@ -1239,7 +1358,7 @@ struct DeviceManagePage {
             .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
             .onClick(() => { this.rejectAuth(); })
 
-          Button(AppStrings.AUTH_APPROVE_BUTTON)
+          Button(this.t('批准', 'Approve'))
             .width(120)
             .height(44)
             .fontSize(AppSizes.FONT_SIZE_BODY)
@@ -1269,20 +1388,23 @@ struct DeviceManagePage {
   InviteConfirmDialog() {
     Column() {
       Column() {
-        Text('邀请设备加入群组')
+        Text(this.t('邀请设备加入群组', 'Invite Device to Group'))
           .fontSize(18)
           .fontColor(AppColors.TEXT_PRIMARY)
           .fontWeight(FontWeight.Medium)
           .margin({ bottom: 10 })
 
-        Text(`是否将 ${this.inviteDeviceName} 邀请加入当前群组？`)
+        Text(this.t(
+          `是否将 ${this.inviteDeviceName} 邀请加入当前群组？`,
+          `Invite ${this.inviteDeviceName} to join this group?`
+        ))
           .fontSize(13)
           .fontColor(AppColors.TEXT_SECONDARY)
           .textAlign(TextAlign.Center)
           .margin({ bottom: 18 })
 
         Row({ space: 12 }) {
-          Button('取消')
+          Button(this.t('取消', 'Cancel'))
             .width(120)
             .height(40)
             .fontSize(AppSizes.FONT_SIZE_SMALL)
@@ -1295,7 +1417,7 @@ struct DeviceManagePage {
               this.showInviteConfirmDialog = false;
             })
 
-          Button('邀请加入')
+          Button(this.t('邀请加入', 'Invite'))
             .width(140)
             .height(40)
             .fontSize(AppSizes.FONT_SIZE_SMALL)
@@ -1345,9 +1467,9 @@ struct DeviceManagePage {
   }
 
   private getModeLabel(): string {
-    if (this.currentMode === DeviceMode.GROUP) return '群组';
-    if (this.currentMode === DeviceMode.SINGLE) return '单连';
-    return '待机';
+    if (this.currentMode === DeviceMode.GROUP) return this.t('群组', 'Group');
+    if (this.currentMode === DeviceMode.SINGLE) return this.t('单连', 'Single');
+    return this.t('待机', 'Standby');
   }
 
   private getModeColor(): string {
@@ -1357,20 +1479,20 @@ struct DeviceManagePage {
   }
 
   private getAuthActionLabel(action: string): string {
-    if (action === 'panel.login') return '面板登录';
-    if (action === 'terminal.open.remote') return '打开远程终端';
+    if (action === 'panel.login') return this.t('面板登录', 'Panel Login');
+    if (action === 'terminal.open.remote') return this.t('打开远程终端', 'Open Remote Terminal');
     return action;
   }
 
-  private getSingleDevices(): Array<DeviceInfo> {
+  private getSingleDevices(): Array<DeviceItemModel> {
     return this.singleDevices;
   }
 
-  private getGroupDevices(): Array<DeviceInfo> {
+  private getGroupDevices(): Array<DeviceItemModel> {
     return this.groupDevices;
   }
 
-  private findGroupMember(deviceId: string): GroupMemberInfo | undefined {
+  private findGroupMember(deviceId: string): GroupMemberModel | undefined {
     for (let i: number = 0; i < this.groupMembers.length; i++) {
       if (this.groupMembers[i].deviceId === deviceId) {
         return this.groupMembers[i];
@@ -1380,11 +1502,11 @@ struct DeviceManagePage {
   }
 
   private getRoleLabel(role: string): string {
-    if (role === 'Server') return '服务器';
-    if (role === 'Member') return '成员';
-    if (role === 'Mobile') return '手机';
-    if (role === 'Pending') return '待加入';
-    if (role === '单连') return '待加入';
+    if (role === 'Server') return this.t('服务器', 'Server');
+    if (role === 'Member') return this.t('成员', 'Member');
+    if (role === 'Mobile') return this.t('手机', 'Mobile');
+    if (role === 'Pending') return this.t('待加入', 'Pending');
+    if (role === '单连') return this.t('待加入', 'Pending');
     return role;
   }
 
@@ -1393,7 +1515,7 @@ struct DeviceManagePage {
     this.closeSettingsSheet();
   }
 
-  private moveDeviceToGroup(device: DeviceInfo): void {
+  private moveDeviceToGroup(device: DeviceItemModel): void {
     if (!ConnectionManager.isInGroup()) {
       // No group yet — create group with this device as relay
       ConnectionManager.designateRelay(device.deviceId);

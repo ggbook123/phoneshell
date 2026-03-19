@@ -191,6 +191,12 @@
                                TextTrimming="CharacterEllipsis"
                                TextWrapping="NoWrap"
                                FontFamily="{StaticResource BodyFont}">
+                        <TextBlock.ContextMenu>
+                            <ContextMenu Placement="MousePoint"
+                                         DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                <MenuItem Header="重命名" Click="RenameTabMenuItem_Click" />
+                            </ContextMenu>
+                        </TextBlock.ContextMenu>
                         <TextBlock.Style>
                             <Style TargetType="TextBlock">
                                 <Setter Property="Foreground" Value="{StaticResource Text3Brush}" />
@@ -329,11 +335,13 @@
                                 <TextBlock x:Name="ServerPortLabel" Text="PORT" Style="{StaticResource SectionLabel}" />
                                 <TextBox Text="{Binding ServerPort, UpdateSourceTrigger=PropertyChanged}"
                                          Style="{StaticResource DarkTextBox}"
-                                         Width="100" HorizontalAlignment="Left" Margin="0,0,0,10" />
+                                         Width="100" HorizontalAlignment="Left" Margin="0,0,0,10"
+                                         Padding="10,4" />
 
                                 <TextBlock x:Name="RelayServerAddressLabel" Text="RELAY SERVER ADDRESS" Style="{StaticResource SectionLabel}" />
                                 <TextBox Text="{Binding RelayServerAddress, UpdateSourceTrigger=PropertyChanged}"
                                          Style="{StaticResource DarkTextBox}" Margin="0,0,0,12"
+                                         Padding="10,4"
                                          IsEnabled="{Binding IsRelayServer, Converter={StaticResource InvertBoolConverter}}" />
 
                                 <TextBlock x:Name="RelayReachableLabel" Text="LAN LISTEN ADDRESSES" Style="{StaticResource SectionLabel}" />
@@ -341,7 +349,7 @@
                                          Style="{StaticResource DarkTextBox}" Margin="0,0,0,4"
                                          IsReadOnly="True" AcceptsReturn="True"
                                          TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
-                                         Height="64" />
+                                         Height="48" Padding="10,4" />
                                 <TextBlock x:Name="RelayReachableHintText"
                                            Text="Use these addresses for phones on the same LAN"
                                            FontSize="10" Foreground="{StaticResource Text3Brush}"

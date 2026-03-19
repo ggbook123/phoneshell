@@ -102,4 +102,5 @@ export class StorageKeys {
   static readonly SINGLE_DEVICES: string = 'single_devices';
   static readonly GROUP_RELAY_URL: string = 'group_relay_url';
   static readonly GROUP_ID: string = 'group_id';
+  static readonly APP_LANGUAGE: string = 'app_language';
 }

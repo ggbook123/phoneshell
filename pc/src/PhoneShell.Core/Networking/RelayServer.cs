@@ -332,6 +332,16 @@ public sealed class RelayServer : IDisposable
     public event Action<string>? LocalTerminalSessionEnded; // sessionId
 
     /// <summary>
+    /// Event raised when a remote client explicitly requests to close a local terminal session.
+    /// </summary>
+    public event Action<string>? LocalTerminalCloseRequested; // sessionId
+
+    /// <summary>
+    /// Event raised when a remote client requests to rename a local terminal session.
+    /// </summary>
+    public event Action<string, string>? LocalSessionRenameRequested; // sessionId, title
+
+    /// <summary>
     /// Event raised when a remote client requests to open a new terminal session on the local device.
     /// </summary>
     public event Func<string, string, Task<(string SessionId, int Cols, int Rows)>>? LocalTerminalOpenRequested; // deviceId, shellId -> (sessionId, cols, rows)
@@ -377,6 +387,36 @@ public sealed class RelayServer : IDisposable
             DeviceId = deviceId,
             SessionId = sessionId,
             Data = data
+        });
+        await SendAsync(client, msg);
+    }
+
+    public async Task ForwardSessionRenameToDeviceAsync(string deviceId, string sessionId, string title)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(sessionId))
+            return;
+
+        var trimmedTitle = title?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmedTitle))
+            return;
+
+        if (!_devices.TryGetValue(deviceId, out var device))
+            return;
+
+        if (device.IsLocal)
+        {
+            InvokeLocalSessionRename(trimmedTitle, sessionId);
+            return;
+        }
+
+        if (device.ClientId is null || !_clients.TryGetValue(device.ClientId, out var client))
+            return;
+
+        var msg = MessageSerializer.Serialize(new SessionRenameMessage
+        {
+            DeviceId = deviceId,
+            SessionId = sessionId,
+            Title = trimmedTitle
         });
         await SendAsync(client, msg);
     }
@@ -758,6 +798,24 @@ public sealed class RelayServer : IDisposable
                 }
                 break;
 
+            case SessionRenameMessage rename:
+                if (_devices.TryGetValue(rename.DeviceId, out var renameDevice))
+                {
+                    client.SubscribedDeviceId = rename.DeviceId;
+                    client.SubscribedSessionId = rename.SessionId;
+
+                    if (renameDevice.IsLocal)
+                    {
+                        InvokeLocalSessionRename(rename.Title, rename.SessionId);
+                    }
+                    else if (renameDevice.ClientId is not null &&
+                             _clients.TryGetValue(renameDevice.ClientId, out var renameClient))
+                    {
+                        await SendAsync(renameClient, json);
+                    }
+                }
+                break;
+
             case TerminalInputMessage input:
                 // Route to the target device
                 if (_devices.TryGetValue(input.DeviceId, out var targetDevice))
@@ -959,6 +1017,7 @@ public sealed class RelayServer : IDisposable
                         await SendAsync(client, MessageSerializer.Serialize(closed));
                         client.SubscribedSessionId = null;
                         InvokeLocalTerminalSessionEnded(client, close);
+                        InvokeLocalTerminalCloseRequested(client, close);
                         Log?.Invoke($"Local terminal closed for client {client.ClientId}, session={close.SessionId}");
                     }
                     else if (closeTarget.ClientId is not null &&
@@ -1178,6 +1237,38 @@ public sealed class RelayServer : IDisposable
         {
             Log?.Invoke(
                 $"Local terminal close handler failed for {client.ClientId}: {ex.Message}");
+        }
+    }
+
+    private void InvokeLocalTerminalCloseRequested(ConnectedClient client, TerminalCloseMessage close)
+    {
+        try
+        {
+            Log?.Invoke(
+                $"Local terminal close requested by {client.ClientId}: session={close.SessionId}");
+            LocalTerminalCloseRequested?.Invoke(close.SessionId);
+        }
+        catch (Exception ex)
+        {
+            Log?.Invoke(
+                $"Local terminal close request handler failed for {client.ClientId}: {ex.Message}");
+        }
+    }
+
+    private void InvokeLocalSessionRename(string title, string sessionId)
+    {
+        var trimmedTitle = title?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmedTitle) || string.IsNullOrWhiteSpace(sessionId))
+            return;
+
+        try
+        {
+            Log?.Invoke($"Local session rename requested: session={sessionId}, title={trimmedTitle}");
+            LocalSessionRenameRequested?.Invoke(sessionId, trimmedTitle);
+        }
+        catch (Exception ex)
+        {
+            Log?.Invoke($"Local session rename handler failed: {ex.Message}");
         }
     }
 

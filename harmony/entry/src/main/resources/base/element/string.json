@@ -14,7 +14,7 @@
     },
     {
       "name": "camera_permission_reason",
-      "value": "用于扫描服务器二维码进行连接"
+      "value": "Used to scan the server QR code for connection"
     }
   ]
 }

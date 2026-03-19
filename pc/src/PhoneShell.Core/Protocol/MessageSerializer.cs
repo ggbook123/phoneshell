@@ -53,6 +53,7 @@ public static class MessageSerializer
             "device.list" => Deserialize<DeviceListMessage>(json),
             "session.list.request" => Deserialize<SessionListRequestMessage>(json),
             "session.list" => Deserialize<SessionListMessage>(json),
+            "session.rename" => Deserialize<SessionRenameMessage>(json),
             "terminal.open" => Deserialize<TerminalOpenMessage>(json),
             "terminal.opened" => Deserialize<TerminalOpenedMessage>(json),
             "terminal.input" => Deserialize<TerminalInputMessage>(json),

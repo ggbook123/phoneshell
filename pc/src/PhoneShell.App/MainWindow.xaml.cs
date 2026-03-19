@@ -332,6 +332,23 @@ public partial class MainWindow : Window
         }
     }
 
+    private void RenameTabMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem menuItem || menuItem.DataContext is not TerminalTab tab)
+            return;
+
+        var currentTitle = _viewModel.GetEditableSessionTitle(tab);
+        var dialog = new RenameSessionDialog(currentTitle)
+        {
+            Owner = this,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            _viewModel.RenameTab(tab, dialog.SessionTitle);
+        }
+    }
+
     private void NewTabButton_Click(object sender, RoutedEventArgs e)
     {
         _forceWelcomeVisible = true;
@@ -533,9 +550,9 @@ public partial class MainWindow : Window
         else
         {
             if (LanguageExpander is not null) LanguageExpander.Header = "语言 / Language";
-            if (ServerSettingsExpander is not null) ServerSettingsExpander.Header = "服务器设置";
+            if (ServerSettingsExpander is not null) ServerSettingsExpander.Header = "连接设置";
             if (AutoModeCheckBox is not null) AutoModeCheckBox.Content = "自动模式（自动选择服务端/客户端）";
-            if (EnableRelayServerCheckBox is not null) EnableRelayServerCheckBox.Content = "启用中转服务器（本机作为中转）";
+            if (EnableRelayServerCheckBox is not null) EnableRelayServerCheckBox.Content = "本机设为服务器（局域网模式）";
             if (ServerPortLabel is not null) ServerPortLabel.Text = "端口";
             if (RelayServerAddressLabel is not null) RelayServerAddressLabel.Text = "中转服务器地址";
             if (RelayReachableLabel is not null) RelayReachableLabel.Text = "局域网监听地址";

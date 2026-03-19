@@ -57,6 +57,13 @@ export interface SessionInfo {
   title: string;
 }
 
+export interface SessionRenameMessage extends BaseMessage {
+  type: 'session.rename';
+  deviceId: string;
+  sessionId: string;
+  title: string;
+}
+
 // --- Terminal session management ---
 
 export interface TerminalOpenMessage extends BaseMessage {

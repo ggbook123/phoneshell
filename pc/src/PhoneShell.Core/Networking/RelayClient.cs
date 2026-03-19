@@ -71,6 +71,9 @@ public sealed class RelayClient : IDisposable
     /// <summary>Raised when a device session list is received.</summary>
     public event Action<string, List<SessionInfo>>? SessionListReceived; // deviceId, sessions
 
+    /// <summary>Raised when the server requests a local session rename.</summary>
+    public event Action<string, string, string>? SessionRenameRequested; // deviceId, sessionId, title
+
     /// <summary>Raised when terminal output is received from a remote device.</summary>
     public event Action<string, string, string>? TerminalOutputReceived; // deviceId, sessionId, data
 
@@ -180,6 +183,23 @@ public sealed class RelayClient : IDisposable
     }
 
     /// <summary>
+    /// Notify the server that a terminal session was closed.
+    /// </summary>
+    public async Task SendTerminalClosedAsync(string deviceId, string sessionId)
+    {
+        if (_ws?.State != WebSocketState.Open) return;
+        if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(sessionId))
+            return;
+
+        var msg = MessageSerializer.Serialize(new TerminalClosedMessage
+        {
+            DeviceId = deviceId,
+            SessionId = sessionId
+        });
+        await SendAsync(msg);
+    }
+
+    /// <summary>
     /// Request terminal history for a session from the relay server.
     /// </summary>
     public async Task SendTerminalHistoryRequestAsync(string deviceId, string sessionId, long beforeSeq, int maxChars)
@@ -220,6 +240,26 @@ public sealed class RelayClient : IDisposable
         var msg = MessageSerializer.Serialize(new SessionListRequestMessage
         {
             DeviceId = deviceId
+        });
+        await SendAsync(msg);
+    }
+
+    /// <summary>Request a session rename on a target device.</summary>
+    public async Task SendSessionRenameAsync(string deviceId, string sessionId, string title)
+    {
+        if (_ws?.State != WebSocketState.Open) return;
+        if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(sessionId))
+            return;
+
+        var trimmedTitle = title?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmedTitle))
+            return;
+
+        var msg = MessageSerializer.Serialize(new SessionRenameMessage
+        {
+            DeviceId = deviceId,
+            SessionId = sessionId,
+            Title = trimmedTitle
         });
         await SendAsync(msg);
     }
@@ -456,6 +496,10 @@ public sealed class RelayClient : IDisposable
 
             case SessionListMessage sessionList:
                 SessionListReceived?.Invoke(sessionList.DeviceId, sessionList.Sessions);
+                break;
+
+            case SessionRenameMessage rename:
+                SessionRenameRequested?.Invoke(rename.DeviceId, rename.SessionId, rename.Title);
                 break;
 
             case SessionListRequestMessage sessionReq:

@@ -36,6 +36,13 @@ class SessionListRequestMsg {
   deviceId: string = '';
 }
 
+class SessionRenameMsg {
+  type: string = 'session.rename';
+  deviceId: string = '';
+  sessionId: string = '';
+  title: string = '';
+}
+
 class TerminalOpenMsg {
   type: string = 'terminal.open';
   deviceId: string = '';
@@ -587,6 +594,18 @@ class ConnectionManagerClass {
     if (conn === null) return;
     let msg: SessionListRequestMsg = new SessionListRequestMsg();
     msg.deviceId = deviceId;
+    conn.send(JSON.stringify(msg));
+  }
+
+  renameSession(deviceId: string, sessionId: string, title: string): void {
+    const trimmed: string = title.trim();
+    if (deviceId.length === 0 || sessionId.length === 0 || trimmed.length === 0) return;
+    const conn: DeviceConnection | null = this.getConnectionForDevice(deviceId);
+    if (conn === null) return;
+    let msg: SessionRenameMsg = new SessionRenameMsg();
+    msg.deviceId = deviceId;
+    msg.sessionId = sessionId;
+    msg.title = trimmed;
     conn.send(JSON.stringify(msg));
   }
 

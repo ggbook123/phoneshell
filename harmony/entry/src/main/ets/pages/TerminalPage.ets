@@ -1,6 +1,7 @@
 import { webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AppColors, AppSizes, AppStrings, ConnectionState } from '../common/Constants';
+import { AppColors, AppSizes, ConnectionState } from '../common/Constants';
+import { I18n } from '../common/I18n';
 import { ConnectionManager } from '../services/ConnectionManager';
 
 const DOMAIN = 0x0000;
@@ -43,7 +44,7 @@ struct TerminalPage {
   @State sessionActive: boolean = true;
   @State connectionState: ConnectionState = ConnectionState.CONNECTED;
   @State terminalReady: boolean = false;
-  @State terminalHint: string = '正在初始化终端...';
+  @State terminalHint: string = I18n.t(I18n.getLanguage(), '正在初始化终端...', 'Initializing terminal...');
   @State historyLoadingVisible: boolean = false;
   @State showSessionClosedDialog: boolean = false;
   private stateListenerId: number = -1;
@@ -74,6 +75,10 @@ struct TerminalPage {
       return value;
     }
     return fallback;
+  }
+
+  private t(zhText: string, enText: string): string {
+    return I18n.t(I18n.getLanguage(), zhText, enText);
   }
 
   private getMessageString(data: Record<string, Object>, key: string, fallback: string = ''): string {
@@ -132,7 +137,7 @@ struct TerminalPage {
     this.pendingTerminalOutput = '';
     this.resetHistoryState();
     this.terminalReady = false;
-    this.terminalHint = '正在初始化终端...';
+    this.terminalHint = this.t('正在初始化终端...', 'Initializing terminal...');
     this.historyLoadingVisible = false;
     this.showSessionClosedDialog = false;
     this.viewedSessionId = this.normalizeString(ConnectionManager.getActiveSessionId());
@@ -187,7 +192,7 @@ struct TerminalPage {
         this.connectionState = state;
         if (state === ConnectionState.DISCONNECTED) {
           this.sessionActive = false;
-          this.terminalHint = '连接已断开';
+          this.terminalHint = this.t('连接已断开', 'Disconnected');
           this.historyLoadingVisible = false;
         }
       });
@@ -209,13 +214,14 @@ struct TerminalPage {
         } else if (type === 'terminal.closed') {
           if (this.isCurrentSessionMessage(data)) {
             this.sessionActive = false;
-            this.terminalHint = 'PC 端已关闭当前会话';
+            this.terminalHint = this.t('PC 端已关闭当前会话', 'Session closed on PC');
             this.historyLoadingVisible = false;
             this.showSessionClosedDialog = true;
           }
         } else if (type === 'error') {
           const errorMsg: string = this.getMessageString(data, 'message', 'Error');
-          this.enqueueTerminalOutput(`\r\n[错误] ${errorMsg}\r\n`);
+          const errorPrefix: string = this.t('[错误]', '[Error]');
+          this.enqueueTerminalOutput(`\r\n${errorPrefix} ${errorMsg}\r\n`);
         }
       });
     }
@@ -299,7 +305,7 @@ struct TerminalPage {
 
   private onTerminalReady(cols: number, rows: number): void {
     this.terminalReady = true;
-    this.terminalHint = '等待终端输出...';
+    this.terminalHint = this.t('等待终端输出...', 'Waiting for terminal output...');
     this.handleTerminalResize(cols, rows);
     this.startHistoryLoadIfNeeded();
     this.applyPendingHistoryReplace();
@@ -495,7 +501,7 @@ struct TerminalPage {
           .backgroundColor(AppColors.ACCENT)
 
         Row() {
-          Text('‹ 返回')
+          Text(this.t('‹ 返回', '‹ Back'))
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.ACCENT)
             .onClick(() => {
@@ -504,7 +510,7 @@ struct TerminalPage {
             .padding({ right: 12 })
 
           Column() {
-            Text(AppStrings.TERMINAL_TITLE)
+            Text(this.t('终端', 'Terminal'))
               .fontSize(AppSizes.FONT_SIZE_BODY)
               .fontColor(AppColors.TEXT_PRIMARY)
               .fontWeight(FontWeight.Medium)
@@ -528,7 +534,7 @@ struct TerminalPage {
               .fill(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
               .margin({ right: 6 })
 
-            Text(this.sessionActive ? 'ACTIVE' : 'OFFLINE')
+            Text(this.sessionActive ? this.t('在线', 'ACTIVE') : this.t('离线', 'OFFLINE'))
               .fontSize(11)
               .fontColor(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.TEXT_MUTED)
               .fontFamily('monospace')
@@ -561,7 +567,9 @@ struct TerminalPage {
 
           if (!this.terminalReady || this.historyLoadingVisible) {
             Column() {
-              Text(!this.terminalReady ? this.terminalHint : '内容较多，加载中，请等待')
+              Text(!this.terminalReady
+                ? this.terminalHint
+                : this.t('内容较多，加载中，请等待', 'Loading history, please wait'))
                 .fontSize(AppSizes.FONT_SIZE_BODY)
                 .fontColor(AppColors.TEXT_SECONDARY)
             }
@@ -582,12 +590,12 @@ struct TerminalPage {
 
         Column() {
           Row() {
-            Text('SHORTCUT KEYS')
+            Text(this.t('快捷键', 'SHORTCUT KEYS'))
               .fontSize(11)
               .fontColor(AppColors.TEXT_MUTED)
               .fontFamily('monospace')
             Blank().layoutWeight(1)
-            Text('TAP TO SEND')
+            Text(this.t('点击发送', 'TAP TO SEND'))
               .fontSize(11)
               .fontColor(AppColors.TEXT_MUTED)
               .fontFamily('monospace')
@@ -631,19 +639,19 @@ struct TerminalPage {
       if (this.showSessionClosedDialog) {
         Column() {
           Column() {
-            Text('PC 端已关闭当前会话')
+            Text(this.t('PC 端已关闭当前会话', 'Session closed on PC'))
               .fontSize(18)
               .fontColor(AppColors.TEXT_PRIMARY)
               .fontWeight(FontWeight.Medium)
               .margin({ bottom: 10 })
 
-            Text('点击下方按钮返回会话列表。')
+            Text(this.t('点击下方按钮返回会话列表。', 'Tap the button below to return to the session list.'))
               .fontSize(13)
               .fontColor(AppColors.TEXT_SECONDARY)
               .margin({ bottom: 18 })
 
             Row() {
-              Button('返回会话列表')
+              Button(this.t('返回会话列表', 'Back to Sessions'))
                 .width(180)
                 .height(42)
                 .fontSize(AppSizes.FONT_SIZE_BODY)

@@ -1,4 +1,5 @@
 import { AppColors, AppSizes, AppStrings } from '../common/Constants';
+import { AppLanguage, I18n } from '../common/I18n';
 import { PreferencesUtil } from '../services/PreferencesUtil';
 import { ConnectionManager } from '../services/ConnectionManager';
 import { AuthManager } from '../services/AuthManager';
@@ -7,7 +8,7 @@ import { AuthManager } from '../services/AuthManager';
 @Component
 struct LoginPage {
   @State isReady: boolean = false;
-  @State language: string = 'zh';
+  @State language: AppLanguage = I18n.getLanguage();
 
   aboutToAppear(): void {
     this.initApp();
@@ -17,6 +18,8 @@ struct LoginPage {
     const context: Context | undefined = this.getUIContext().getHostContext();
     if (context !== undefined) {
       await PreferencesUtil.init(context);
+      await I18n.syncFromPreferences();
+      this.language = I18n.getLanguage();
       const mobileId: string = PreferencesUtil.getMobileDeviceId(context);
       ConnectionManager.setMobileDeviceId(mobileId);
     }
@@ -39,7 +42,7 @@ struct LoginPage {
   }
 
   private t(zhText: string, enText: string): string {
-    return this.language === 'en' ? enText : zhText;
+    return I18n.t(this.language, zhText, enText);
   }
 
   private getReadyStatusText(): string {
@@ -202,16 +205,6 @@ struct LoginPage {
         .onClick(() => {
           this.enterApp();
         })
-
-      Text(this.t(
-        '首次启动会自动恢复上次连接状态。',
-        'Previous connection states are restored automatically on startup.'
-      ))
-        .fontSize(12)
-        .fontColor(AppColors.TEXT_MUTED)
-        .margin({ top: 10 })
-        .lineHeight(16)
-        .width('100%')
     }
     .width('100%')
     .padding(16)
@@ -229,7 +222,7 @@ struct LoginPage {
         .fontColor(AppColors.TEXT_MUTED)
       Blank().layoutWeight(1)
       Row({ space: 6 }) {
-        Text('中文')
+        Text(this.t('中文', 'Chinese'))
           .fontSize(12)
           .fontColor(this.language === 'zh' ? AppColors.BACKGROUND : AppColors.TEXT_SECONDARY)
           .padding({ left: 12, right: 12, top: 6, bottom: 6 })
@@ -237,8 +230,9 @@ struct LoginPage {
           .borderRadius(12)
           .onClick(() => {
             this.language = 'zh';
+            I18n.setLanguage('zh');
           })
-        Text('EN')
+        Text(this.t('英文', 'English'))
           .fontSize(12)
           .fontColor(this.language === 'en' ? AppColors.BACKGROUND : AppColors.TEXT_SECONDARY)
           .padding({ left: 12, right: 12, top: 6, bottom: 6 })
@@ -246,6 +240,7 @@ struct LoginPage {
           .borderRadius(12)
           .onClick(() => {
             this.language = 'en';
+            I18n.setLanguage('en');
           })
       }
       .padding(4)

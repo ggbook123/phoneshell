@@ -1066,6 +1066,61 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RemoveTab(tab, requestRemoteClose: true);
     }
 
+    public string GetEditableSessionTitle(TerminalTab tab)
+    {
+        if (tab is null) return string.Empty;
+        return tab.IsRemote ? ExtractRemoteTitle(tab.Title) : tab.Title;
+    }
+
+    public void RenameTab(TerminalTab tab, string newTitle)
+    {
+        if (tab is null) return;
+        var trimmed = newTitle?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmed)) return;
+
+        if (tab.IsRemote)
+        {
+            var prefix = ExtractRemoteTitlePrefix(tab.Title);
+            if (prefix.Length == 0 && !string.IsNullOrWhiteSpace(tab.RemoteDeviceName))
+            {
+                prefix = $"[{tab.RemoteDeviceName}] ";
+            }
+            tab.Title = $"{prefix}{trimmed}";
+
+            if (_relayClient is not null && _relayClient.IsConnected)
+            {
+                _ = _relayClient.SendSessionRenameAsync(tab.RemoteDeviceId, tab.RemoteSessionId, trimmed);
+            }
+            else if (_relayServer is not null && _relayServer.IsRunning)
+            {
+                _ = _relayServer.ForwardSessionRenameToDeviceAsync(tab.RemoteDeviceId, tab.RemoteSessionId, trimmed);
+            }
+
+            return;
+        }
+
+        tab.Title = trimmed;
+        NotifyLocalSessionListChanged();
+    }
+
+    private static string ExtractRemoteTitle(string title)
+    {
+        var prefix = ExtractRemoteTitlePrefix(title);
+        return prefix.Length > 0 ? title[prefix.Length..] : title;
+    }
+
+    private static string ExtractRemoteTitlePrefix(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return string.Empty;
+        if (title[0] == '[')
+        {
+            var idx = title.IndexOf("] ", StringComparison.Ordinal);
+            if (idx > 0)
+                return title[..(idx + 2)];
+        }
+        return string.Empty;
+    }
+
     private void RemoveTab(TerminalTab tab, bool requestRemoteClose)
     {
         var visibleTabsSnapshot = VisibleTabs.ToList();
@@ -1642,6 +1697,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayServer.LocalTerminalInputReceived += OnRemoteTerminalInput;
                 _relayServer.LocalTerminalResizeReceived += OnRemoteTerminalResize;
                 _relayServer.LocalTerminalSessionEnded += OnRemoteTerminalSessionEnded;
+                _relayServer.LocalTerminalCloseRequested += OnLocalTerminalCloseRequested;
+                _relayServer.LocalSessionRenameRequested += OnLocalSessionRenameRequested;
                 _relayServer.LocalTerminalOpenRequested += OnRemoteTerminalOpenRequested;
                 _relayServer.LocalTerminalSnapshotProvider = CaptureTabTerminalViewAsync;
                 _relayServer.LocalTerminalSizeProvider = GetTabTerminalSize;
@@ -1733,6 +1790,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayClient.GroupJoinRejected += OnGroupJoinRejected;
                 _relayClient.GroupMemberChanged += OnGroupMemberListChanged;
                 _relayClient.SessionListReceived += OnRemoteSessionListReceived;
+                _relayClient.SessionRenameRequested += OnSessionRenameRequested;
                 _relayClient.ServerChanged += OnServerChanged;
                 _relayClient.ServerChangeRequested += OnServerChangeRequested;
                 _relayClient.GroupSecretRotated += OnGroupSecretRotated;
@@ -1766,6 +1824,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayServer.LocalTerminalInputReceived += OnRemoteTerminalInput;
                 _relayServer.LocalTerminalResizeReceived += OnRemoteTerminalResize;
                 _relayServer.LocalTerminalSessionEnded += OnRemoteTerminalSessionEnded;
+                _relayServer.LocalTerminalCloseRequested += OnLocalTerminalCloseRequested;
+                _relayServer.LocalSessionRenameRequested += OnLocalSessionRenameRequested;
                 _relayServer.LocalTerminalOpenRequested += OnRemoteTerminalOpenRequested;
                 _relayServer.LocalTerminalSnapshotProvider = CaptureTabTerminalViewAsync;
                 _relayServer.LocalTerminalSizeProvider = GetTabTerminalSize;
@@ -1813,6 +1873,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayServer.LocalTerminalInputReceived -= OnRemoteTerminalInput;
             _relayServer.LocalTerminalResizeReceived -= OnRemoteTerminalResize;
             _relayServer.LocalTerminalSessionEnded -= OnRemoteTerminalSessionEnded;
+            _relayServer.LocalTerminalCloseRequested -= OnLocalTerminalCloseRequested;
+            _relayServer.LocalSessionRenameRequested -= OnLocalSessionRenameRequested;
             _relayServer.LocalTerminalOpenRequested -= OnRemoteTerminalOpenRequested;
             _relayServer.LocalTerminalSnapshotProvider = null;
             _relayServer.LocalTerminalSizeProvider = null;
@@ -1839,6 +1901,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayClient.GroupJoinRejected -= OnGroupJoinRejected;
             _relayClient.GroupMemberChanged -= OnGroupMemberListChanged;
             _relayClient.SessionListReceived -= OnRemoteSessionListReceived;
+            _relayClient.SessionRenameRequested -= OnSessionRenameRequested;
             _relayClient.ServerChanged -= OnServerChanged;
             _relayClient.ServerChangeRequested -= OnServerChangeRequested;
             _relayClient.GroupSecretRotated -= OnGroupSecretRotated;
@@ -2007,6 +2070,38 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             ApplyRemoteSessionList(deviceId, sessions);
         });
+    }
+
+    private void OnLocalSessionRenameRequested(string sessionId, string title)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            ApplyLocalSessionRename(sessionId, title);
+        });
+    }
+
+    private void OnSessionRenameRequested(string deviceId, string sessionId, string title)
+    {
+        if (!string.Equals(deviceId, _identity.DeviceId, StringComparison.Ordinal))
+            return;
+
+        _dispatcher.InvokeAsync(() =>
+        {
+            ApplyLocalSessionRename(sessionId, title);
+        });
+    }
+
+    private void ApplyLocalSessionRename(string sessionId, string title)
+    {
+        var trimmed = title?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmed) || string.IsNullOrWhiteSpace(sessionId))
+            return;
+
+        var tab = FindTabBySessionId(sessionId);
+        if (tab is null) return;
+
+        tab.Title = trimmed;
+        NotifyLocalSessionListChanged();
     }
 
     private void OnGroupSecretRotated(string newSecret)
@@ -2477,11 +2572,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             var tab = FindTabBySessionId(sessionId);
             if (tab is not null)
             {
-                ClearMobileViewport(tab);
+                RemoveTab(tab, requestRemoteClose: false);
             }
             else
             {
                 RestoreDesktopTerminalViewport();
+            }
+        });
+    }
+
+    private void OnLocalTerminalCloseRequested(string sessionId)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            var tab = FindTabBySessionId(sessionId);
+            if (tab is not null)
+            {
+                RemoveTab(tab, requestRemoteClose: false);
             }
         });
     }
@@ -2587,9 +2694,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void NotifyLocalTerminalClosed(TerminalTab tab)
     {
-        if (_relayServer is null || !_relayServer.IsRunning) return;
+        if (_relayServer is not null && _relayServer.IsRunning)
+        {
+            _ = _relayServer.BroadcastLocalTerminalClosedAsync(_identity.DeviceId, tab.TabId);
+        }
 
-        _ = _relayServer.BroadcastLocalTerminalClosedAsync(_identity.DeviceId, tab.TabId);
+        if (_relayClient is not null && _relayClient.IsConnected)
+        {
+            _ = _relayClient.SendTerminalClosedAsync(_identity.DeviceId, tab.TabId);
+        }
     }
 
     private async Task<string> CaptureTabTerminalViewAsync(string sessionId)
@@ -3200,6 +3313,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _relayServer.LocalTerminalInputReceived -= OnRemoteTerminalInput;
                 _relayServer.LocalTerminalResizeReceived -= OnRemoteTerminalResize;
                 _relayServer.LocalTerminalSessionEnded -= OnRemoteTerminalSessionEnded;
+                _relayServer.LocalTerminalCloseRequested -= OnLocalTerminalCloseRequested;
+                _relayServer.LocalSessionRenameRequested -= OnLocalSessionRenameRequested;
                 _relayServer.LocalTerminalOpenRequested -= OnRemoteTerminalOpenRequested;
                 _relayServer.LocalTerminalSnapshotProvider = null;
                 _relayServer.LocalTerminalSizeProvider = null;
@@ -3238,6 +3353,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _relayClient.GroupJoinRejected += OnGroupJoinRejected;
             _relayClient.GroupMemberChanged += OnGroupMemberListChanged;
             _relayClient.SessionListReceived += OnRemoteSessionListReceived;
+            _relayClient.SessionRenameRequested += OnSessionRenameRequested;
             _relayClient.ServerChanged += OnServerChanged;
             _relayClient.ServerChangeRequested += OnServerChangeRequested;
             _relayClient.GroupSecretRotated += OnGroupSecretRotated;

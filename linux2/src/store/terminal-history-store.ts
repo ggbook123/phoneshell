@@ -10,10 +10,22 @@ export interface TerminalHistoryPage {
 const DEFAULT_PAGE_CHARS = 20000;
 const DEFAULT_MAX_CHARS = 5000000;
 const MAX_RECORD_BYTES = 8 * 1024 * 1024;
+const FLUSH_INTERVAL_MS = 50;
+const FLUSH_MAX_BYTES = 256 * 1024;
+const TRIM_INTERVAL_MS = 30000;
+
+interface SessionBuffer {
+  chunks: string[];
+  byteLength: number;
+  flushTimer: NodeJS.Timeout | null;
+}
 
 export class TerminalHistoryStore {
   private readonly historyDirectory: string;
   private readonly maxChars: number;
+  private readonly buffers = new Map<string, SessionBuffer>();
+  private readonly pendingTrimPaths = new Set<string>();
+  private trimTimer: NodeJS.Timeout | null = null;
 
   constructor(baseDirectory: string, maxChars = DEFAULT_MAX_CHARS) {
     const base = baseDirectory && baseDirectory.trim().length > 0
@@ -26,24 +38,29 @@ export class TerminalHistoryStore {
 
   append(deviceId: string, sessionId: string, data: string): void {
     if (!deviceId || !sessionId || !data) return;
-    try {
-      const filePath = this.getSessionPath(deviceId, sessionId);
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      const fd = fs.openSync(filePath, 'a');
-      try {
-        this.writeStringRecords(fd, data);
-      } finally {
-        fs.closeSync(fd);
-      }
-      this.trimIfNeeded(filePath);
-    } catch {
-      // Best effort persistence.
+    const filePath = this.getSessionPath(deviceId, sessionId);
+    const buffer = this.getOrCreateBuffer(filePath);
+    buffer.chunks.push(data);
+    buffer.byteLength += Buffer.byteLength(data, 'utf8');
+
+    if (buffer.byteLength >= FLUSH_MAX_BYTES) {
+      this.flushBuffer(filePath);
+    } else if (!buffer.flushTimer) {
+      buffer.flushTimer = setTimeout(() => {
+        buffer.flushTimer = null;
+        this.flushBuffer(filePath);
+      }, FLUSH_INTERVAL_MS);
+      buffer.flushTimer.unref?.();
     }
+
+    this.pendingTrimPaths.add(filePath);
+    this.ensureTrimTimer();
   }
 
   getPage(deviceId: string, sessionId: string, beforeSeq: number, maxChars: number): TerminalHistoryPage {
     if (!deviceId || !sessionId) return { data: '', nextBeforeSeq: 0, hasMore: false };
     try {
+      this.flushSession(deviceId, sessionId);
       const filePath = this.getSessionPath(deviceId, sessionId);
       if (!fs.existsSync(filePath)) return { data: '', nextBeforeSeq: 0, hasMore: false };
 
@@ -103,6 +120,7 @@ export class TerminalHistoryStore {
   readAll(deviceId: string, sessionId: string): string {
     if (!deviceId || !sessionId) return '';
     try {
+      this.flushSession(deviceId, sessionId);
       const filePath = this.getSessionPath(deviceId, sessionId);
       if (!fs.existsSync(filePath)) return '';
 
@@ -140,6 +158,7 @@ export class TerminalHistoryStore {
     if (!deviceId || !sessionId) return;
     try {
       const filePath = this.getSessionPath(deviceId, sessionId);
+      this.clearBuffer(filePath);
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     } catch {
       // Best effort cleanup.
@@ -149,9 +168,22 @@ export class TerminalHistoryStore {
   removeDevice(deviceId: string): void {
     if (!deviceId) return;
     try {
-      const dir = this.getDeviceDirectory(deviceId);
-      if (fs.existsSync(dir)) {
-        fs.rmSync(dir, { recursive: true, force: true });
+      const deviceDir = this.getDeviceDirectory(deviceId);
+      const prefix = deviceDir.endsWith(path.sep) ? deviceDir : deviceDir + path.sep;
+      for (const filePath of this.buffers.keys()) {
+        if (filePath.startsWith(prefix)) {
+          this.clearBuffer(filePath);
+        }
+      }
+      if (this.pendingTrimPaths.size > 0) {
+        for (const filePath of Array.from(this.pendingTrimPaths)) {
+          if (filePath.startsWith(prefix)) {
+            this.pendingTrimPaths.delete(filePath);
+          }
+        }
+      }
+      if (fs.existsSync(deviceDir)) {
+        fs.rmSync(deviceDir, { recursive: true, force: true });
       }
     } catch {
       // Best effort cleanup.
@@ -217,6 +249,72 @@ export class TerminalHistoryStore {
     } catch {
       // Best effort trim.
     }
+  }
+
+  private ensureTrimTimer(): void {
+    if (this.trimTimer) return;
+    this.trimTimer = setInterval(() => {
+      if (this.pendingTrimPaths.size === 0) return;
+      const targets = Array.from(this.pendingTrimPaths);
+      this.pendingTrimPaths.clear();
+      for (const filePath of targets) {
+        this.trimIfNeeded(filePath);
+      }
+    }, TRIM_INTERVAL_MS);
+    this.trimTimer.unref?.();
+  }
+
+  private getOrCreateBuffer(filePath: string): SessionBuffer {
+    const existing = this.buffers.get(filePath);
+    if (existing) return existing;
+    const buffer: SessionBuffer = { chunks: [], byteLength: 0, flushTimer: null };
+    this.buffers.set(filePath, buffer);
+    return buffer;
+  }
+
+  private flushSession(deviceId: string, sessionId: string): void {
+    if (!deviceId || !sessionId) return;
+    const filePath = this.getSessionPath(deviceId, sessionId);
+    this.flushBuffer(filePath);
+  }
+
+  private flushBuffer(filePath: string): void {
+    const buffer = this.buffers.get(filePath);
+    if (!buffer || buffer.chunks.length === 0) return;
+
+    if (buffer.flushTimer) {
+      clearTimeout(buffer.flushTimer);
+      buffer.flushTimer = null;
+    }
+
+    const payload = buffer.chunks.join('');
+    buffer.chunks = [];
+    buffer.byteLength = 0;
+
+    if (!payload) return;
+
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      const fd = fs.openSync(filePath, 'a');
+      try {
+        this.writeStringRecords(fd, payload);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      // Best effort persistence.
+    }
+  }
+
+  private clearBuffer(filePath: string): void {
+    const buffer = this.buffers.get(filePath);
+    if (!buffer) return;
+    if (buffer.flushTimer) {
+      clearTimeout(buffer.flushTimer);
+      buffer.flushTimer = null;
+    }
+    this.buffers.delete(filePath);
+    this.pendingTrimPaths.delete(filePath);
   }
 
   private tryReadRecordBackward(fd: number, recordEnd: number): { data: string; recordStart: number } | null {

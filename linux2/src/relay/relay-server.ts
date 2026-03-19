@@ -292,7 +292,9 @@ export class RelayServer {
       return;
     }
 
-    this.log(`Client ${client.clientId} -> ${message.type}`);
+    if (message.type !== 'terminal.output') {
+      this.log(`Client ${client.clientId} -> ${message.type}`);
+    }
 
     switch (message.type) {
       case 'group.join.request':
