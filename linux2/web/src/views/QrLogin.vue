@@ -5,6 +5,7 @@
       <button :class="{ active: language === 'zh' }" @click="setLanguage('zh')">中文</button>
     </div>
     <div class="login-container">
+      <img :src="logoUrl" alt="PhoneShell" class="login-logo" />
       <h1>PhoneShell</h1>
       <p class="subtitle">{{ labels.subtitle }}</p>
 
@@ -54,6 +55,7 @@ const bindQrUrl = ref('');
 const loginQrUrl = ref('');
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let loginRequestId = '';
+const logoUrl = `${import.meta.env.BASE_URL}phoneshell-128.png`;
 
 const { language, setLanguage } = useLanguage();
 const labels = computed(() => language.value === 'zh'
@@ -172,6 +174,9 @@ function startLoginPoll() {
 }
 .login-container {
   text-align: center; max-width: 400px; width: 100%;
+}
+.login-logo {
+  width: 96px; height: 96px; margin: 0 auto 12px; display: block; object-fit: contain;
 }
 h1 { font-size: 2rem; color: #00d4ff; margin-bottom: 8px; }
 .subtitle { color: #888; margin-bottom: 32px; }

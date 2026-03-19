@@ -72,16 +72,10 @@ struct LoginPage {
           }
             .width(84)
             .height(84)
-            .backgroundColor(AppColors.SURFACE_3)
-            .borderWidth(1)
-            .borderColor(AppColors.ACCENT)
-            .borderRadius(18)
 
-          Text('>_')
-            .fontSize(28)
-            .fontColor(AppColors.ACCENT)
-            .fontWeight(FontWeight.Bold)
-            .fontFamily('monospace')
+          Image($r('app.media.phoneshell'))
+            .width(84)
+            .height(84)
         }
 
         Column() {

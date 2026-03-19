@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="PhoneShell" Height="780" Width="1200"
+        Icon="/Assets/phoneshell.ico"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None" AllowsTransparency="True"
         Background="Transparent"
@@ -236,7 +237,7 @@
 
         <Grid>
             <Grid.RowDefinitions>
-                <RowDefinition Height="36" />  <!-- Custom title bar -->
+                <RowDefinition Height="48" />  <!-- Custom title bar -->
                 <RowDefinition Height="*" />   <!-- Content -->
                 <RowDefinition Height="28" />  <!-- Status bar -->
             </Grid.RowDefinitions>
@@ -261,12 +262,15 @@
 
                     <!-- App identity (left) -->
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
-                        <!-- Logo mark: a stylized terminal prompt -->
-                        <Border Width="20" Height="20" CornerRadius="4"
-                                Background="{StaticResource AccentSubtleBrush}" Margin="0,0,10,0">
-                            <TextBlock Text="&#x276F;" FontSize="12" FontWeight="Bold"
-                                       Foreground="{StaticResource AccentBrush}"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <!-- Logo mark -->
+                        <Border Width="36" Height="36" CornerRadius="6"
+                                Background="Transparent" Margin="0,0,10,0"
+                                ClipToBounds="True">
+                            <Image Source="/Assets/phoneshell.png"
+                                   Width="36" Height="36"
+                                   Stretch="Uniform"
+                                   RenderOptions.BitmapScalingMode="HighQuality"
+                                   SnapsToDevicePixels="True" />
                         </Border>
                         <TextBlock Text="PhoneShell" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{StaticResource Text1Brush}" VerticalAlignment="Center"
@@ -862,13 +866,15 @@
                                             Panel.ZIndex="1">
 
                                     <!-- Hero icon -->
-                                    <Border Width="64" Height="64" CornerRadius="16"
-                                            Background="{StaticResource AccentSubtleBrush}"
-                                            HorizontalAlignment="Center" Margin="0,0,0,20">
-                                        <TextBlock Text="&#x276F;_" FontSize="26" FontWeight="Bold"
-                                                   Foreground="{StaticResource AccentBrush}"
-                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
-                                                   FontFamily="{StaticResource MonoFont}" />
+                                    <Border Width="128" Height="128" CornerRadius="32"
+                                            Background="Transparent"
+                                            HorizontalAlignment="Center" Margin="0,0,0,20"
+                                            ClipToBounds="True">
+                                        <Image Source="/Assets/phoneshell.png"
+                                               Width="128" Height="128"
+                                               Stretch="Uniform"
+                                               RenderOptions.BitmapScalingMode="HighQuality"
+                                               SnapsToDevicePixels="True" />
                                     </Border>
 
                                     <TextBlock Text="Welcome to PhoneShell" FontSize="26" FontWeight="SemiBold"

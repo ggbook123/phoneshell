@@ -1,7 +1,10 @@
 <template>
   <div class="dashboard" :class="{ compact: isCompact }">
     <header>
-      <h1>PhoneShell</h1>
+      <div class="brand">
+        <img :src="logoUrl" alt="PhoneShell" class="brand-logo" />
+        <h1>PhoneShell</h1>
+      </div>
       <div class="header-info">
         <span :class="['connection-dot', ws.connected.value ? 'online' : 'offline']"></span>
         <span>{{ ws.connected.value ? labels.connected : labels.reconnecting }}</span>
@@ -120,6 +123,7 @@ const sessions = ref<SessionInfo[]>([]);
 const selectedDeviceId = ref<string | null>(null);
 const activeSessionId = ref<string | null>(null);
 const isCompact = ref(false);
+const logoUrl = `${import.meta.env.BASE_URL}phoneshell-128.png`;
 
 const { language, setLanguage } = useLanguage();
 const labels = computed(() => language.value === 'zh'
@@ -292,6 +296,8 @@ header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 16px; background: #0f3460; border-bottom: 1px solid #1a1a4e;
 }
+header .brand { display: flex; align-items: center; gap: 10px; }
+header .brand-logo { width: 28px; height: 28px; object-fit: contain; }
 header h1 { font-size: 1.2rem; color: #00d4ff; }
 .header-info { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; }
 .connection-dot {

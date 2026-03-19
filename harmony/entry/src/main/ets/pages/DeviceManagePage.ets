@@ -774,12 +774,19 @@ struct DeviceManagePage {
       Column() {
         Column() {
           Row() {
-            Column() {
+            Row() {
+              Image($r('app.media.phoneshell_header'))
+                .width(AppSizes.FONT_SIZE_SUBTITLE)
+                .height(AppSizes.FONT_SIZE_SUBTITLE)
+                .margin({ right: 8 })
+
               Text(AppStrings.APP_NAME)
                 .fontSize(AppSizes.FONT_SIZE_SUBTITLE)
                 .fontColor(AppColors.TEXT_PRIMARY)
                 .fontWeight(FontWeight.Bold)
             }
+            .alignItems(VerticalAlign.Center)
+            .justifyContent(FlexAlign.Start)
             .layoutWeight(1)
 
             Row({ space: 8 }) {
