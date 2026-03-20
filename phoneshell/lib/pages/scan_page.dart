@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart';
+import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart' as mlkit;
 
 import '../core/constants.dart';
 import '../core/i18n.dart';
@@ -14,7 +14,11 @@ class ScanPage extends StatefulWidget {
 }
 
 class _ScanPageState extends State<ScanPage> {
-  final MobileScannerController _controller = MobileScannerController();
+  final MobileScannerController _controller = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+    formats: [BarcodeFormat.qrCode],
+    cameraResolution: const Size(1280, 720),
+  );
   bool _isProcessing = false;
   String _status = '';
 
@@ -44,8 +48,8 @@ class _ScanPageState extends State<ScanPage> {
         return;
       }
 
-      final scanner = BarcodeScanner();
-      final input = InputImage.fromFilePath(image.path);
+      final scanner = mlkit.BarcodeScanner();
+      final input = mlkit.InputImage.fromFilePath(image.path);
       final barcodes = await scanner.processImage(input);
       await scanner.close();
 
@@ -81,6 +85,7 @@ class _ScanPageState extends State<ScanPage> {
 
   @override
   Widget build(BuildContext context) {
+    final padding = MediaQuery.of(context).padding;
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -90,8 +95,8 @@ class _ScanPageState extends State<ScanPage> {
             onDetect: _onDetect,
           ),
           Positioned(
-            top: 40,
-            left: 20,
+            top: 40 + padding.top,
+            left: 20 + padding.left,
             child: Text(
               _t('扫描二维码', 'Scan QR Code'),
               style: const TextStyle(color: Colors.white, fontSize: 16),
@@ -99,9 +104,9 @@ class _ScanPageState extends State<ScanPage> {
           ),
           if (_status.isNotEmpty)
             Positioned(
-              top: 80,
-              left: 20,
-              right: 20,
+              top: 80 + padding.top,
+              left: 20 + padding.left,
+              right: 20 + padding.right,
               child: Text(
                 _status,
                 style: const TextStyle(color: Colors.white70, fontSize: 12),
@@ -112,7 +117,12 @@ class _ScanPageState extends State<ScanPage> {
             right: 0,
             bottom: 0,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+              padding: EdgeInsets.fromLTRB(
+                20 + padding.left,
+                14,
+                20 + padding.right,
+                14 + padding.bottom,
+              ),
               color: Colors.black.withOpacity(0.6),
               child: Row(
                 children: [

@@ -779,140 +779,143 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
               const Expanded(child: SizedBox()),
             ],
           ),
-          Column(
-            children: [
-              Container(
-                color: const Color(AppColors.surface1),
-                padding: EdgeInsets.fromLTRB(
-                  AppSizes.paddingPage + padding.left,
-                  16,
-                  AppSizes.paddingPage + padding.right,
-                  12,
-                ),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Row(
-                          children: [
-                            Image.asset(
-                              'assets/images/phoneshell_header.png',
-                              width: AppSizes.fontSizeSubtitle,
-                              height: AppSizes.fontSizeSubtitle,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              AppStrings.appName,
-                              style: const TextStyle(
-                                fontSize: AppSizes.fontSizeSubtitle,
-                                color: Color(AppColors.textPrimary),
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const Spacer(),
-                        Row(
-                          children: [
-                            _settingsChip(),
-                            if (pendingAuthCount > 0) ...[
-                              const SizedBox(width: 8),
-                              SizedBox(
-                                height: 26,
-                                child: OutlinedButton(
-                                  onPressed: () {
-                                    AuthManager.instance.showPending();
-                                  },
-                                  style: OutlinedButton.styleFrom(
-                                    side: const BorderSide(color: Color(AppColors.accentPink)),
-                                    backgroundColor: const Color(AppColors.highlight),
-                                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
-                                    ),
-                                  ),
-                                  child: Text(
-                                    'AUTH $pendingAuthCount',
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: Color(AppColors.accentPink),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                  ],
-                ),
-              ),
-              Divider(color: const Color(AppColors.divider), height: 1),
-              Expanded(child: _mainContent(padding)),
-              if (isInGroup)
+          Padding(
+            padding: EdgeInsets.only(top: padding.top, bottom: padding.bottom),
+            child: Column(
+              children: [
                 Container(
+                  color: const Color(AppColors.surface1),
                   padding: EdgeInsets.fromLTRB(
                     AppSizes.paddingPage + padding.left,
-                    10,
-                    AppSizes.paddingPage + padding.right,
                     16,
+                    AppSizes.paddingPage + padding.right,
+                    12,
                   ),
-                  margin: EdgeInsets.only(bottom: _getBottomScanMargin(safeBottom)),
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: const Color(AppColors.surface1),
-                      borderRadius: BorderRadius.circular(AppSizes.borderRadiusCard),
-                      border: Border.all(color: const Color(AppColors.cardBorder)),
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          Row(
                             children: [
-                              Text(
-                                _t('快捷操作', 'Quick Actions'),
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Color(AppColors.textMuted),
-                                  fontFamily: 'monospace',
-                                ),
+                              Image.asset(
+                                'assets/images/phoneshell_header.png',
+                                width: AppSizes.fontSizeSubtitle,
+                                height: AppSizes.fontSizeSubtitle,
                               ),
+                              const SizedBox(width: 8),
                               Text(
-                                _t('扫描二维码绑定/登录', 'Scan QR to bind/login'),
+                                AppStrings.appName,
                                 style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Color(AppColors.textSecondary),
+                                  fontSize: AppSizes.fontSizeSubtitle,
+                                  color: Color(AppColors.textPrimary),
+                                  fontWeight: FontWeight.bold,
                                 ),
                               ),
                             ],
                           ),
-                        ),
-                        SizedBox(
-                          height: 40,
-                          child: ElevatedButton(
-                            onPressed: _startScan,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(AppColors.accent),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
-                              ),
-                              padding: const EdgeInsets.symmetric(horizontal: 16),
-                            ),
-                            child: Text(
-                              _t('扫  码', 'Scan'),
-                              style: const TextStyle(color: Colors.white, fontSize: 14),
-                            ),
+                          const Spacer(),
+                          Row(
+                            children: [
+                              _settingsChip(),
+                              if (pendingAuthCount > 0) ...[
+                                const SizedBox(width: 8),
+                                SizedBox(
+                                  height: 26,
+                                  child: OutlinedButton(
+                                    onPressed: () {
+                                      AuthManager.instance.showPending();
+                                    },
+                                    style: OutlinedButton.styleFrom(
+                                      side: const BorderSide(color: Color(AppColors.accentPink)),
+                                      backgroundColor: const Color(AppColors.highlight),
+                                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
+                                      ),
+                                    ),
+                                    child: Text(
+                                      'AUTH $pendingAuthCount',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Color(AppColors.accentPink),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
-                        ),
-                      ],
-                    ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                    ],
                   ),
                 ),
-            ],
+                Divider(color: const Color(AppColors.divider), height: 1),
+                Expanded(child: _mainContent(padding)),
+                if (isInGroup)
+                  Container(
+                    padding: EdgeInsets.fromLTRB(
+                      AppSizes.paddingPage + padding.left,
+                      10,
+                      AppSizes.paddingPage + padding.right,
+                      16,
+                    ),
+                    margin: EdgeInsets.only(bottom: _getBottomScanMargin(safeBottom)),
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(AppColors.surface1),
+                        borderRadius: BorderRadius.circular(AppSizes.borderRadiusCard),
+                        border: Border.all(color: const Color(AppColors.cardBorder)),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  _t('快捷操作', 'Quick Actions'),
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Color(AppColors.textMuted),
+                                    fontFamily: 'monospace',
+                                  ),
+                                ),
+                                Text(
+                                  _t('扫描二维码绑定/登录', 'Scan QR to bind/login'),
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Color(AppColors.textSecondary),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          SizedBox(
+                            height: 40,
+                            child: ElevatedButton(
+                              onPressed: _startScan,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(AppColors.accent),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                                ),
+                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                              ),
+                              child: Text(
+                                _t('扫  码', 'Scan'),
+                                style: const TextStyle(color: Colors.white, fontSize: 14),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
           if (showSettingsSheet) _settingsSheet(padding),
           if (showAuthDialog) _authDialog(padding),

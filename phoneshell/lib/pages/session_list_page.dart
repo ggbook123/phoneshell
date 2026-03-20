@@ -318,208 +318,211 @@ class _SessionListPageState extends State<SessionListPage> {
     return Scaffold(
       body: Stack(
         children: [
-          Column(
-            children: [
-              Container(
-                color: const Color(AppColors.surface1),
-                child: Column(
-                  children: [
-                    Container(height: 2, color: const Color(AppColors.accent)),
-                    SizedBox(
-                      height: 56,
-                      child: Padding(
-                        padding: EdgeInsets.symmetric(horizontal: AppSizes.paddingPage + padding.left),
-                        child: Row(
-                          children: [
-                            GestureDetector(
-                              onTap: _goBack,
-                              child: Text(
-                                _t('‹ 返回', '‹ Back'),
-                                style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.accent)),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Text(
-                                    displayName,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: AppSizes.fontSizeBody,
-                                      color: Color(AppColors.textPrimary),
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                  Text(
-                                    _t('会话列表', 'Session List'),
-                                    style: const TextStyle(fontSize: 12, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: const Color(AppColors.chipBg),
-                                borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
-                                border: Border.all(
-                                  color: Color(connectionState == ConnectionState.connected
-                                      ? AppColors.onlineGreen
-                                      : AppColors.chipBorder),
+          Padding(
+            padding: EdgeInsets.only(top: padding.top, bottom: padding.bottom),
+            child: Column(
+              children: [
+                Container(
+                  color: const Color(AppColors.surface1),
+                  child: Column(
+                    children: [
+                      Container(height: 2, color: const Color(AppColors.accent)),
+                      SizedBox(
+                        height: 56,
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: AppSizes.paddingPage + padding.left),
+                          child: Row(
+                            children: [
+                              GestureDetector(
+                                onTap: _goBack,
+                                child: Text(
+                                  _t('‹ 返回', '‹ Back'),
+                                  style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.accent)),
                                 ),
                               ),
-                              child: Row(
-                                children: [
-                                  Container(
-                                    width: 6,
-                                    height: 6,
-                                    margin: const EdgeInsets.only(right: 6),
-                                    decoration: BoxDecoration(
-                                      color: Color(connectionState == ConnectionState.connected
-                                          ? AppColors.onlineGreen
-                                          : AppColors.offlineGray),
-                                      shape: BoxShape.circle,
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text(
+                                      displayName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: AppSizes.fontSizeBody,
+                                        color: Color(AppColors.textPrimary),
+                                        fontWeight: FontWeight.w500,
+                                      ),
                                     ),
-                                  ),
-                                  Text(
-                                    connectionState == ConnectionState.connected
-                                        ? _t('在线', 'Online')
-                                        : _t('断开', 'Disconnected'),
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Color(connectionState == ConnectionState.connected
-                                          ? AppColors.onlineGreen
-                                          : AppColors.textMuted),
+                                    Text(
+                                      _t('会话列表', 'Session List'),
+                                      style: const TextStyle(fontSize: 12, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
                                     ),
+                                  ],
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(AppColors.chipBg),
+                                  borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
+                                  border: Border.all(
+                                    color: Color(connectionState == ConnectionState.connected
+                                        ? AppColors.onlineGreen
+                                        : AppColors.chipBorder),
                                   ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Divider(color: const Color(AppColors.divider), height: 1),
-              Expanded(
-                child: RefreshIndicator(
-                  onRefresh: () async => _refreshSessions(),
-                  child: ListView(
-                    padding: EdgeInsets.fromLTRB(
-                      AppSizes.paddingPage + padding.left,
-                      12,
-                      AppSizes.paddingPage + padding.right,
-                      12,
-                    ),
-                    children: [
-                      if (sessions.isEmpty)
-                        SizedBox(
-                          height: 260,
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text(
-                                _t('暂无活动会话', 'NO ACTIVE SESSIONS'),
-                                style: const TextStyle(fontSize: 14, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                _t('当前没有活动会话', 'No active sessions at the moment'),
-                                style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Color(AppColors.textSecondary)),
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                _t('下拉刷新列表', 'Pull down to refresh'),
-                                style: const TextStyle(fontSize: 12, color: Color(AppColors.textMuted)),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 6,
+                                      height: 6,
+                                      margin: const EdgeInsets.only(right: 6),
+                                      decoration: BoxDecoration(
+                                        color: Color(connectionState == ConnectionState.connected
+                                            ? AppColors.onlineGreen
+                                            : AppColors.offlineGray),
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                    Text(
+                                      connectionState == ConnectionState.connected
+                                          ? _t('在线', 'Online')
+                                          : _t('断开', 'Disconnected'),
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: Color(connectionState == ConnectionState.connected
+                                            ? AppColors.onlineGreen
+                                            : AppColors.textMuted),
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ],
                           ),
-                        )
-                      else
-                        ...sessions.map((session) => Padding(
-                              padding: const EdgeInsets.only(bottom: 12),
-                              child: _sessionCard(session),
-                            )),
+                        ),
+                      ),
                     ],
                   ),
                 ),
-              ),
-              Divider(color: const Color(AppColors.divider), height: 1),
-              Container(
-                color: const Color(AppColors.surface2),
-                padding: EdgeInsets.fromLTRB(
-                  AppSizes.paddingPage + padding.left,
-                  12,
-                  AppSizes.paddingPage + padding.right,
-                  16 + padding.bottom,
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(height: 2, color: const Color(AppColors.accentBlue), margin: const EdgeInsets.only(bottom: 10)),
-                    Text(
-                      _t('新建会话', 'NEW SESSION'),
-                      style: const TextStyle(fontSize: 12, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
-                    ),
-                    const SizedBox(height: 8),
-                    if (availableShells.length > 1)
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: availableShells.map((shell) {
-                          final selected = selectedShell == shell;
-                          return SizedBox(
-                            height: 32,
-                            child: OutlinedButton(
-                              onPressed: () {
-                                setState(() {
-                                  selectedShell = shell;
-                                });
-                              },
-                              style: OutlinedButton.styleFrom(
-                                backgroundColor: selected ? const Color(AppColors.accent) : const Color(AppColors.highlight),
-                                side: BorderSide(color: selected ? const Color(AppColors.accent) : const Color(AppColors.accentDim)),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
-                                ),
-                                padding: const EdgeInsets.symmetric(horizontal: 12),
-                              ),
-                              child: Text(
-                                shell,
-                                style: TextStyle(fontSize: 12, color: selected ? Colors.white : const Color(AppColors.accent)),
-                              ),
-                            ),
-                          );
-                        }).toList(),
+                Divider(color: const Color(AppColors.divider), height: 1),
+                Expanded(
+                  child: RefreshIndicator(
+                    onRefresh: () async => _refreshSessions(),
+                    child: ListView(
+                      padding: EdgeInsets.fromLTRB(
+                        AppSizes.paddingPage + padding.left,
+                        12,
+                        AppSizes.paddingPage + padding.right,
+                        12,
                       ),
-                    if (availableShells.length > 1) const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 44,
-                      child: ElevatedButton(
-                        onPressed: _onNewSession,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(AppColors.accent),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                      children: [
+                        if (sessions.isEmpty)
+                          SizedBox(
+                            height: 260,
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  _t('暂无活动会话', 'NO ACTIVE SESSIONS'),
+                                  style: const TextStyle(fontSize: 14, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  _t('当前没有活动会话', 'No active sessions at the moment'),
+                                  style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Color(AppColors.textSecondary)),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  _t('下拉刷新列表', 'Pull down to refresh'),
+                                  style: const TextStyle(fontSize: 12, color: Color(AppColors.textMuted)),
+                                ),
+                              ],
+                            ),
+                          )
+                        else
+                          ...sessions.map((session) => Padding(
+                                padding: const EdgeInsets.only(bottom: 12),
+                                child: _sessionCard(session),
+                              )),
+                      ],
+                    ),
+                  ),
+                ),
+                Divider(color: const Color(AppColors.divider), height: 1),
+                Container(
+                  color: const Color(AppColors.surface2),
+                  padding: EdgeInsets.fromLTRB(
+                    AppSizes.paddingPage + padding.left,
+                    12,
+                    AppSizes.paddingPage + padding.right,
+                    16,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(height: 2, color: const Color(AppColors.accentBlue), margin: const EdgeInsets.only(bottom: 10)),
+                      Text(
+                        _t('新建会话', 'NEW SESSION'),
+                        style: const TextStyle(fontSize: 12, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
+                      ),
+                      const SizedBox(height: 8),
+                      if (availableShells.length > 1)
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: availableShells.map((shell) {
+                            final selected = selectedShell == shell;
+                            return SizedBox(
+                              height: 32,
+                              child: OutlinedButton(
+                                onPressed: () {
+                                  setState(() {
+                                    selectedShell = shell;
+                                  });
+                                },
+                                style: OutlinedButton.styleFrom(
+                                  backgroundColor: selected ? const Color(AppColors.accent) : const Color(AppColors.highlight),
+                                  side: BorderSide(color: selected ? const Color(AppColors.accent) : const Color(AppColors.accentDim)),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
+                                  ),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                                ),
+                                child: Text(
+                                  shell,
+                                  style: TextStyle(fontSize: 12, color: selected ? Colors.white : const Color(AppColors.accent)),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      if (availableShells.length > 1) const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 44,
+                        child: ElevatedButton(
+                          onPressed: _onNewSession,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(AppColors.accent),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                            ),
+                          ),
+                          child: Text(
+                            _t('新建会话', 'New Session'),
+                            style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Colors.white),
                           ),
                         ),
-                        child: Text(
-                          _t('新建会话', 'New Session'),
-                          style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Colors.white),
-                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           if (showRenameDialog) _renameDialog(padding),
           if (showCloseDialog) _closeConfirmDialog(padding),

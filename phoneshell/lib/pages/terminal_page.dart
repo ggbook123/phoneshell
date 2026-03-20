@@ -394,171 +394,175 @@ class _TerminalPageState extends State<TerminalPage> {
     final shortcutOffset = (keyboardHeight - padding.bottom).clamp(0.0, 9999.0);
 
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       backgroundColor: const Color(AppColors.terminalBg),
       body: Stack(
         children: [
-          Column(
-            children: [
-              Container(height: 2, color: const Color(AppColors.accent)),
-              Container(
-                height: 54,
-                color: const Color(AppColors.surface1),
-                padding: EdgeInsets.symmetric(horizontal: AppSizes.paddingPage + padding.left),
-                child: Row(
-                  children: [
-                    GestureDetector(
-                      onTap: _goBack,
-                      child: Text(
-                        _t('‹ 返回', '‹ Back'),
-                        style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.accent)),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            _t('终端', 'Terminal'),
-                            style: const TextStyle(
-                              fontSize: AppSizes.fontSizeBody,
-                              color: Color(AppColors.textPrimary),
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                          if (_viewedSessionId.isNotEmpty)
-                            Text(
-                              _viewedSessionId,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 11, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
-                            ),
-                        ],
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: const Color(AppColors.chipBg),
-                        borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
-                        border: Border.all(
-                          color: Color(sessionActive ? AppColors.onlineGreen : AppColors.chipBorder),
+          Padding(
+            padding: EdgeInsets.only(top: padding.top, bottom: padding.bottom),
+            child: Column(
+              children: [
+                Container(height: 2, color: const Color(AppColors.accent)),
+                Container(
+                  height: 54,
+                  color: const Color(AppColors.surface1),
+                  padding: EdgeInsets.symmetric(horizontal: AppSizes.paddingPage + padding.left),
+                  child: Row(
+                    children: [
+                      GestureDetector(
+                        onTap: _goBack,
+                        child: Text(
+                          _t('‹ 返回', '‹ Back'),
+                          style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.accent)),
                         ),
                       ),
-                      child: Row(
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              _t('终端', 'Terminal'),
+                              style: const TextStyle(
+                                fontSize: AppSizes.fontSizeBody,
+                                color: Color(AppColors.textPrimary),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            if (_viewedSessionId.isNotEmpty)
+                              Text(
+                                _viewedSessionId,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 11, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
+                              ),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(AppColors.chipBg),
+                          borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
+                          border: Border.all(
+                            color: Color(sessionActive ? AppColors.onlineGreen : AppColors.chipBorder),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              margin: const EdgeInsets.only(right: 6),
+                              decoration: BoxDecoration(
+                                color: Color(sessionActive ? AppColors.onlineGreen : AppColors.offlineGray),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            Text(
+                              sessionActive ? _t('在线', 'ACTIVE') : _t('离线', 'OFFLINE'),
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Color(sessionActive ? AppColors.onlineGreen : AppColors.textMuted),
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(8 + padding.left, 8, 8 + padding.right, 8),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: const Color(AppColors.terminalBg),
+                        borderRadius: BorderRadius.circular(AppSizes.borderRadiusCard),
+                        border: Border.all(color: const Color(AppColors.cardBorder)),
+                      ),
+                      child: Stack(
                         children: [
-                          Container(
-                            width: 6,
-                            height: 6,
-                            margin: const EdgeInsets.only(right: 6),
-                            decoration: BoxDecoration(
-                              color: Color(sessionActive ? AppColors.onlineGreen : AppColors.offlineGray),
-                              shape: BoxShape.circle,
+                          WebViewWidget(controller: _controller),
+                          if (!terminalReady || historyLoadingVisible)
+                            Container(
+                              color: const Color(AppColors.terminalBg),
+                              alignment: Alignment.center,
+                              child: Text(
+                                !terminalReady
+                                    ? terminalHint
+                                    : _t('内容较多，加载中，请等待', 'Loading history, please wait'),
+                                style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Color(AppColors.textSecondary)),
+                              ),
                             ),
-                          ),
-                          Text(
-                            sessionActive ? _t('在线', 'ACTIVE') : _t('离线', 'OFFLINE'),
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: Color(sessionActive ? AppColors.onlineGreen : AppColors.textMuted),
-                              fontFamily: 'monospace',
-                            ),
-                          ),
                         ],
                       ),
-                    ),
-                  ],
-                ),
-              ),
-              Expanded(
-                child: Padding(
-                  padding: EdgeInsets.fromLTRB(8 + padding.left, 8, 8 + padding.right, 8),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: const Color(AppColors.terminalBg),
-                      borderRadius: BorderRadius.circular(AppSizes.borderRadiusCard),
-                      border: Border.all(color: const Color(AppColors.cardBorder)),
-                    ),
-                    child: Stack(
-                      children: [
-                        WebViewWidget(controller: _controller),
-                        if (!terminalReady || historyLoadingVisible)
-                          Container(
-                            color: const Color(AppColors.terminalBg),
-                            alignment: Alignment.center,
-                            child: Text(
-                              !terminalReady
-                                  ? terminalHint
-                                  : _t('内容较多，加载中，请等待', 'Loading history, please wait'),
-                              style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Color(AppColors.textSecondary)),
-                            ),
-                          ),
-                      ],
                     ),
                   ),
                 ),
-              ),
-              Container(
-                height: 74,
-                margin: EdgeInsets.only(bottom: shortcutOffset),
-                decoration: BoxDecoration(
-                  color: const Color(AppColors.surface1),
-                  border: Border.all(color: const Color(AppColors.cardBorder)),
-                ),
-                child: Column(
-                  children: [
-                    Padding(
-                      padding: EdgeInsets.fromLTRB(12 + padding.left, 6, 12 + padding.right, 2),
-                      child: Row(
-                        children: [
-                          Text(
-                            _t('快捷键', 'SHORTCUT KEYS'),
-                            style: const TextStyle(fontSize: 11, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
-                          ),
-                          const Spacer(),
-                          Text(
-                            _t('点击发送', 'TAP TO SEND'),
-                            style: const TextStyle(fontSize: 11, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Expanded(
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        padding: EdgeInsets.fromLTRB(12 + padding.left, 0, 12 + padding.right, 8),
+                Container(
+                  height: 74,
+                  margin: EdgeInsets.only(bottom: shortcutOffset),
+                  decoration: BoxDecoration(
+                    color: const Color(AppColors.surface1),
+                    border: Border.all(color: const Color(AppColors.cardBorder)),
+                  ),
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(12 + padding.left, 6, 12 + padding.right, 2),
                         child: Row(
-                          children: _shortcutKeys.map((key) {
-                            return Padding(
-                              padding: const EdgeInsets.only(right: 8),
-                              child: SizedBox(
-                                height: AppSizes.shortcutKeyHeight,
-                                child: OutlinedButton(
-                                  onPressed: () => _sendShortcutKey(key['data'] ?? ''),
-                                  style: OutlinedButton.styleFrom(
-                                    side: const BorderSide(color: Color(AppColors.cardBorder)),
-                                    backgroundColor: const Color(AppColors.highlight),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
-                                    ),
-                                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                                  ),
-                                  child: Text(
-                                    key['label'] ?? '',
-                                    style: const TextStyle(fontSize: 12, color: Color(AppColors.textPrimary)),
-                                  ),
-                                ),
-                              ),
-                            );
-                          }).toList(),
+                          children: [
+                            Text(
+                              _t('快捷键', 'SHORTCUT KEYS'),
+                              style: const TextStyle(fontSize: 11, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
+                            ),
+                            const Spacer(),
+                            Text(
+                              _t('点击发送', 'TAP TO SEND'),
+                              style: const TextStyle(fontSize: 11, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
+                            ),
+                          ],
                         ),
                       ),
-                    ),
-                  ],
+                      Expanded(
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          padding: EdgeInsets.fromLTRB(12 + padding.left, 0, 12 + padding.right, 8),
+                          child: Row(
+                            children: _shortcutKeys.map((key) {
+                              return Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: SizedBox(
+                                  height: AppSizes.shortcutKeyHeight,
+                                  child: OutlinedButton(
+                                    onPressed: () => _sendShortcutKey(key['data'] ?? ''),
+                                    style: OutlinedButton.styleFrom(
+                                      side: const BorderSide(color: Color(AppColors.cardBorder)),
+                                      backgroundColor: const Color(AppColors.highlight),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
+                                      ),
+                                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                                    ),
+                                    child: Text(
+                                      key['label'] ?? '',
+                                      style: const TextStyle(fontSize: 12, color: Color(AppColors.textPrimary)),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           if (showSessionClosedDialog) _sessionClosedDialog(padding),
         ],
