@@ -51,7 +51,7 @@ Usage:
   phoneshell install [options]
 
 Options (local):
-  --server <wsUrl>       WebSocket URL (default: ws://127.0.0.1:19090/ws/)
+  --server <wsUrl>       WebSocket URL (ws:// or wss://, default: ws://127.0.0.1:19090/ws/)
   --token <token>        Auth token (defaults to group secret if available)
   --config <path>        Config file path (default: /etc/phoneshell/config.json)
   --device <deviceId>    Target device ID (default: local device)

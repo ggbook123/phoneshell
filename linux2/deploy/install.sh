@@ -85,7 +85,7 @@ if [[ $NON_INTERACTIVE -eq 0 ]]; then
   if [[ -n "${input}" ]]; then PUBLIC_HOST="${input}"; fi
 
   if [[ "$(echo "${MODE}" | tr '[:upper:]' '[:lower:]')" == "client" ]]; then
-    read -r -p "Relay URL (ws://host:port/ws/) [${RELAY_URL}]: " input
+    read -r -p "Relay URL (ws:// or wss://) [${RELAY_URL}]: " input
     if [[ -n "${input}" ]]; then RELAY_URL="${input}"; fi
     read -r -p "Group secret (optional) [${GROUP_SECRET}]: " input
     if [[ -n "${input}" ]]; then GROUP_SECRET="${input}"; fi

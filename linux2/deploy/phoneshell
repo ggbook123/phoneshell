@@ -158,6 +158,71 @@ group_reset_and_restart() {
   run_systemctl restart phoneshell
 }
 
+run_tls_menu() {
+  local config_path="$1"
+  while true; do
+    local port tls_enabled tls_cert tls_key tls_ca tls_pass
+    port="$(json_get "${config_path}" "port" "19090")"
+    tls_enabled="$(json_get "${config_path}" "tls.enabled" "true")"
+    tls_cert="$(json_get "${config_path}" "tls.certPath" "")"
+    tls_key="$(json_get "${config_path}" "tls.keyPath" "")"
+    tls_ca="$(json_get "${config_path}" "tls.caPath" "")"
+    tls_pass="$(json_get "${config_path}" "tls.passphrase" "")"
+    json_set "${config_path}" "tls.port" "0" "number" >/dev/null 2>&1 || true
+
+    echo ""
+    echo "TLS/WSS Settings / TLS/WSS 设置"
+    echo "1) Toggle TLS/WSS (current: ${tls_enabled}) / 开关 TLS/WSS（当前：${tls_enabled}）"
+    echo "2) Set TLS cert path (current: ${tls_cert:-<empty>}) / 设置证书路径（当前：${tls_cert:-<空>}）"
+    echo "3) Set TLS key path (current: ${tls_key:-<empty>}) / 设置私钥路径（当前：${tls_key:-<空>}）"
+    echo "4) Set TLS CA path (optional) (current: ${tls_ca:-<empty>}) / 设置 CA 路径（可选）"
+    echo "5) Set TLS passphrase (optional) / 设置证书密码（可选）"
+    echo "6) Back / 返回"
+    echo "Note: WSS uses core port (${port}). / 注意：WSS 使用核心端口（${port}）。"
+    echo "Note: TLS starts only when cert+key are set. / 注意：只有设置证书+私钥后 TLS 才会启用。"
+    read -r -p "Select [1-6] / 选择 [1-6]: " choice
+    case "${choice}" in
+      1)
+        local next="true"
+        if [[ "${tls_enabled}" == "true" ]]; then next="false"; fi
+        json_set "${config_path}" "tls.enabled" "${next}" "boolean" && \
+          json_set "${config_path}" "tls.port" "0" "number" && \
+          run_systemctl restart phoneshell
+        ;;
+      2)
+        read -r -p "TLS cert path [${tls_cert}]: " input
+        if [[ -n "${input}" ]]; then
+          json_set "${config_path}" "tls.certPath" "${input}" "string" && run_systemctl restart phoneshell
+        fi
+        ;;
+      3)
+        read -r -p "TLS key path [${tls_key}]: " input
+        if [[ -n "${input}" ]]; then
+          json_set "${config_path}" "tls.keyPath" "${input}" "string" && run_systemctl restart phoneshell
+        fi
+        ;;
+      4)
+        read -r -p "TLS CA path (optional) [${tls_ca}]: " input
+        if [[ -n "${input}" ]]; then
+          json_set "${config_path}" "tls.caPath" "${input}" "string" && run_systemctl restart phoneshell
+        fi
+        ;;
+      5)
+        read -r -p "TLS passphrase (optional) [hidden]: " input
+        if [[ -n "${input}" ]]; then
+          json_set "${config_path}" "tls.passphrase" "${input}" "string" && run_systemctl restart phoneshell
+        fi
+        ;;
+      6|0|q|quit)
+        return 0
+        ;;
+      *)
+        echo "Invalid selection. / 无效选择。"
+        ;;
+    esac
+  done
+}
+
 uninstall_linux2() {
   echo "This will remove:"
   echo "  - /opt/phoneshell"
@@ -193,13 +258,14 @@ run_set_menu() {
     echo "1) Set core port (current: ${port}) / 设置核心端口（当前：${port}）"
     echo "2) Set web panel port (current: ${panel_port}) / 设置面板端口（当前：${panel_port}）"
     echo "3) Toggle web panel (current: ${web_panel}) / 打开或关闭面板（当前：${web_panel}）"
-    echo "4) Reset group and restart service / 清除 group 并重启服务"
-    echo "5) Restart service / 重启服务"
-    echo "6) Stop service / 停止服务"
-    echo "7) Uninstall linux2 / 卸载 linux2"
-    echo "8) Status / 查看状态"
+    echo "4) TLS/WSS settings / TLS/WSS 设置"
+    echo "5) Reset group and restart service / 清除 group 并重启服务"
+    echo "6) Restart service / 重启服务"
+    echo "7) Stop service / 停止服务"
+    echo "8) Uninstall linux2 / 卸载 linux2"
+    echo "9) Status / 查看状态"
     echo "0) Exit / 退出"
-    read -r -p "Select [0-8] / 选择 [0-8]: " choice
+    read -r -p "Select [0-9] / 选择 [0-9]: " choice
     case "${choice}" in
       1)
         read -r -p "Core port [${port}] / 核心端口 [${port}]: " input
@@ -225,19 +291,22 @@ run_set_menu() {
         json_set "${config_path}" "modules.webPanel" "${next}" "boolean" && run_systemctl restart phoneshell
         ;;
       4)
-        group_reset_and_restart
+        run_tls_menu "${config_path}"
         ;;
       5)
-        run_systemctl restart phoneshell
+        group_reset_and_restart
         ;;
       6)
-        run_systemctl stop phoneshell
+        run_systemctl restart phoneshell
         ;;
       7)
+        run_systemctl stop phoneshell
+        ;;
+      8)
         uninstall_linux2
         return 0
         ;;
-      8)
+      9)
         set +e
         run_systemctl status phoneshell --no-pager
         set -e

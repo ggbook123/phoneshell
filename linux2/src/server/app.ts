@@ -24,6 +24,40 @@ function log(msg: string): void {
 
 type PublicHostResult = { host: string; source: string };
 
+type TlsRuntime = {
+  enabled: boolean;
+  port: number;
+  options?: https.ServerOptions;
+};
+
+function resolveTlsRuntime(config: AppConfig): TlsRuntime {
+  const tls = config.tls;
+  if (!tls) return { enabled: false, port: 0 };
+
+  const certPath = tls.certPath?.trim() || '';
+  const keyPath = tls.keyPath?.trim() || '';
+  const caPath = tls.caPath?.trim() || '';
+  const passphrase = tls.passphrase?.trim() || '';
+
+  const tlsConfigured = certPath.length > 0 && keyPath.length > 0;
+  const tlsAllowed = tls.enabled !== false;
+  if (!tlsConfigured || !tlsAllowed) return { enabled: false, port: 0 };
+
+  const port = tls.port && tls.port >= 1 && tls.port <= 65535 ? tls.port : config.port;
+  try {
+    const options: https.ServerOptions = {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+      minVersion: 'TLSv1.2',
+    };
+    if (caPath) options.ca = fs.readFileSync(caPath);
+    if (passphrase) options.passphrase = passphrase;
+    return { enabled: true, port, options };
+  } catch (err) {
+    throw new Error(`[tls] failed to load cert/key: ${(err as Error).message}`);
+  }
+}
+
 const publicIpProviders: Array<{ name: string; url: string; parse: (body: string) => string | null }> = [
   {
     name: 'ipify',
@@ -131,7 +165,12 @@ async function detectPublicHost(logger: (msg: string) => void): Promise<PublicHo
 
 export function createApp(config: AppConfig): { start: () => void; stop: () => void } {
   const webPanelEnabled = !!config.modules.webPanel;
-  const panelPort = config.panelPort && config.panelPort !== config.port ? config.panelPort : 0;
+  const tlsRuntime = resolveTlsRuntime(config);
+  const primaryPort = config.port;
+  const tlsPort = tlsRuntime.enabled ? tlsRuntime.port : 0;
+  const primaryUsesTls = tlsRuntime.enabled && tlsPort === primaryPort;
+  const panelPortCandidate = config.panelPort && config.panelPort !== primaryPort ? config.panelPort : 0;
+  const panelPort = panelPortCandidate && panelPortCandidate !== tlsPort ? panelPortCandidate : 0;
   const deviceStore = new DeviceStore(config.baseDirectory);
   const groupStore = new GroupStore(config.baseDirectory);
   const membershipStore = new GroupMembershipStore(config.baseDirectory);
@@ -221,6 +260,11 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
   let pendingServerMigration: { groupId: string; groupSecret: string; newServerUrl: string } | null = null;
   let resolvedPublicHost = '';
 
+  const wsScheme = (useTls: boolean) => (useTls ? 'wss' : 'ws');
+  const httpScheme = (useTls: boolean) => (useTls ? 'https' : 'http');
+  const buildWsUrl = (host: string, port: number, useTls: boolean) =>
+    `${wsScheme(useTls)}://${normalizeHostWithPort(host, port)}/ws/`;
+
   function startRelayServer(tokenOverride?: string): void {
     if (tokenOverride) effectiveToken = tokenOverride;
     relay.setAuthToken(effectiveToken);
@@ -307,15 +351,16 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
   function buildRelayUrlFromConfig(): string {
     const publicHost = getRuntimePublicHost();
     if (publicHost) {
-      const ph = normalizeHostWithPort(publicHost, config.port);
-      return `ws://${ph}/ws/`;
+      const port = tlsRuntime.enabled ? tlsPort : primaryPort;
+      return buildWsUrl(publicHost, port, tlsRuntime.enabled);
     }
-    return `ws://localhost:${config.port}/ws/`;
+    const port = tlsRuntime.enabled ? tlsPort : primaryPort;
+    return buildWsUrl('localhost', port, tlsRuntime.enabled);
   }
 
   function applyPublicHostToRelay(host: string): void {
-    const relayHost = normalizeHostWithPort(host, config.port);
-    const relayUrl = `ws://${relayHost}/ws/`;
+    const port = tlsRuntime.enabled ? tlsPort : primaryPort;
+    const relayUrl = buildWsUrl(host, port, tlsRuntime.enabled);
     relay.setRelayUrl(relayUrl);
     lastResolvedServerUrl = relayUrl;
   }
@@ -402,6 +447,7 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim();
     let host = (req.headers['x-forwarded-host'] as string)?.split(',')[0]?.trim();
     const forwardedPort = (req.headers['x-forwarded-port'] as string)?.split(',')[0]?.trim();
+    const socketEncrypted = (req.socket as { encrypted?: boolean }).encrypted === true;
 
     if (!host) {
       const origin = (req.headers['origin'] || req.headers['referer']) as string | undefined;
@@ -415,13 +461,18 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     host ??= req.headers['host'] as string;
     if (forwardedPort && host && !host.includes(':')) host = `${host}:${forwardedPort}`;
     const publicHost = getRuntimePublicHost();
+    const scheme = proto?.toLowerCase() || (socketEncrypted ? 'https' : 'http');
+    const wsSchemeValue = scheme === 'https' || scheme === 'wss' ? 'wss' : 'ws';
+    const portForHost = wsSchemeValue === 'wss'
+      ? (tlsRuntime.enabled ? tlsPort : primaryPort)
+      : primaryPort;
     if (host) {
       const { host: hostOnly } = splitHostPort(host);
       if (hostOnly && isLocalHost(hostOnly) && publicHost) {
-        host = normalizeHostWithPort(publicHost, config.port);
+        host = normalizeHostWithPort(publicHost, portForHost);
       }
     } else if (publicHost) {
-      host = normalizeHostWithPort(publicHost, config.port);
+      host = normalizeHostWithPort(publicHost, portForHost);
     }
     if (!host) {
       const serverUrl = buildRelayUrlFromConfig();
@@ -431,13 +482,11 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     {
       const { host: hostOnly } = splitHostPort(host);
       if (hostOnly) {
-        host = normalizeHostWithPort(hostOnly, config.port);
+        host = normalizeHostWithPort(hostOnly, portForHost);
       }
     }
 
-    const scheme = proto?.toLowerCase();
-    const wsScheme = scheme === 'https' || scheme === 'wss' ? 'wss' : 'ws';
-    const serverUrl = `${wsScheme}://${host}/ws/`;
+    const serverUrl = `${wsSchemeValue}://${host}/ws/`;
     lastResolvedServerUrl = serverUrl;
     if (!config.publicHost) {
       const hostOnly = splitHostPort(host).host.toLowerCase() || '';
@@ -731,8 +780,11 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Unknown endpoint.' });
   };
 
-  const server = http.createServer(requestHandler);
-  const panelServer = panelPort && webPanelEnabled ? http.createServer(requestHandler) : null;
+  const createServer = (useTls: boolean) =>
+    useTls ? https.createServer(tlsRuntime.options as https.ServerOptions, requestHandler) : http.createServer(requestHandler);
+  const server = createServer(primaryUsesTls);
+  const tlsServer = tlsRuntime.enabled && !primaryUsesTls ? createServer(true) : null;
+  const panelServer = panelPort && webPanelEnabled ? createServer(tlsRuntime.enabled) : null;
 
   // WebSocket server
   const wss = new WebSocketServer({ noServer: true });
@@ -774,12 +826,14 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
   };
 
   server.on('upgrade', handleUpgrade);
+  if (tlsServer) tlsServer.on('upgrade', handleUpgrade);
   if (panelServer) panelServer.on('upgrade', handleUpgrade);
 
   return {
     start() {
-      server.listen(config.port, '0.0.0.0', () => {
-        log(`PhoneShell server listening on port ${config.port}`);
+      server.listen(primaryPort, '0.0.0.0', () => {
+        const primaryScheme = httpScheme(primaryUsesTls);
+        log(`PhoneShell server listening on port ${primaryPort} (${primaryScheme.toUpperCase()})`);
         log(`  Device: ${displayName} (${deviceId})`);
         log(`  OS: ${os}`);
         log(`  Available shells: ${availableShells.join(', ')}`);
@@ -788,7 +842,7 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
         if (config.publicHost) {
           applyPublicHostToRelay(config.publicHost);
         } else {
-          relay.setRelayUrl(`ws://localhost:${config.port}/ws/`);
+          relay.setRelayUrl(buildRelayUrlFromConfig());
         }
 
         const group = relay.getGroup();
@@ -797,16 +851,33 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
           log(`  Group Secret: ${group.groupSecret}`);
         }
 
-        if (config.publicHost) {
-          const panelHost = normalizeHostWithPort(config.publicHost, panelPort || config.port);
-          log(`  Public: http://${panelHost}/panel/`);
+        if (config.publicHost && webPanelEnabled) {
+          const panelHostPort = panelPort || (tlsRuntime.enabled ? tlsPort : primaryPort);
+          const panelHost = normalizeHostWithPort(config.publicHost, panelHostPort);
+          const panelScheme = tlsRuntime.enabled ? 'https' : 'http';
+          log(`  Public: ${panelScheme}://${panelHost}/panel/`);
         }
-        log(`  Health: http://localhost:${config.port}/ws/healthz`);
+        log(`  Health: ${primaryScheme}://localhost:${primaryPort}/ws/healthz`);
+        if (tlsServer) {
+          log(`  Health (TLS): https://localhost:${tlsPort}/ws/healthz`);
+        }
         if (webPanelEnabled) {
-          const localPanelPort = panelPort || config.port;
-          log(`  Panel: http://localhost:${localPanelPort}/panel/`);
+          if (panelPort) {
+            const panelScheme = tlsRuntime.enabled ? 'https' : 'http';
+            log(`  Panel: ${panelScheme}://localhost:${panelPort}/panel/`);
+          } else {
+            log(`  Panel: ${primaryScheme}://localhost:${primaryPort}/panel/`);
+            if (tlsServer) {
+              log(`  Panel (TLS): https://localhost:${tlsPort}/panel/`);
+            }
+          }
         }
       });
+      if (tlsServer) {
+        tlsServer.listen(tlsPort, '0.0.0.0', () => {
+          log(`TLS server listening on port ${tlsPort}`);
+        });
+      }
       if (panelServer) {
         panelServer.listen(panelPort, '0.0.0.0', () => {
           log(`Panel server listening on port ${panelPort}`);
@@ -822,8 +893,10 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
           log(`[public] Resolved public host (${result.source}): ${result.host}`);
           applyPublicHostToRelay(result.host);
           if (webPanelEnabled) {
-            const panelHost = normalizeHostWithPort(result.host, panelPort || config.port);
-            log(`  Public: http://${panelHost}/panel/`);
+            const panelHostPort = panelPort || (tlsRuntime.enabled ? tlsPort : primaryPort);
+            const panelHost = normalizeHostWithPort(result.host, panelHostPort);
+            const panelScheme = tlsRuntime.enabled ? 'https' : 'http';
+            log(`  Public: ${panelScheme}://${panelHost}/panel/`);
           }
         });
       }
@@ -833,6 +906,7 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
       terminalManager.disposeAll();
       wss.close();
       server.close();
+      tlsServer?.close();
       panelServer?.close();
       log('PhoneShell server stopped.');
     },
