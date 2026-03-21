@@ -15,6 +15,8 @@ export interface RelayClientCallbacks {
     onKicked?: (reason: string) => void;
     onGroupDissolved?: (reason: string) => void;
     onGroupJoined?: (groupId: string, groupSecret?: string) => void;
+    onServerChangeRequested?: (groupId: string, groupSecret: string) => void;
+    onServerChanged?: (newUrl: string, groupSecret: string) => void;
 }
 export declare class RelayClient {
     private ws;

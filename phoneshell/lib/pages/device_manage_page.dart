@@ -76,6 +76,8 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
   int scanMessageListenerId = -1;
   int scanStateListenerId = -1;
   String scanInviteHttpUrl = '';
+  String scanInviteDeviceId = '';
+  String pendingServerChangeDeviceId = '';
 
   @override
   void initState() {
@@ -137,6 +139,13 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
             type == 'group.member.joined' ||
             type == 'group.member.left') {
           setState(_syncDeviceLists);
+          if (type == 'group.member.joined') {
+            final member = data['member'] as Map<String, dynamic>? ?? {};
+            final joinedId = (member['deviceId'] ?? '') as String;
+            _tryRequestServerChange(joinedId);
+          } else if (type == 'group.member.list') {
+            _tryRequestServerChange();
+          }
         }
       });
     }
@@ -192,6 +201,20 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     groupMembers = _buildGroupMemberModels(ConnectionManager.instance.getGroupMembers(), groupMembers);
     isInGroup = ConnectionManager.instance.isInGroup();
     groupId = ConnectionManager.instance.getGroupId();
+  }
+
+  void _tryRequestServerChange([String? joinedDeviceId]) {
+    if (pendingServerChangeDeviceId.isEmpty) return;
+    final targetId = pendingServerChangeDeviceId;
+    final alreadyJoined = joinedDeviceId == targetId ||
+        ConnectionManager.instance.getGroupMembers().any((m) => m.deviceId == targetId);
+    if (!alreadyJoined) return;
+
+    pendingServerChangeDeviceId = '';
+    ConnectionManager.instance.requestGroupServerChange(targetId);
+    setState(() {
+      scanStatus = _t('正在切换服务器...', 'Switching server...');
+    });
   }
 
   List<DeviceItemModel> _buildDeviceModels(List<DeviceInfo> raw, List<DeviceItemModel> current) {
@@ -412,6 +435,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
       setState(() {
         inviteDeviceName = displayName;
         scanInviteHttpUrl = httpUrl;
+        scanInviteDeviceId = '';
         showInviteConfirmDialog = true;
       });
       return;
@@ -457,6 +481,11 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
               setState(() {
                 scanStatus = _t('已邀请 $deviceName 加入群组', 'Invited $deviceName to join the group');
               });
+              if (scanInviteDeviceId.isNotEmpty) {
+                pendingServerChangeDeviceId = scanInviteDeviceId;
+                scanInviteDeviceId = '';
+                _tryRequestServerChange();
+              }
               _cleanupScanListeners();
               _refreshDeviceView();
             } else {
@@ -464,6 +493,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                 parseError = _t('邀请发送失败: $message', 'Invite failed: $message');
                 scanStatus = _t('邀请失败', 'Invite failed');
               });
+              scanInviteDeviceId = '';
               _cleanupScanListeners();
             }
           });
@@ -474,6 +504,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
           parseError = _t('邀请失败: $message', 'Invite failed: $message');
           scanStatus = _t('邀请失败', 'Invite failed');
         });
+        scanInviteDeviceId = '';
         _cleanupScanListeners();
       }
     });
@@ -512,6 +543,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
       setState(() {
         inviteDeviceName = params['serverDeviceId'] ?? _t('新设备', 'New Device');
         scanInviteHttpUrl = httpUrl;
+        scanInviteDeviceId = params['serverDeviceId'] ?? '';
         showInviteConfirmDialog = true;
       });
       return;
@@ -694,6 +726,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     groupDevices = [];
     groupMembers = [];
     currentMode = singleDevices.isNotEmpty ? DeviceMode.single : DeviceMode.standalone;
+    pendingServerChangeDeviceId = '';
   }
 
   void _removeDeviceFromGroupLocal(String deviceId) {
@@ -1706,6 +1739,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                         onPressed: () {
                           setState(() {
                             showInviteConfirmDialog = false;
+                            scanInviteDeviceId = '';
                           });
                         },
                         style: OutlinedButton.styleFrom(

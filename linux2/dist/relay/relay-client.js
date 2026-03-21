@@ -138,6 +138,33 @@ export class RelayClient {
                 this.disconnect();
                 this.callbacks.onKicked?.('Group join rejected');
                 break;
+            case 'group.server.change.prepare': {
+                const prepare = message;
+                const groupId = (prepare.groupId || '').trim();
+                const groupSecret = (prepare.groupSecret || '').trim();
+                if (groupId && groupSecret) {
+                    this.callbacks.onServerChangeRequested?.(groupId, groupSecret);
+                }
+                else {
+                    this.log('Server change prepare missing group info');
+                }
+                break;
+            }
+            case 'group.server.change.commit': {
+                const commit = message;
+                const newUrl = (commit.newServerUrl || '').trim();
+                const newSecret = (commit.groupSecret || '').trim();
+                if (newSecret) {
+                    this.groupSecret = newSecret;
+                }
+                if (newUrl && newSecret) {
+                    this.callbacks.onServerChanged?.(newUrl, newSecret);
+                }
+                else {
+                    this.log('Server change commit missing new server info');
+                }
+                break;
+            }
             case 'terminal.open': {
                 const open = message;
                 if (open.deviceId === this.deviceId) {

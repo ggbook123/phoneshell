@@ -13,6 +13,7 @@ import { GroupStore } from '../store/group-store.js';
 import { GroupMembershipStore } from '../store/group-membership-store.js';
 import { TerminalHistoryStore } from '../store/terminal-history-store.js';
 import { generateQrPng, buildStandalonePayload } from '../auth/qr-service.js';
+import { serialize } from '../protocol/serializer.js';
 
 function log(msg: string): void {
   const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -101,15 +102,17 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
   }
 
   // Set auth token (server mode only)
-  const effectiveToken = config.groupSecret || config.relayAuthToken;
+  let effectiveToken = config.groupSecret || config.relayAuthToken;
 
   // Mode manager for standalone ↔ client transitions
   const modeManager = new ModeManager();
   modeManager.setLogger((msg) => log(`[mode] ${msg}`));
 
   let relayClient: RelayClient | null = null;
+  let pendingServerMigration: { groupId: string; groupSecret: string; newServerUrl: string } | null = null;
 
-  function startRelayServer(): void {
+  function startRelayServer(tokenOverride?: string): void {
+    if (tokenOverride) effectiveToken = tokenOverride;
     relay.setAuthToken(effectiveToken);
     relay.initGroup(groupStore, deviceId, displayName, os, availableShells);
     relay.registerLocalDevice(deviceId, displayName, os, availableShells);
@@ -154,10 +157,76 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
         membershipStore.clear();
         transitionBackToStandalone();
       },
+      onServerChangeRequested: (groupId, groupSecret) => {
+        const newServerUrl = startRelayServerForMigration(groupId, groupSecret);
+        if (relayClient && newServerUrl) {
+          const msg = serialize({
+            type: 'group.server.change.prepare' as const,
+            newServerUrl,
+            groupId,
+            groupSecret,
+          });
+          relayClient.send(msg);
+          log(`Server migration: prepare sent (${newServerUrl})`);
+        }
+      },
+      onServerChanged: (newUrl, newSecret) => {
+        handleServerChangeCommit(newUrl, newSecret);
+      },
     });
 
     wireTerminalOutputToClient();
     relayClient.connect(relayUrl, deviceId, displayName, os, availableShells, inviteCode, groupSecret);
+  }
+
+  function buildRelayUrlFromConfig(): string {
+    if (config.publicHost) {
+      const ph = config.publicHost.includes(':') ? config.publicHost : `${config.publicHost}:${config.port}`;
+      return `ws://${ph}/ws/`;
+    }
+    return `ws://localhost:${config.port}/ws/`;
+  }
+
+  function startRelayServerForMigration(groupId: string, groupSecret: string): string {
+    const newServerUrl = lastResolvedServerUrl || buildRelayUrlFromConfig();
+    if (!config.publicHost && !lastResolvedServerUrl) {
+      log('[mode] Server migration: publicHost not set, using localhost for new server URL');
+    }
+    pendingServerMigration = { groupId, groupSecret, newServerUrl };
+
+    groupStore.saveGroup({
+      groupId,
+      groupSecret,
+      serverDeviceId: deviceId,
+      createdAt: new Date().toISOString(),
+      members: [],
+    });
+    membershipStore.clear();
+
+    if (!modeManager.transitionToRelayFromClient()) {
+      log('[mode] Server migration: failed to switch to relay mode (already relay?)');
+    }
+    startRelayServer(groupSecret);
+    return newServerUrl;
+  }
+
+  function handleServerChangeCommit(newUrl: string, newSecret: string): void {
+    if (!newUrl || !newSecret) return;
+
+    if (pendingServerMigration && pendingServerMigration.newServerUrl === newUrl) {
+      log('Server migration committed: staying as relay server');
+      relayClient?.disconnect();
+      relayClient = null;
+      pendingServerMigration = null;
+      return;
+    }
+
+    if (modeManager.isRelay()) {
+      groupStore.clearGroup();
+      modeManager.transitionToClientFromRelay(newUrl);
+    }
+
+    startRelayClient(newUrl, '', newSecret);
   }
 
   function transitionBackToStandalone(): void {
@@ -165,6 +234,7 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
       relayClient.disconnect();
       relayClient = null;
     }
+    pendingServerMigration = null;
     modeManager.transitionToStandalone();
     startRelayServer();
     log('Transitioned back to standalone mode');
@@ -186,6 +256,8 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     startRelayServer();
   }
 
+  let lastResolvedServerUrl = '';
+
   // Resolve server URL from request headers (reverse proxy support)
   function resolveServerUrl(req: http.IncomingMessage): string {
     const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim();
@@ -206,14 +278,19 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     if (!host) {
       if (config.publicHost) {
         const ph = config.publicHost.includes(':') ? config.publicHost : `${config.publicHost}:${config.port}`;
-        return `ws://${ph}/ws/`;
+        const serverUrl = `ws://${ph}/ws/`;
+        lastResolvedServerUrl = serverUrl;
+        return serverUrl;
       }
-      return `ws://localhost:${config.port}/ws/`;
+      const serverUrl = `ws://localhost:${config.port}/ws/`;
+      lastResolvedServerUrl = serverUrl;
+      return serverUrl;
     }
 
     const scheme = proto?.toLowerCase();
     const wsScheme = scheme === 'https' || scheme === 'wss' ? 'wss' : 'ws';
     const serverUrl = `${wsScheme}://${host}/ws/`;
+    lastResolvedServerUrl = serverUrl;
     if (!config.publicHost) {
       const hostOnly = host.split(':')[0]?.toLowerCase() || '';
       if (hostOnly && hostOnly !== 'localhost' && hostOnly !== '127.0.0.1') {

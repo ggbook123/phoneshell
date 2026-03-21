@@ -264,6 +264,19 @@ class ConnectionManager {
     _groupConnection!.send(jsonEncode(msg));
   }
 
+  void requestGroupServerChange(String newServerDeviceId) {
+    if (newServerDeviceId.isEmpty) return;
+    if (_groupConnection == null) return;
+    if (_groupConnection!.connectionState != ConnectionState.connected) return;
+    if (_mobileDeviceId.isEmpty) return;
+    final msg = {
+      'type': 'group.server.change.request',
+      'newServerDeviceId': newServerDeviceId,
+      'requesterId': _mobileDeviceId,
+    };
+    _groupConnection!.send(jsonEncode(msg));
+  }
+
   void dissolveGroup() {
     if (_groupConnection == null) return;
     final msg = {'type': 'group.dissolve'};

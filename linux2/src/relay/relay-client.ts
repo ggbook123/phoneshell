@@ -15,6 +15,8 @@ export interface RelayClientCallbacks {
   onKicked?: (reason: string) => void;
   onGroupDissolved?: (reason: string) => void;
   onGroupJoined?: (groupId: string, groupSecret?: string) => void;
+  onServerChangeRequested?: (groupId: string, groupSecret: string) => void;
+  onServerChanged?: (newUrl: string, groupSecret: string) => void;
 }
 
 export class RelayClient {
@@ -174,6 +176,31 @@ export class RelayClient {
         this.disconnect();
         this.callbacks.onKicked?.('Group join rejected');
         break;
+      case 'group.server.change.prepare': {
+        const prepare = message as { groupId?: string; groupSecret?: string };
+        const groupId = (prepare.groupId || '').trim();
+        const groupSecret = (prepare.groupSecret || '').trim();
+        if (groupId && groupSecret) {
+          this.callbacks.onServerChangeRequested?.(groupId, groupSecret);
+        } else {
+          this.log('Server change prepare missing group info');
+        }
+        break;
+      }
+      case 'group.server.change.commit': {
+        const commit = message as { newServerUrl?: string; groupSecret?: string };
+        const newUrl = (commit.newServerUrl || '').trim();
+        const newSecret = (commit.groupSecret || '').trim();
+        if (newSecret) {
+          this.groupSecret = newSecret;
+        }
+        if (newUrl && newSecret) {
+          this.callbacks.onServerChanged?.(newUrl, newSecret);
+        } else {
+          this.log('Server change commit missing new server info');
+        }
+        break;
+      }
       case 'terminal.open': {
         const open = message as { deviceId: string; shellId: string };
         if (open.deviceId === this.deviceId) {

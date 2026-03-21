@@ -17,6 +17,8 @@ type LogFn = (msg: string) => void;
  *   standalone ──(invite received)──→ client
  *   relay ──────(group.dissolve)───→ standalone
  *   client ─────(kicked/dissolve)──→ standalone
+ *   client ─────(server change)────→ relay
+ *   relay ──────(server change)────→ client
  */
 export class ModeManager extends EventEmitter {
   private _mode: DeviceMode = 'standalone';
@@ -49,6 +51,19 @@ export class ModeManager extends EventEmitter {
     return true;
   }
 
+  /** Transition to relay server mode (server migration target) */
+  transitionToRelayFromClient(): boolean {
+    if (this._mode !== 'client') {
+      this.log(`Cannot transition to relay from ${this._mode}`);
+      return false;
+    }
+    const event: ModeChangeEvent = { from: this._mode, to: 'relay' };
+    this._mode = 'relay';
+    this.log('Mode transition: client → relay');
+    this.emit('modeChange', event);
+    return true;
+  }
+
   /** Transition to client mode (when invited to join a group) */
   transitionToClient(relayUrl: string, inviteCode: string): boolean {
     if (this._mode !== 'standalone') {
@@ -58,6 +73,19 @@ export class ModeManager extends EventEmitter {
     const event: ModeChangeEvent = { from: this._mode, to: 'client', relayUrl, inviteCode };
     this._mode = 'client';
     this.log(`Mode transition: standalone → client (relay: ${relayUrl})`);
+    this.emit('modeChange', event);
+    return true;
+  }
+
+  /** Transition to client mode (server migration source) */
+  transitionToClientFromRelay(relayUrl: string): boolean {
+    if (this._mode !== 'relay') {
+      this.log(`Cannot transition to client from ${this._mode}`);
+      return false;
+    }
+    const event: ModeChangeEvent = { from: this._mode, to: 'client', relayUrl };
+    this._mode = 'client';
+    this.log(`Mode transition: relay → client (relay: ${relayUrl})`);
     this.emit('modeChange', event);
     return true;
   }
