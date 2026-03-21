@@ -1,6 +1,8 @@
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
+import net from 'node:net';
 import { URL, fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import type { AppConfig } from '../config/config.js';
@@ -18,6 +20,113 @@ import { serialize } from '../protocol/serializer.js';
 function log(msg: string): void {
   const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
   console.log(`[${ts}] ${msg}`);
+}
+
+type PublicHostResult = { host: string; source: string };
+
+const publicIpProviders: Array<{ name: string; url: string; parse: (body: string) => string | null }> = [
+  {
+    name: 'ipify',
+    url: 'https://api.ipify.org?format=json',
+    parse: (body) => {
+      try {
+        const json = JSON.parse(body);
+        const ip = typeof json?.ip === 'string' ? json.ip.trim() : '';
+        return ip || null;
+      } catch {
+        return null;
+      }
+    },
+  },
+  {
+    name: 'ifconfig',
+    url: 'https://ifconfig.me/ip',
+    parse: (body) => {
+      const ip = body.trim();
+      return ip || null;
+    },
+  },
+  {
+    name: 'aws-checkip',
+    url: 'https://checkip.amazonaws.com',
+    parse: (body) => {
+      const ip = body.trim();
+      return ip || null;
+    },
+  },
+];
+
+function isLocalHost(host: string): boolean {
+  const h = host.trim().toLowerCase();
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1';
+}
+
+function splitHostPort(host: string): { host: string; port?: string } {
+  const trimmed = host.trim();
+  if (!trimmed) return { host: '' };
+  if (trimmed.startsWith('[')) {
+    const end = trimmed.indexOf(']');
+    if (end === -1) return { host: trimmed };
+    const hostOnly = trimmed.slice(1, end);
+    const rest = trimmed.slice(end + 1);
+    if (rest.startsWith(':')) return { host: hostOnly, port: rest.slice(1) };
+    return { host: hostOnly };
+  }
+  const firstColon = trimmed.indexOf(':');
+  const lastColon = trimmed.lastIndexOf(':');
+  if (firstColon !== -1 && firstColon === lastColon) {
+    return { host: trimmed.slice(0, lastColon), port: trimmed.slice(lastColon + 1) };
+  }
+  return { host: trimmed };
+}
+
+function normalizeHostWithPort(host: string, port: number): string {
+  const trimmed = host.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('[')) {
+    if (trimmed.includes(']:')) return trimmed;
+    return `${trimmed}:${port}`;
+  }
+  const ipVersion = net.isIP(trimmed);
+  if (ipVersion === 6) return `[${trimmed}]:${port}`;
+  if (trimmed.includes(':')) return trimmed;
+  return `${trimmed}:${port}`;
+}
+
+function fetchText(url: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'phoneshell' } }, (res) => {
+      if (res.statusCode && res.statusCode >= 400) {
+        res.resume();
+        reject(new Error(`HTTP ${res.statusCode}`));
+        return;
+      }
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => resolve(data));
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('timeout'));
+    });
+  });
+}
+
+async function detectPublicHost(logger: (msg: string) => void): Promise<PublicHostResult | null> {
+  for (const provider of publicIpProviders) {
+    try {
+      const body = await fetchText(provider.url, 4000);
+      const ip = provider.parse(body);
+      if (ip && net.isIP(ip) !== 0) {
+        return { host: ip, source: provider.name };
+      }
+      logger(`[public] ${provider.name} returned invalid IP`);
+    } catch (err) {
+      logger(`[public] ${provider.name} failed: ${(err as Error).message}`);
+    }
+  }
+  return null;
 }
 
 export function createApp(config: AppConfig): { start: () => void; stop: () => void } {
@@ -110,6 +219,7 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
   let relayClient: RelayClient | null = null;
   let pendingServerMigration: { groupId: string; groupSecret: string; newServerUrl: string } | null = null;
+  let resolvedPublicHost = '';
 
   function startRelayServer(tokenOverride?: string): void {
     if (tokenOverride) effectiveToken = tokenOverride;
@@ -190,17 +300,29 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     relayClient.connect(relayUrl, deviceId, displayName, os, availableShells, inviteCode, groupSecret);
   }
 
+  function getRuntimePublicHost(): string {
+    return config.publicHost || resolvedPublicHost;
+  }
+
   function buildRelayUrlFromConfig(): string {
-    if (config.publicHost) {
-      const ph = config.publicHost.includes(':') ? config.publicHost : `${config.publicHost}:${config.port}`;
+    const publicHost = getRuntimePublicHost();
+    if (publicHost) {
+      const ph = normalizeHostWithPort(publicHost, config.port);
       return `ws://${ph}/ws/`;
     }
     return `ws://localhost:${config.port}/ws/`;
   }
 
+  function applyPublicHostToRelay(host: string): void {
+    const relayHost = normalizeHostWithPort(host, config.port);
+    const relayUrl = `ws://${relayHost}/ws/`;
+    relay.setRelayUrl(relayUrl);
+    lastResolvedServerUrl = relayUrl;
+  }
+
   function startRelayServerForMigration(groupId: string, groupSecret: string): string {
     const newServerUrl = lastResolvedServerUrl || buildRelayUrlFromConfig();
-    if (!config.publicHost && !lastResolvedServerUrl) {
+    if (!config.publicHost && !resolvedPublicHost && !lastResolvedServerUrl) {
       log('[mode] Server migration: publicHost not set, using localhost for new server URL');
     }
     pendingServerMigration = { groupId, groupSecret, newServerUrl };
@@ -279,7 +401,7 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
   function resolveServerUrl(req: http.IncomingMessage): string {
     const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim();
     let host = (req.headers['x-forwarded-host'] as string)?.split(',')[0]?.trim();
-    const port = (req.headers['x-forwarded-port'] as string)?.split(',')[0]?.trim();
+    const forwardedPort = (req.headers['x-forwarded-port'] as string)?.split(',')[0]?.trim();
 
     if (!host) {
       const origin = (req.headers['origin'] || req.headers['referer']) as string | undefined;
@@ -291,17 +413,26 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
       }
     }
     host ??= req.headers['host'] as string;
-    if (port && host && !host.includes(':')) host = `${host}:${port}`;
-    if (!host) {
-      if (config.publicHost) {
-        const ph = config.publicHost.includes(':') ? config.publicHost : `${config.publicHost}:${config.port}`;
-        const serverUrl = `ws://${ph}/ws/`;
-        lastResolvedServerUrl = serverUrl;
-        return serverUrl;
+    if (forwardedPort && host && !host.includes(':')) host = `${host}:${forwardedPort}`;
+    const publicHost = getRuntimePublicHost();
+    if (host) {
+      const { host: hostOnly } = splitHostPort(host);
+      if (hostOnly && isLocalHost(hostOnly) && publicHost) {
+        host = normalizeHostWithPort(publicHost, config.port);
       }
-      const serverUrl = `ws://localhost:${config.port}/ws/`;
+    } else if (publicHost) {
+      host = normalizeHostWithPort(publicHost, config.port);
+    }
+    if (!host) {
+      const serverUrl = buildRelayUrlFromConfig();
       lastResolvedServerUrl = serverUrl;
       return serverUrl;
+    }
+    {
+      const { host: hostOnly } = splitHostPort(host);
+      if (hostOnly) {
+        host = normalizeHostWithPort(hostOnly, config.port);
+      }
     }
 
     const scheme = proto?.toLowerCase();
@@ -309,7 +440,7 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     const serverUrl = `${wsScheme}://${host}/ws/`;
     lastResolvedServerUrl = serverUrl;
     if (!config.publicHost) {
-      const hostOnly = host.split(':')[0]?.toLowerCase() || '';
+      const hostOnly = splitHostPort(host).host.toLowerCase() || '';
       if (hostOnly && hostOnly !== 'localhost' && hostOnly !== '127.0.0.1') {
         relay.setRelayUrl(serverUrl);
       }
@@ -655,8 +786,7 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
         // Set relay URL for invite system
         if (config.publicHost) {
-          const ph = config.publicHost.includes(':') ? config.publicHost : `${config.publicHost}:${config.port}`;
-          relay.setRelayUrl(`ws://${ph}/ws/`);
+          applyPublicHostToRelay(config.publicHost);
         } else {
           relay.setRelayUrl(`ws://localhost:${config.port}/ws/`);
         }
@@ -668,8 +798,8 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
         }
 
         if (config.publicHost) {
-          const ph = config.publicHost.includes(':') ? config.publicHost : `${config.publicHost}:${config.port}`;
-          log(`  Public: http://${ph}/panel/`);
+          const panelHost = normalizeHostWithPort(config.publicHost, panelPort || config.port);
+          log(`  Public: http://${panelHost}/panel/`);
         }
         log(`  Health: http://localhost:${config.port}/ws/healthz`);
         if (webPanelEnabled) {
@@ -680,6 +810,21 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
       if (panelServer) {
         panelServer.listen(panelPort, '0.0.0.0', () => {
           log(`Panel server listening on port ${panelPort}`);
+        });
+      }
+      if (!config.publicHost) {
+        void detectPublicHost((message) => log(message)).then((result) => {
+          if (!result) {
+            log('[public] Failed to resolve public host');
+            return;
+          }
+          resolvedPublicHost = result.host;
+          log(`[public] Resolved public host (${result.source}): ${result.host}`);
+          applyPublicHostToRelay(result.host);
+          if (webPanelEnabled) {
+            const panelHost = normalizeHostWithPort(result.host, panelPort || config.port);
+            log(`  Public: http://${panelHost}/panel/`);
+          }
         });
       }
     },
