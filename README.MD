@@ -18,12 +18,12 @@
 
 ## Comparison
 
-| Alternative | Pain Point | | PhoneShell Advantage | |
-|-------------|-----------|:---:|---------------------|:---:|
-| Claude Code, Codex, etc. | Locked to a single terminal; leave your desk and lose the session | :x: | Works with all CLIs — use claude, codex from your phone | :white_check_mark: |
-| SSH / Web SSH tools | Dated UI, poor mobile experience | :x: | Modern terminal experience with xterm.js rendering | :white_check_mark: |
-| Termius, etc. | Expensive, no seamless multi-device handoff | :x: | Phone, PC, Linux interconnected — sessions never drop | :white_check_mark: |
-| HappyRemote, etc. | Cannot run terminal commands, low extensibility | :x: | Native terminal + high extensibility | :white_check_mark: |
+| Alternative | Their Pain Point | PhoneShell Advantage |
+|-------------|------------------|---------------------|
+| All AI CLIs (Claude, Codex, etc.) | Locked to a single terminal; leave your desk and lose the session | Works with all CLIs — use Claude, Codex from your phone |
+| SSH / Web SSH tools | Dated UI, poor mobile experience | Modern terminal experience |
+| Termius, etc. | Expensive, no seamless multi-device handoff | Phone, PC, Linux interconnected — sessions never drop |
+| HappyRemote, etc. | Cannot run terminal commands, low extensibility | Higher extensibility |
 
 ---
 
