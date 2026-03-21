@@ -32,12 +32,12 @@
 ## 界面预览
 
 <p align="center">
-  <img src="assets/screenshots/mobile-codex.jpg" width="48%" />
-  <img src="assets/screenshots/mobile-claude.jpg" width="48%" />
+  <img src="assets/screenshots/mobile-codex.jpg" width="30%" />
+  <img src="assets/screenshots/mobile-claude.jpg" width="30%" />
 </p>
 <p align="center">
-  <img src="assets/screenshots/pc.png" width="48%" />
-  <img src="assets/screenshots/mobile-group.jpg" width="48%" />
+  <img src="assets/screenshots/pc.png" width="50%" />
+  <img src="assets/screenshots/mobile-group.jpg" width="30%" />
 </p>
 
 ---
