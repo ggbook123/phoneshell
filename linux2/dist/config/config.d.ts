@@ -9,6 +9,7 @@ export interface AppConfig {
     displayName: string;
     publicHost: string;
     port: number;
+    panelPort: number;
     relayUrl: string;
     relayAuthToken: string;
     groupSecret: string;

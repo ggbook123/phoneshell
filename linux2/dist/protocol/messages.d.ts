@@ -62,6 +62,21 @@ export interface TerminalOutputMessage {
     sessionId: string;
     data: string;
 }
+export interface TerminalHistoryRequestMessage {
+    type: 'terminal.history.request';
+    deviceId: string;
+    sessionId: string;
+    beforeSeq: number;
+    maxChars: number;
+}
+export interface TerminalHistoryResponseMessage {
+    type: 'terminal.history.response';
+    deviceId: string;
+    sessionId: string;
+    data: string;
+    nextBeforeSeq: number;
+    hasMore: boolean;
+}
 export interface TerminalResizeMessage {
     type: 'terminal.resize';
     deviceId: string;
@@ -275,4 +290,4 @@ export interface DeviceIdentity {
     displayName: string;
     createdAt: string;
 }
-export type Message = DeviceRegisterMessage | DeviceUnregisterMessage | DeviceListRequestMessage | DeviceListMessage | SessionListRequestMessage | SessionListMessage | TerminalOpenMessage | TerminalOpenedMessage | TerminalInputMessage | TerminalOutputMessage | TerminalResizeMessage | TerminalCloseMessage | TerminalClosedMessage | ControlRequestMessage | ControlGrantMessage | ControlForceDisconnectMessage | GroupJoinRequestMessage | GroupJoinAcceptedMessage | GroupJoinRejectedMessage | GroupMemberJoinedMessage | GroupMemberLeftMessage | GroupMemberListMessage | GroupKickMessage | MobileBindRequestMessage | MobileBindAcceptedMessage | MobileBindRejectedMessage | MobileUnbindMessage | AuthRequestMessage | AuthResponseMessage | PanelLoginScanMessage | ErrorMessage | GroupServerChangeRequestMessage | GroupServerChangePrepareMessage | GroupServerChangeCommitMessage | GroupSecretRotateRequestMessage | GroupSecretRotateDoneMessage | RelayDesignateMessage | RelayDesignatedMessage | InviteCreateRequestMessage | InviteCreateResponseMessage | DeviceSettingsUpdateMessage | DeviceSettingsUpdatedMessage | DeviceKickMessage | DeviceKickedMessage | GroupDissolveMessage | GroupDissolvedMessage | PanelDisconnectedMessage;
+export type Message = DeviceRegisterMessage | DeviceUnregisterMessage | DeviceListRequestMessage | DeviceListMessage | SessionListRequestMessage | SessionListMessage | TerminalOpenMessage | TerminalOpenedMessage | TerminalInputMessage | TerminalOutputMessage | TerminalHistoryRequestMessage | TerminalHistoryResponseMessage | TerminalResizeMessage | TerminalCloseMessage | TerminalClosedMessage | ControlRequestMessage | ControlGrantMessage | ControlForceDisconnectMessage | GroupJoinRequestMessage | GroupJoinAcceptedMessage | GroupJoinRejectedMessage | GroupMemberJoinedMessage | GroupMemberLeftMessage | GroupMemberListMessage | GroupKickMessage | MobileBindRequestMessage | MobileBindAcceptedMessage | MobileBindRejectedMessage | MobileUnbindMessage | AuthRequestMessage | AuthResponseMessage | PanelLoginScanMessage | ErrorMessage | GroupServerChangeRequestMessage | GroupServerChangePrepareMessage | GroupServerChangeCommitMessage | GroupSecretRotateRequestMessage | GroupSecretRotateDoneMessage | RelayDesignateMessage | RelayDesignatedMessage | InviteCreateRequestMessage | InviteCreateResponseMessage | DeviceSettingsUpdateMessage | DeviceSettingsUpdatedMessage | DeviceKickMessage | DeviceKickedMessage | GroupDissolveMessage | GroupDissolvedMessage | PanelDisconnectedMessage;

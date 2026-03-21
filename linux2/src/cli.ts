@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import readline from 'node:readline/promises';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,7 @@ type LocalOptions = {
 
 type GroupResetOptions = {
   configPath?: string;
+  restart?: boolean;
 };
 
 type StandaloneInfo = {
@@ -76,6 +77,7 @@ Usage:
 
 Options:
   --config <path>        Config file path (default: /etc/phoneshell/config.json)
+  --restart             Restart phoneshell service after reset
   --help                 Show help
 `);
 }
@@ -158,6 +160,10 @@ function parseGroupResetArgs(args: string[]): GroupResetOptions {
       opts.configPath = args[++i];
       continue;
     }
+    if (arg === '--restart') {
+      opts.restart = true;
+      continue;
+    }
   }
   return opts;
 }
@@ -221,7 +227,20 @@ function runGroupReset(options: GroupResetOptions): void {
     console.log(`[psh] cleared: ${cleared.join(', ')}`);
   }
   console.log(`[psh] base directory: ${baseDir}`);
-  console.log('[psh] restart the service to re-initialize the group');
+  if (options.restart) {
+    if (typeof process.getuid === 'function' && process.getuid() !== 0) {
+      console.warn('[psh] restart may require sudo');
+    }
+    console.log('[psh] restarting phoneshell service...');
+    const result = spawnSync('systemctl', ['restart', 'phoneshell'], { stdio: 'inherit' });
+    if (result.error || result.status !== 0) {
+      const detail = result.error ? result.error.message : `exit code ${result.status}`;
+      console.error(`[psh] failed to restart service (${detail}).`);
+      console.error('[psh] try: sudo systemctl restart phoneshell');
+    }
+  } else {
+    console.log('[psh] restart the service to re-initialize the group');
+  }
 }
 
 function normalizeWsUrl(raw: string): string {

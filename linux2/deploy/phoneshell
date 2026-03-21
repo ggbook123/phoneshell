@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_SH="${SCRIPT_DIR}/install.sh"
 PREFIX_DEFAULT="/opt/phoneshell"
 CLI_JS="${PREFIX_DEFAULT}/dist/cli.js"
+CONFIG_PATH_DEFAULT="/etc/phoneshell/config.json"
 
 show_help() {
   cat <<EOF
@@ -12,10 +13,12 @@ PhoneShell Command
 
 Usage:
   phoneshell install            Run interactive installer (menu)
+  phoneshell set                Open settings menu (ports, panel, group, service)
   phoneshell local [args]        Open local CLI (wraps: node dist/cli.js local)
   phoneshell attach [args]       Attach to existing session
   phoneshell list                List sessions
   phoneshell group reset         Clear group data (group.json + group-membership.json)
+                                Use --restart to restart service after reset
   phoneshell status              Show systemd status
   phoneshell start|stop|restart  Control systemd service
   phoneshell logs                Tail service logs
@@ -26,6 +29,229 @@ Installer shortcut:
 EOF
 }
 
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+run_systemctl() {
+  if [[ $(id -u) -ne 0 ]] && command_exists sudo; then
+    sudo systemctl "$@"
+  else
+    systemctl "$@"
+  fi
+}
+
+json_get() {
+  local config_path="$1"
+  local key="$2"
+  local fallback="$3"
+
+  if [[ ! -f "${config_path}" ]]; then
+    echo "${fallback}"
+    return 0
+  fi
+
+  if command_exists node; then
+    node -e "const fs=require('fs');const p=process.argv[1];const k=process.argv[2];const fallback=process.argv[3];let v=fallback;try{const d=JSON.parse(fs.readFileSync(p,'utf8'));v=k.split('.').reduce((o,i)=>o&&o[i],d);if(v===undefined||v===null||v===''){v=fallback}}catch{};if(typeof v==='object'){console.log(JSON.stringify(v));}else{console.log(String(v));}" \
+      "${config_path}" "${key}" "${fallback}" 2>/dev/null
+    return 0
+  fi
+
+  if command_exists python3; then
+    python3 - <<'PY' "${config_path}" "${key}" "${fallback}" 2>/dev/null
+import json,sys
+p,k,f=sys.argv[1],sys.argv[2],sys.argv[3]
+try:
+  with open(p,'r') as fh:
+    d=json.load(fh)
+  v=d
+  for part in k.split('.'):
+    v=v.get(part) if isinstance(v,dict) else None
+  if v is None or v=='':
+    v=f
+except Exception:
+  v=f
+if isinstance(v,(dict,list)):
+  print(json.dumps(v))
+else:
+  print(v)
+PY
+    return 0
+  fi
+
+  echo "${fallback}"
+}
+
+json_set() {
+  local config_path="$1"
+  local key="$2"
+  local value="$3"
+  local value_type="$4" # number|boolean|string
+
+  if [[ ! -f "${config_path}" ]]; then
+    echo "Config not found at ${config_path}. Install first."
+    return 1
+  fi
+
+  if command_exists node; then
+    node -e "const fs=require('fs');const p=process.argv[1];const k=process.argv[2];const vRaw=process.argv[3];const t=process.argv[4];const st=fs.statSync(p);const d=JSON.parse(fs.readFileSync(p,'utf8'));const parts=k.split('.');let o=d;for(let i=0;i<parts.length-1;i++){const part=parts[i];if(!o[part]||typeof o[part]!=='object'){o[part]={};}o=o[part];}let v=vRaw;if(t==='number')v=Number(vRaw);else if(t==='boolean')v=(vRaw==='true');o[parts[parts.length-1]]=v;fs.writeFileSync(p, JSON.stringify(d, null, 2));fs.chmodSync(p, st.mode & 0o777);" \
+      "${config_path}" "${key}" "${value}" "${value_type}"
+    return $?
+  fi
+
+  if command_exists python3; then
+    python3 - <<'PY' "${config_path}" "${key}" "${value}" "${value_type}"
+import json,sys,os,stat
+p,k,v_raw,v_type=sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4]
+st=os.stat(p)
+with open(p,'r') as fh:
+  d=json.load(fh)
+parts=k.split('.')
+o=d
+for part in parts[:-1]:
+  if not isinstance(o.get(part),dict):
+    o[part]={}
+  o=o[part]
+if v_type=='number':
+  v=int(v_raw)
+elif v_type=='boolean':
+  v=(v_raw=='true')
+else:
+  v=v_raw
+o[parts[-1]]=v
+with open(p,'w') as fh:
+  json.dump(d, fh, indent=2)
+os.chmod(p, st.st_mode & 0o777)
+PY
+    return $?
+  fi
+
+  echo "Node.js or python3 is required to edit config."
+  return 1
+}
+
+is_valid_port() {
+  [[ "$1" =~ ^[0-9]+$ ]] && (( "$1" >= 1 && "$1" <= 65535 ))
+}
+
+group_reset_and_restart() {
+  local config_path="${PHONESHELL_CONFIG:-${CONFIG_PATH_DEFAULT}}"
+  local base_dir
+  base_dir="$(json_get "${config_path}" "baseDirectory" "/etc/phoneshell")"
+  local data_dir="${base_dir}/data"
+  local cleared=()
+  if [[ -f "${data_dir}/group.json" ]]; then
+    rm -f "${data_dir}/group.json"
+    cleared+=("group.json")
+  fi
+  if [[ -f "${data_dir}/group-membership.json" ]]; then
+    rm -f "${data_dir}/group-membership.json"
+    cleared+=("group-membership.json")
+  fi
+  if [[ ${#cleared[@]} -eq 0 ]]; then
+    echo "[psh] no group data found to clear"
+  else
+    echo "[psh] cleared: ${cleared[*]}"
+  fi
+  echo "[psh] base directory: ${base_dir}"
+  echo "[psh] restarting phoneshell service..."
+  run_systemctl restart phoneshell
+}
+
+uninstall_linux2() {
+  echo "This will remove:"
+  echo "  - /opt/phoneshell"
+  echo "  - /etc/phoneshell"
+  echo "  - /usr/local/bin/phoneshell"
+  echo "  - systemd service phoneshell"
+  read -r -p "Continue? [y/N]: " confirm
+  case "${confirm}" in
+    y|Y|yes|YES)
+      run_systemctl stop phoneshell || true
+      run_systemctl disable phoneshell || true
+      rm -f /etc/systemd/system/phoneshell.service
+      run_systemctl daemon-reload
+      rm -rf /opt/phoneshell /etc/phoneshell /usr/local/bin/phoneshell
+      echo "Uninstall completed."
+      ;;
+    *)
+      echo "Canceled."
+      ;;
+  esac
+}
+
+run_set_menu() {
+  local config_path="${PHONESHELL_CONFIG:-${CONFIG_PATH_DEFAULT}}"
+  while true; do
+    local port panel_port web_panel
+    port="$(json_get "${config_path}" "port" "19090")"
+    panel_port="$(json_get "${config_path}" "panelPort" "9090")"
+    web_panel="$(json_get "${config_path}" "modules.webPanel" "true")"
+
+    echo ""
+    echo "PhoneShell Settings / 设置"
+    echo "1) Set core port (current: ${port}) / 设置核心端口（当前：${port}）"
+    echo "2) Set web panel port (current: ${panel_port}) / 设置面板端口（当前：${panel_port}）"
+    echo "3) Toggle web panel (current: ${web_panel}) / 打开或关闭面板（当前：${web_panel}）"
+    echo "4) Reset group and restart service / 清除 group 并重启服务"
+    echo "5) Restart service / 重启服务"
+    echo "6) Stop service / 停止服务"
+    echo "7) Uninstall linux2 / 卸载 linux2"
+    echo "8) Status / 查看状态"
+    echo "0) Exit / 退出"
+    read -r -p "Select [0-8] / 选择 [0-8]: " choice
+    case "${choice}" in
+      1)
+        read -r -p "Core port [${port}] / 核心端口 [${port}]: " input
+        if [[ -z "${input}" ]]; then input="${port}"; fi
+        if ! is_valid_port "${input}"; then
+          echo "Invalid port: ${input} / 端口无效：${input}"
+        else
+          json_set "${config_path}" "port" "${input}" "number" && run_systemctl restart phoneshell
+        fi
+        ;;
+      2)
+        read -r -p "Web panel port [${panel_port}] / 面板端口 [${panel_port}]: " input
+        if [[ -z "${input}" ]]; then input="${panel_port}"; fi
+        if ! is_valid_port "${input}"; then
+          echo "Invalid port: ${input} / 端口无效：${input}"
+        else
+          json_set "${config_path}" "panelPort" "${input}" "number" && run_systemctl restart phoneshell
+        fi
+        ;;
+      3)
+        local next="true"
+        if [[ "${web_panel}" == "true" ]]; then next="false"; fi
+        json_set "${config_path}" "modules.webPanel" "${next}" "boolean" && run_systemctl restart phoneshell
+        ;;
+      4)
+        group_reset_and_restart
+        ;;
+      5)
+        run_systemctl restart phoneshell
+        ;;
+      6)
+        run_systemctl stop phoneshell
+        ;;
+      7)
+        uninstall_linux2
+        return 0
+        ;;
+      8)
+        set +e
+        run_systemctl status phoneshell --no-pager
+        set -e
+        ;;
+      0|q|quit)
+        return 0
+        ;;
+      *)
+        echo "Invalid selection. / 无效选择。"
+        ;;
+    esac
+  done
+}
+
 run_install_menu() {
   local port="19090"
   local web_panel="true"
@@ -33,16 +259,16 @@ run_install_menu() {
 
   while true; do
     echo ""
-    echo "PhoneShell Installer"
-    echo "1) Set core port (current: ${port})"
-    echo "2) Enable web panel (current: ${web_panel})"
-    echo "3) Set web panel port (current: ${panel_port})"
-    echo "4) Install now"
-    echo "0) Exit"
-    read -r -p "Select [0-4]: " choice
+    echo "PhoneShell Installer / 安装菜单"
+    echo "1) Set core port (current: ${port}) / 设置核心端口（当前：${port}）"
+    echo "2) Enable web panel (current: ${web_panel}) / 启用面板（当前：${web_panel}）"
+    echo "3) Set web panel port (current: ${panel_port}) / 设置面板端口（当前：${panel_port}）"
+    echo "4) Install now / 立即安装"
+    echo "0) Exit / 退出"
+    read -r -p "Select [0-4] / 选择 [0-4]: " choice
     case "${choice}" in
       1)
-        read -r -p "Core port [${port}]: " input
+        read -r -p "Core port [${port}] / 核心端口 [${port}]: " input
         if [[ -n "${input}" ]]; then port="${input}"; fi
         ;;
       2)
@@ -50,9 +276,9 @@ run_install_menu() {
         ;;
       3)
         if [[ "${web_panel}" != "true" ]]; then
-          echo "Web panel is disabled. Enable it first."
+          echo "Web panel is disabled. Enable it first. / 面板已关闭，请先启用。"
         else
-          read -r -p "Web panel port [${panel_port}]: " input
+          read -r -p "Web panel port [${panel_port}] / 面板端口 [${panel_port}]: " input
           if [[ -n "${input}" ]]; then panel_port="${input}"; fi
         fi
         ;;
@@ -63,7 +289,7 @@ run_install_menu() {
         exit 0
         ;;
       *)
-        echo "Invalid selection."
+        echo "Invalid selection. / 无效选择。"
         ;;
     esac
   done
@@ -95,6 +321,9 @@ case "${cmd}" in
     else
       run_install_menu
     fi
+    ;;
+  set)
+    run_set_menu
     ;;
   local)
     require_cli

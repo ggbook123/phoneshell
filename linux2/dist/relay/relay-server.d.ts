@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import { InviteManager } from '../auth/invite-manager.js';
 import { GroupStore } from '../store/group-store.js';
+import { TerminalHistoryStore } from '../store/terminal-history-store.js';
 import type { GroupInfo, GroupMemberInfo, DeviceInfo, SessionInfo } from '../protocol/messages.js';
 type LogFn = (msg: string) => void;
 export interface RelayServerCallbacks {
@@ -22,6 +23,8 @@ export declare class RelayServer {
     private readonly tokenManager;
     private readonly inviteManager;
     private readonly outputChains;
+    private historyStore;
+    private preserveTerminalHistoryOnClose;
     private group;
     private groupStore;
     private authToken;
@@ -33,6 +36,8 @@ export declare class RelayServer {
     setCallbacks(cb: RelayServerCallbacks): void;
     setAuthToken(token: string): void;
     setRelayUrl(url: string): void;
+    setHistoryStore(store: TerminalHistoryStore | null): void;
+    setPreserveTerminalHistoryOnClose(preserve: boolean): void;
     getGroup(): GroupInfo | null;
     getInviteManager(): InviteManager;
     private send;
@@ -50,6 +55,10 @@ export declare class RelayServer {
     broadcastLocalTerminalOutput(deviceId: string, sessionId: string, data: string): Promise<void>;
     broadcastLocalTerminalClosed(deviceId: string, sessionId: string): Promise<void>;
     broadcastLocalSessionListChanged(deviceId: string): Promise<void>;
+    private appendTerminalHistory;
+    private handleTerminalHistoryRequest;
+    private removeHistoryForSession;
+    private static clampHistoryPageSize;
     private handleGroupJoinRequest;
     private handleGroupKick;
     private handleDeviceUnregister;

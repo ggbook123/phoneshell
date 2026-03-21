@@ -5,6 +5,7 @@ function defaultConfig() {
         displayName: '',
         publicHost: '',
         port: 19090,
+        panelPort: 0,
         relayUrl: '',
         relayAuthToken: '',
         groupSecret: '',
@@ -59,6 +60,12 @@ function applyEnvVars(config) {
         if (port >= 1 && port <= 65535)
             config.port = port;
     }
+    const panelPortValue = env('PHONESHELL_PANEL_PORT');
+    if (panelPortValue) {
+        const port = parseInt(panelPortValue, 10);
+        if (port >= 1 && port <= 65535)
+            config.panelPort = port;
+    }
     const modeValue = env('PHONESHELL_MODE')?.toLowerCase();
     if (modeValue === 'server' || modeValue === 'relay-server') {
         config.modules.relayServer = true;
@@ -87,6 +94,13 @@ function applyCliArgs(config, args) {
                     const port = parseInt(args[++i], 10);
                     if (port >= 1 && port <= 65535)
                         config.port = port;
+                }
+                break;
+            case '--panel-port':
+                if (i + 1 < args.length) {
+                    const port = parseInt(args[++i], 10);
+                    if (port >= 1 && port <= 65535)
+                        config.panelPort = port;
                 }
                 break;
             case '--relay':
@@ -180,6 +194,11 @@ export function loadConfig(args) {
         config.publicHost = fileConfig.publicHost;
     if (fileConfig.port !== undefined)
         config.port = fileConfig.port;
+    if (fileConfig.panelPort !== undefined) {
+        const p = fileConfig.panelPort;
+        if (typeof p === 'number')
+            config.panelPort = p;
+    }
     if (fileConfig.relayUrl !== undefined)
         config.relayUrl = fileConfig.relayUrl;
     if (fileConfig.relayAuthToken !== undefined)

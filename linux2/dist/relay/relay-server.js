@@ -5,6 +5,7 @@ import { createClientConnection, sendToClient } from './client-connection.js';
 import { TokenManager } from '../auth/token-manager.js';
 import { InviteManager } from '../auth/invite-manager.js';
 import { buildGroupBindPayload, buildPanelLoginPayload } from '../auth/qr-service.js';
+const TerminalHistoryPageChars = 20000;
 export class RelayServer {
     devices = new Map();
     clients = new Map();
@@ -12,6 +13,8 @@ export class RelayServer {
     tokenManager = new TokenManager();
     inviteManager = new InviteManager();
     outputChains = new Map();
+    historyStore = null;
+    preserveTerminalHistoryOnClose = true;
     group = null;
     groupStore = null;
     authToken = '';
@@ -23,6 +26,8 @@ export class RelayServer {
     setCallbacks(cb) { this.callbacks = cb; }
     setAuthToken(token) { this.authToken = token; }
     setRelayUrl(url) { this.relayUrl = url; }
+    setHistoryStore(store) { this.historyStore = store; }
+    setPreserveTerminalHistoryOnClose(preserve) { this.preserveTerminalHistoryOnClose = preserve; }
     getGroup() { return this.group; }
     getInviteManager() { return this.inviteManager; }
     // Wrapper for sendToClient with logging
@@ -219,7 +224,9 @@ export class RelayServer {
             this.log(`Client ${client.clientId} sent unrecognized message`);
             return;
         }
-        this.log(`Client ${client.clientId} -> ${message.type}`);
+        if (message.type !== 'terminal.output') {
+            this.log(`Client ${client.clientId} -> ${message.type}`);
+        }
         switch (message.type) {
             case 'group.join.request':
                 await this.handleGroupJoinRequest(client, message);
@@ -296,9 +303,15 @@ export class RelayServer {
                 }
                 break;
             }
+            case 'terminal.history.request': {
+                const req = message;
+                await this.handleTerminalHistoryRequest(client, req);
+                break;
+            }
             case 'terminal.output': {
                 const output = message;
                 client.subscribedDeviceId ??= output.deviceId;
+                this.appendTerminalHistory(output.deviceId, output.sessionId, output.data);
                 for (const c of this.clients.values()) {
                     if (c.clientId !== client.clientId &&
                         c.subscribedDeviceId === output.deviceId &&
@@ -365,6 +378,7 @@ export class RelayServer {
                         }));
                         client.subscribedSessionId = undefined;
                         this.callbacks.onLocalTerminalSessionEnded?.(close.sessionId);
+                        this.removeHistoryForSession(close.deviceId, close.sessionId);
                     }
                     else if (target.clientId) {
                         const dc = this.clients.get(target.clientId);
@@ -381,6 +395,10 @@ export class RelayServer {
                 for (const c of this.clients.values()) {
                     if (c.clientId !== client.clientId)
                         await this.send(c, json);
+                }
+                if (message.type === 'terminal.closed') {
+                    const closed = message;
+                    this.removeHistoryForSession(closed.deviceId, closed.sessionId);
                 }
                 break;
             case 'control.force_disconnect':
@@ -453,6 +471,7 @@ export class RelayServer {
     }
     // --- Broadcast terminal output to subscribed clients ---
     async broadcastLocalTerminalOutput(deviceId, sessionId, data) {
+        this.appendTerminalHistory(deviceId, sessionId, data);
         const msg = serialize({ type: 'terminal.output', deviceId, sessionId, data });
         const promises = [];
         for (const client of this.clients.values()) {
@@ -463,6 +482,7 @@ export class RelayServer {
         await Promise.all(promises);
     }
     async broadcastLocalTerminalClosed(deviceId, sessionId) {
+        this.removeHistoryForSession(deviceId, sessionId);
         const msg = serialize({ type: 'terminal.closed', deviceId, sessionId });
         for (const client of this.clients.values()) {
             if (client.subscribedDeviceId === deviceId && client.subscribedSessionId === sessionId) {
@@ -478,6 +498,52 @@ export class RelayServer {
             // Broadcast to all clients so session list stays fresh even before explicit subscribe.
             await this.send(client, msg);
         }
+    }
+    // --- Terminal history ---
+    appendTerminalHistory(deviceId, sessionId, data) {
+        if (!deviceId || !sessionId || !data)
+            return;
+        this.historyStore?.append(deviceId, sessionId, data);
+    }
+    async handleTerminalHistoryRequest(client, req) {
+        const deviceId = req.deviceId?.trim() || '';
+        const sessionId = req.sessionId?.trim() || '';
+        if (!deviceId || !sessionId)
+            return;
+        client.subscribedDeviceId = deviceId;
+        client.subscribedSessionId = sessionId;
+        if (!this.historyStore) {
+            await this.send(client, serialize({
+                type: 'terminal.history.response',
+                deviceId,
+                sessionId,
+                data: '',
+                nextBeforeSeq: 0,
+                hasMore: false,
+            }));
+            return;
+        }
+        const page = this.historyStore.getPage(deviceId, sessionId, req.beforeSeq || 0, RelayServer.clampHistoryPageSize(req.maxChars || 0));
+        await this.send(client, serialize({
+            type: 'terminal.history.response',
+            deviceId,
+            sessionId,
+            data: page.data,
+            nextBeforeSeq: page.nextBeforeSeq,
+            hasMore: page.hasMore,
+        }));
+    }
+    removeHistoryForSession(deviceId, sessionId) {
+        if (!deviceId || !sessionId)
+            return;
+        if (this.preserveTerminalHistoryOnClose)
+            return;
+        this.historyStore?.removeSession(deviceId, sessionId);
+    }
+    static clampHistoryPageSize(requested) {
+        if (requested <= 0)
+            return TerminalHistoryPageChars;
+        return Math.min(requested, TerminalHistoryPageChars);
     }
     // --- Group handlers ---
     async handleGroupJoinRequest(client, req) {

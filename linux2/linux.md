@@ -76,6 +76,15 @@ phoneshell logs
 phoneshell group reset
 sudo systemctl restart phoneshell
 ```
+或一键重置并重启：
+```bash
+phoneshell group reset --restart
+```
+
+- 打开设置菜单（端口/面板/重置/服务/卸载/状态）
+```bash
+phoneshell set
+```
 
 - 启停服务
 ```bash
