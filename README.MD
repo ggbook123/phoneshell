@@ -23,12 +23,9 @@
 
 ## Comparison
 
-| Alternative | Their Pain Point | PhoneShell Advantage |
-|-------------|------------------|---------------------|
-| All AI CLIs (Claude, Codex, etc.) | Locked to a single terminal; leave your desk and lose the session | Works with all CLIs — use Claude, Codex from your phone |
-| SSH / Web SSH tools | Dated UI, poor mobile experience | Modern terminal experience |
-| Termius, etc. | Expensive, no seamless multi-device handoff | Phone, PC, Linux interconnected — sessions never drop |
-| HappyRemote, etc. | Cannot run terminal commands, low extensibility | Higher extensibility |
+<p align="center">
+  <img src="assets/screenshots/comparison.png" width="90%" />
+</p>
 
 ---
 

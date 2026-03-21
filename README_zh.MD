@@ -23,12 +23,9 @@
 
 ## 与同类工具对比
 
-| 对比对象 | 他们的问题 | PhoneShell 优势 |
-|---------|-----------|----------------|
-| 所有 AI CLI（Claude、Codex 等） | 只能在单一终端使用，离开电脑就断了 | 兼容所有 CLI，手机上也能用 Claude、Codex |
-| SSH 工具 / Web SSH 工具 | 界面古老，移动端不友好、体验差 | 现代化终端体验 |
-| Termius 等工具 | 付费昂贵，做不到无缝连接 | 手机、PC、Linux 都可互连，会话不断开 |
-| HappyRemote 等工具 | 无法运行终端命令，可扩展性差 | 更高扩展性 |
+<p align="center">
+  <img src="assets/screenshots/comparison.png" width="90%" />
+</p>
 
 ---
 
