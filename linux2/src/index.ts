@@ -13,6 +13,7 @@ Options:
   --config <path>         Config file path (default: /etc/phoneshell/config.json)
   --name <name>           Device display name
   --port <port>           Listen port (default: 19090)
+  --panel-port <port>     Web panel port (default: same as --port)
   --mode <mode>           Operating mode: standalone (default), server, client
   --group-secret <secret> Group secret for authentication
   --public-host <host>    Public hostname (for NAT traversal)
@@ -27,6 +28,7 @@ Options:
 
 Environment Variables:
   PHONESHELL_NAME, PHONESHELL_PORT, PHONESHELL_MODE,
+  PHONESHELL_PANEL_PORT,
   PHONESHELL_GROUP_SECRET, PHONESHELL_PUBLIC_HOST,
   PHONESHELL_RELAY_URL, PHONESHELL_RELAY_TOKEN
 `);

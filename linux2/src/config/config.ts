@@ -13,6 +13,7 @@ export interface AppConfig {
   displayName: string;
   publicHost: string;
   port: number;
+  panelPort: number;
   relayUrl: string;
   relayAuthToken: string;
   groupSecret: string;
@@ -29,6 +30,7 @@ function defaultConfig(): AppConfig {
     displayName: '',
     publicHost: '',
     port: 19090,
+    panelPort: 0,
     relayUrl: '',
     relayAuthToken: '',
     groupSecret: '',
@@ -85,6 +87,12 @@ function applyEnvVars(config: AppConfig): void {
     if (port >= 1 && port <= 65535) config.port = port;
   }
 
+  const panelPortValue = env('PHONESHELL_PANEL_PORT');
+  if (panelPortValue) {
+    const port = parseInt(panelPortValue, 10);
+    if (port >= 1 && port <= 65535) config.panelPort = port;
+  }
+
   const modeValue = env('PHONESHELL_MODE')?.toLowerCase();
   if (modeValue === 'server' || modeValue === 'relay-server') {
     config.modules.relayServer = true;
@@ -111,6 +119,12 @@ function applyCliArgs(config: AppConfig, args: string[]): string | undefined {
         if (i + 1 < args.length) {
           const port = parseInt(args[++i], 10);
           if (port >= 1 && port <= 65535) config.port = port;
+        }
+        break;
+      case '--panel-port':
+        if (i + 1 < args.length) {
+          const port = parseInt(args[++i], 10);
+          if (port >= 1 && port <= 65535) config.panelPort = port;
         }
         break;
       case '--relay':
@@ -180,6 +194,10 @@ export function loadConfig(args: string[]): AppConfig {
   if (fileConfig.displayName !== undefined) config.displayName = fileConfig.displayName;
   if (fileConfig.publicHost !== undefined) config.publicHost = fileConfig.publicHost;
   if (fileConfig.port !== undefined) config.port = fileConfig.port;
+  if ((fileConfig as Record<string, unknown>).panelPort !== undefined) {
+    const p = (fileConfig as Record<string, unknown>).panelPort;
+    if (typeof p === 'number') config.panelPort = p;
+  }
   if (fileConfig.relayUrl !== undefined) config.relayUrl = fileConfig.relayUrl;
   if (fileConfig.relayAuthToken !== undefined) config.relayAuthToken = fileConfig.relayAuthToken;
   if (fileConfig.groupSecret !== undefined) config.groupSecret = fileConfig.groupSecret;

@@ -20,6 +20,8 @@ function log(msg: string): void {
 }
 
 export function createApp(config: AppConfig): { start: () => void; stop: () => void } {
+  const webPanelEnabled = !!config.modules.webPanel;
+  const panelPort = config.panelPort && config.panelPort !== config.port ? config.panelPort : 0;
   const deviceStore = new DeviceStore(config.baseDirectory);
   const groupStore = new GroupStore(config.baseDirectory);
   const membershipStore = new GroupMembershipStore(config.baseDirectory);
@@ -242,7 +244,7 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
   let cachedQrPayload = '';
   let cachedQrPng: Buffer | null = null;
 
-  const server = http.createServer(async (req, res) => {
+  const requestHandler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
 
@@ -317,6 +319,10 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
     // --- Panel HTML ---
     if (pathname === '/' || pathname === '/panel') {
+      if (!webPanelEnabled) {
+        res.writeHead(404).end();
+        return;
+      }
       const html = getPanelHtml();
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
       res.end(html);
@@ -325,6 +331,10 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
     // --- Panel static assets from web/dist ---
     if (pathname.startsWith('/panel/')) {
+      if (!webPanelEnabled) {
+        res.writeHead(404).end();
+        return;
+      }
       const assetPath = pathname.slice('/panel/'.length);
       const currentFilePath = fileURLToPath(import.meta.url);
       const webDistDir = path.resolve(path.dirname(currentFilePath), '../../web/dist');
@@ -355,17 +365,29 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
     // --- Panel API (no auth required for bootstrap) ---
     if (pathname === '/api/panel/verify') {
+      if (!webPanelEnabled) {
+        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+        return;
+      }
       writeJson(res, 200, { valid: false });
       return;
     }
 
     if (pathname === '/api/panel/pairing') {
+      if (!webPanelEnabled) {
+        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+        return;
+      }
       const serverUrl = resolveServerUrl(req);
       writeJson(res, 200, relay.getPanelPairingPayload(serverUrl));
       return;
     }
 
     if (pathname === '/api/panel/qr.png') {
+      if (!webPanelEnabled) {
+        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+        return;
+      }
       const payload = url.searchParams.get('payload') || relay.getBindQrPayload(resolveServerUrl(req));
       if (!payload) { writeJson(res, 404, { type: 'error', code: 'not_found', message: 'QR payload not available.' }); return; }
       if (cachedQrPayload === payload && cachedQrPng) {
@@ -385,6 +407,10 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     }
 
     if (pathname === '/api/panel/login/start') {
+      if (!webPanelEnabled) {
+        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+        return;
+      }
       const serverUrl = resolveServerUrl(req);
       const requesterAddress = req.socket.remoteAddress;
       const payload = relay.startPanelLogin(requesterAddress, serverUrl);
@@ -393,6 +419,10 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     }
 
     if (pathname.startsWith('/api/panel/login/status/')) {
+      if (!webPanelEnabled) {
+        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+        return;
+      }
       const requestId = pathname.slice('/api/panel/login/status/'.length);
       if (!requestId) { writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'Request ID is required.' }); return; }
       const status = relay.getPanelLoginStatus(requestId);
@@ -402,6 +432,10 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     }
 
     if (pathname === '/api/panel/login/qr.png') {
+      if (!webPanelEnabled) {
+        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+        return;
+      }
       const payload = url.searchParams.get('payload');
       if (!payload) { writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'Payload query parameter is required.' }); return; }
       try {
@@ -468,12 +502,15 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     }
 
     writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Unknown endpoint.' });
-  });
+  };
+
+  const server = http.createServer(requestHandler);
+  const panelServer = panelPort && webPanelEnabled ? http.createServer(requestHandler) : null;
 
   // WebSocket server
   const wss = new WebSocketServer({ noServer: true });
 
-  server.on('upgrade', (req, socket, head) => {
+  const handleUpgrade = (req: http.IncomingMessage, socket: any, head: Buffer) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
 
@@ -507,7 +544,10 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     wss.handleUpgrade(req, socket, head, (ws) => {
       relay.handleConnection(ws);
     });
-  });
+  };
+
+  server.on('upgrade', handleUpgrade);
+  if (panelServer) panelServer.on('upgrade', handleUpgrade);
 
   return {
     start() {
@@ -536,14 +576,23 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
           log(`  Public: http://${ph}/panel/`);
         }
         log(`  Health: http://localhost:${config.port}/ws/healthz`);
-        log(`  Panel: http://localhost:${config.port}/panel/`);
+        if (webPanelEnabled) {
+          const localPanelPort = panelPort || config.port;
+          log(`  Panel: http://localhost:${localPanelPort}/panel/`);
+        }
       });
+      if (panelServer) {
+        panelServer.listen(panelPort, '0.0.0.0', () => {
+          log(`Panel server listening on port ${panelPort}`);
+        });
+      }
     },
     stop() {
       relay.stop();
       terminalManager.disposeAll();
       wss.close();
       server.close();
+      panelServer?.close();
       log('PhoneShell server stopped.');
     },
   };

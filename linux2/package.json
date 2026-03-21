@@ -4,6 +4,20 @@
   "description": "PhoneShell Linux server — Node.js + TypeScript",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "psh": "dist/cli.js",
+    "phoneshell": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "deploy",
+    "web/dist",
+    "package.json",
+    "package-lock.json"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
