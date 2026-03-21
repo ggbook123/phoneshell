@@ -1074,9 +1074,9 @@
                                    Foreground="{StaticResource Text2Brush}"
                                    TextWrapping="Wrap"
                                    FontFamily="{StaticResource BodyFont}" />
-                        <TextBlock Text="本软件为开源软件，仅供学习、交流 请勿用于商业化，原作者拥有最终解释权。"
-                                   Margin="0,8,0,0"
-                                   FontSize="11.5"
+                        <TextBlock Text="本软件遵循 GNU AGPL-3.0 许可证，详见 LICENSE。"
+                                  Margin="0,8,0,0"
+                                  FontSize="11.5"
                                    Foreground="{StaticResource Text2Brush}"
                                    TextWrapping="Wrap"
                                    FontFamily="{StaticResource BodyFont}" />
