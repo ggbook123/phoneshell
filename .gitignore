@@ -1,0 +1,43 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Agent / local workspace artifacts
+.claude/
+.dotnet/
+.dotnet-home/
+.nuget/
+plan/
+一些日志/
+tmp_prefix_test.cs
+
+# Git-incompatible / device-like names surfaced by Windows tools
+nul
+**/nul
+
+# .NET
+**/bin/
+**/obj/
+*.user
+*.suo
+
+# HarmonyOS / DevEco
+harmony/node_modules/
+harmony/oh_modules/
+harmony/.hvigor/
+harmony/**/build/
+harmony/local.properties
+harmony/.idea/
+harmony/.cxx/
+harmony/.preview/
+harmony/.test/
+
+# Logs / runtime state
+*.log
+pc/src/PhoneShell.App/data/
+pc/src/PhoneShell.App/bin/**/data/
+pc/installer/out/
+pc/installer/publish/
+pc/installer/certs/

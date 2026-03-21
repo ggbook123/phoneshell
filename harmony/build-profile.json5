@@ -1,0 +1,56 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "storeFile": "D:/2/keyphoneshell/keyphoneshell.p12",
+          "storePassword": "00000019A238FBE83A5A1A78EB9EC8A26B750E2EB077940A09D2FAA032E6AB3EE5BAB59BD03F75FBC4",
+          "keyAlias": "ggnike123",
+          "keyPassword": "00000019B474D249B5EE3D23CC381B0DAAEA639E4FCE1D2682E7BC23BFCE06E16C9B3E7F34AA0FA787",
+          "signAlg": "SHA256withECDSA",
+          "profile": "D:/2/keyphoneshell/phoneshellRelease.p7b",
+          "certpath": "D:/2/keyphoneshell/phoneshell4.cer"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "targetSdkVersion": "6.0.0(20)",
+        "compatibleSdkVersion": "5.0.4(16)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug",
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

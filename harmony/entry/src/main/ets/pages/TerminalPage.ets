@@ -1,0 +1,777 @@
+import { webview } from '@kit.ArkWeb';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { AppColors, AppSizes, ConnectionState } from '../common/Constants';
+import { I18n } from '../common/I18n';
+import { SafeAreaUtil } from '../common/SafeArea';
+import { ConnectionManager } from '../services/ConnectionManager';
+import window from '@ohos.window';
+
+const DOMAIN = 0x0000;
+const PAGE_TAG = 'TerminalPage';
+
+interface ShortcutKey {
+  label: string;
+  data: string;
+}
+
+interface KeyboardAvoidAreaChangeInfo {
+  type: window.AvoidAreaType;
+  area: window.AvoidArea;
+}
+
+class TerminalBridge {
+  onReadyCallback: (cols: number, rows: number) => void = (_cols: number, _rows: number) => {};
+  onResizeCallback: (cols: number, rows: number) => void = (_cols: number, _rows: number) => {};
+  onInputCallback: (data: string) => void = (_data: string) => {};
+  onInteractionCallback: () => void = () => {};
+
+  onTerminalReady(cols: number, rows: number): void {
+    this.onReadyCallback(cols, rows);
+  }
+
+  onTerminalResize(cols: number, rows: number): void {
+    this.onResizeCallback(cols, rows);
+  }
+
+  sendInput(data: string): void {
+    this.onInputCallback(data);
+  }
+
+  onTerminalInteraction(): void {
+    this.onInteractionCallback();
+  }
+
+  logMessage(_message: string): void {
+  }
+}
+
+@Entry
+@Component
+struct TerminalPage {
+  @State sessionActive: boolean = true;
+  @State connectionState: ConnectionState = ConnectionState.CONNECTED;
+  @State terminalReady: boolean = false;
+  @State terminalHint: string = I18n.t(I18n.getLanguage(), '正在初始化终端...', 'Initializing terminal...');
+  @State historyLoadingVisible: boolean = false;
+  @State showSessionClosedDialog: boolean = false;
+  @State safeAreaTop: number = 0;
+  @State safeAreaBottom: number = 0;
+  @State safeAreaLeft: number = 0;
+  @State safeAreaRight: number = 0;
+  @State keyboardHeight: number = 0;
+  private stateListenerId: number = -1;
+  private messageListenerId: number = -1;
+  private terminalController: webview.WebviewController = new webview.WebviewController();
+  private terminalBridge: TerminalBridge = new TerminalBridge();
+  private terminalPageUrl: string = 'resource://rawfile/terminal/index.html';
+  private maxOutputLength: number = 200000;
+  private historyPageChars: number = 20000;
+  private pendingTerminalOutput: string = '';
+  private pendingHistoryOutput: string = '';
+  private pendingHistoryReplace: string = '';
+  private historyChunks: Array<string> = [];
+  private historyBeforeSeq: number = 0;
+  private historyLoading: boolean = false;
+  private historyComplete: boolean = false;
+  private historyStarted: boolean = false;
+  private historyPlanned: boolean = false;
+  private historySessionId: string = '';
+  private historyDeviceId: string = '';
+  private flushTimer: number = -1;
+  private lastReportedCols: number = 0;
+  private lastReportedRows: number = 0;
+  private viewedSessionId: string = '';
+  private keyboardWindow: window.Window | null = null;
+  private keyboardAvoidAreaCallback: ((data: KeyboardAvoidAreaChangeInfo) => void) | null = null;
+
+  private normalizeString(value: string | undefined | null, fallback: string = ''): string {
+    if (typeof value === 'string') {
+      return value;
+    }
+    return fallback;
+  }
+
+  private t(zhText: string, enText: string): string {
+    return I18n.t(I18n.getLanguage(), zhText, enText);
+  }
+
+  private getMessageString(data: Record<string, Object>, key: string, fallback: string = ''): string {
+    const value: Object | undefined = data[key];
+    if (typeof value === 'string') {
+      return value as string;
+    }
+    return fallback;
+  }
+
+  private getMessageNumber(data: Record<string, Object>, key: string, fallback: number = 0): number {
+    const value: Object | undefined = data[key];
+    if (typeof value === 'number') {
+      return value as number;
+    }
+    if (typeof value === 'string') {
+      const parsed: number = Number(value as string);
+      return Number.isNaN(parsed) ? fallback : parsed;
+    }
+    return fallback;
+  }
+
+  private getMessageBoolean(data: Record<string, Object>, key: string, fallback: boolean = false): boolean {
+    const value: Object | undefined = data[key];
+    if (typeof value === 'boolean') {
+      return value as boolean;
+    }
+    if (typeof value === 'number') {
+      return (value as number) !== 0;
+    }
+    if (typeof value === 'string') {
+      const raw: string = (value as string).toLowerCase();
+      if (raw === 'true' || raw === '1') return true;
+      if (raw === 'false' || raw === '0') return false;
+    }
+    return fallback;
+  }
+
+  private shortcutKeys: Array<ShortcutKey> = [
+    { label: 'Ctrl+C', data: '\x03' } as ShortcutKey,
+    { label: 'Ctrl+D', data: '\x04' } as ShortcutKey,
+    { label: 'Ctrl+Z', data: '\x1A' } as ShortcutKey,
+    { label: 'Tab', data: '\t' } as ShortcutKey,
+    { label: 'Esc', data: '\x1B' } as ShortcutKey,
+    { label: '↑', data: '\x1B[A' } as ShortcutKey,
+    { label: '↓', data: '\x1B[B' } as ShortcutKey,
+    { label: '←', data: '\x1B[D' } as ShortcutKey,
+    { label: '→', data: '\x1B[C' } as ShortcutKey,
+    { label: 'Home', data: '\x1B[H' } as ShortcutKey,
+    { label: 'End', data: '\x1B[F' } as ShortcutKey
+  ];
+
+  aboutToAppear(): void {
+    hilog.info(DOMAIN, PAGE_TAG, 'aboutToAppear');
+    this.syncSafeArea();
+    this.registerKeyboardAvoidArea();
+    // Reset state for fresh terminal view each time we enter
+    this.pendingTerminalOutput = '';
+    this.resetHistoryState();
+    this.terminalReady = false;
+    this.terminalHint = this.t('正在初始化终端...', 'Initializing terminal...');
+    this.historyLoadingVisible = false;
+    this.showSessionClosedDialog = false;
+    this.viewedSessionId = this.normalizeString(ConnectionManager.getActiveSessionId());
+    this.activatePage();
+  }
+
+  private async syncSafeArea(): Promise<void> {
+    const insets = await SafeAreaUtil.resolveInsets(this.getUIContext());
+    this.safeAreaTop = insets.top;
+    this.safeAreaBottom = insets.bottom;
+    this.safeAreaLeft = insets.left;
+    this.safeAreaRight = insets.right;
+  }
+
+  private async registerKeyboardAvoidArea(): Promise<void> {
+    if (this.keyboardWindow !== null) {
+      return;
+    }
+    const uiContext = this.getUIContext();
+    const context = uiContext.getHostContext();
+    if (context === undefined) {
+      return;
+    }
+
+    try {
+      const mainWindow: window.Window = await window.getLastWindow(context);
+      this.keyboardWindow = mainWindow;
+      const keyboardArea: window.AvoidArea = mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD);
+      this.keyboardHeight = uiContext.px2vp(keyboardArea.bottomRect.height);
+
+      this.keyboardAvoidAreaCallback = (data: KeyboardAvoidAreaChangeInfo) => {
+        if (data.type !== window.AvoidAreaType.TYPE_KEYBOARD) {
+          return;
+        }
+        this.keyboardHeight = uiContext.px2vp(data.area.bottomRect.height);
+      };
+
+      mainWindow.on('avoidAreaChange', this.keyboardAvoidAreaCallback);
+    } catch (err) {
+      hilog.warn(DOMAIN, PAGE_TAG, 'Failed to register keyboard avoid area: %{public}s', JSON.stringify(err));
+    }
+  }
+
+  private unregisterKeyboardAvoidArea(): void {
+    if (this.keyboardWindow !== null && this.keyboardAvoidAreaCallback !== null) {
+      try {
+        this.keyboardWindow.off('avoidAreaChange', this.keyboardAvoidAreaCallback);
+      } catch (_err) {
+        // Ignore errors during page transitions.
+      }
+    }
+    this.keyboardWindow = null;
+    this.keyboardAvoidAreaCallback = null;
+    this.keyboardHeight = 0;
+  }
+
+  private getShortcutBarOffset(): number {
+    const offset: number = this.keyboardHeight - this.safeAreaBottom;
+    return offset > 0 ? offset : 0;
+  }
+
+  aboutToDisappear(): void {
+    hilog.warn(DOMAIN, PAGE_TAG, 'aboutToDisappear sessionActive=%{public}s',
+      this.sessionActive ? 'true' : 'false');
+    this.deactivatePage();
+    this.unregisterKeyboardAvoidArea();
+
+    // In multi-session mode, do NOT close the terminal when navigating away.
+    // The session stays alive on the PC side.
+    // Only close if session is already inactive (disconnected/error).
+  }
+
+  onPageShow(): void {
+    hilog.info(DOMAIN, PAGE_TAG, 'onPageShow');
+    this.activatePage();
+  }
+
+  onPageHide(): void {
+    hilog.warn(DOMAIN, PAGE_TAG, 'onPageHide');
+    this.deactivatePage();
+  }
+
+  private activatePage(): void {
+    this.terminalBridge.onReadyCallback = (cols: number, rows: number) => {
+      this.onTerminalReady(cols, rows);
+    };
+    this.terminalBridge.onResizeCallback = (cols: number, rows: number) => {
+      this.onTerminalResize(cols, rows);
+    };
+    this.terminalBridge.onInputCallback = (data: string) => {
+      ConnectionManager.sendTerminalInput(data);
+    };
+    this.terminalBridge.onInteractionCallback = () => {
+      this.requestRemoteResize();
+      this.runTerminalScript('window.phoneShell && window.phoneShell.focus();');
+    };
+
+    this.connectionState = ConnectionManager.getConnectionStateForDevice(ConnectionManager.getActiveDeviceId());
+    this.viewedSessionId = this.normalizeString(ConnectionManager.getActiveSessionId(), this.viewedSessionId);
+    this.sessionActive = this.viewedSessionId.length > 0;
+    this.historyPlanned = this.sessionActive && this.viewedSessionId.length > 0;
+    hilog.info(DOMAIN, PAGE_TAG, 'activatePage connected=%{public}d sessionActive=%{public}s session=%{public}s',
+      this.connectionState, this.sessionActive ? 'true' : 'false', this.viewedSessionId);
+
+    if (this.stateListenerId === -1) {
+      this.stateListenerId = ConnectionManager.addOnStateChange((state: ConnectionState, _deviceId: string) => {
+        hilog.info(DOMAIN, PAGE_TAG, 'state listener %{public}d', state);
+        this.connectionState = state;
+        if (state === ConnectionState.DISCONNECTED) {
+          this.sessionActive = false;
+          this.terminalHint = this.t('连接已断开', 'Disconnected');
+          this.historyLoadingVisible = false;
+        }
+      });
+    }
+
+    if (this.messageListenerId === -1) {
+      this.messageListenerId = ConnectionManager.addOnMessage((type: string, data: Record<string, Object>) => {
+        if (type === 'terminal.output') {
+          if (this.isCurrentSessionMessage(data)) {
+            const output: string = this.getMessageString(data, 'data');
+            if (this.historyPlanned && !this.historyComplete) {
+              this.appendPendingHistoryOutput(output);
+            } else {
+              this.enqueueTerminalOutput(output);
+            }
+          }
+        } else if (type === 'terminal.history.response') {
+          this.handleHistoryResponse(data);
+        } else if (type === 'terminal.closed') {
+          if (this.isCurrentSessionMessage(data)) {
+            this.sessionActive = false;
+            this.terminalHint = this.t('PC 端已关闭当前会话', 'Session closed on PC');
+            this.historyLoadingVisible = false;
+            this.showSessionClosedDialog = true;
+          }
+        } else if (type === 'error') {
+          const errorMsg: string = this.getMessageString(data, 'message', 'Error');
+          const errorPrefix: string = this.t('[错误]', '[Error]');
+          this.enqueueTerminalOutput(`\r\n${errorPrefix} ${errorMsg}\r\n`);
+        }
+      });
+    }
+
+    if (this.terminalReady) {
+      this.requestRemoteResize();
+      this.startHistoryLoadIfNeeded();
+      this.flushPendingTerminalOutput();
+    }
+  }
+
+  private deactivatePage(): void {
+    if (this.flushTimer !== -1) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = -1;
+    }
+
+    if (this.stateListenerId !== -1) {
+      ConnectionManager.removeOnStateChange(this.stateListenerId);
+      this.stateListenerId = -1;
+    }
+
+    if (this.messageListenerId !== -1) {
+      ConnectionManager.removeOnMessage(this.messageListenerId);
+      this.messageListenerId = -1;
+    }
+
+    // Reset bridge callbacks to no-op to prevent stale references (Bug #9)
+    this.terminalBridge.onReadyCallback = (_cols: number, _rows: number) => {};
+    this.terminalBridge.onResizeCallback = (_cols: number, _rows: number) => {};
+    this.terminalBridge.onInputCallback = (_data: string) => {};
+    this.terminalBridge.onInteractionCallback = () => {};
+  }
+
+  private enqueueTerminalOutput(data: string): void {
+    const output: string = this.normalizeString(data);
+    if (output.length === 0) {
+      return;
+    }
+
+    this.pendingTerminalOutput += output;
+    if (this.pendingTerminalOutput.length > this.maxOutputLength) {
+      this.pendingTerminalOutput = this.pendingTerminalOutput.substring(
+        this.pendingTerminalOutput.length - this.maxOutputLength
+      );
+    }
+
+    this.scheduleFlush();
+  }
+
+  private scheduleFlush(): void {
+    if (!this.terminalReady || this.flushTimer !== -1) {
+      return;
+    }
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = -1;
+      this.flushPendingTerminalOutput();
+    }, 16) as number;
+  }
+
+  private flushPendingTerminalOutput(): void {
+    if (!this.terminalReady || this.pendingTerminalOutput.length === 0) {
+      return;
+    }
+    if (this.historyPlanned && !this.historyComplete) {
+      return;
+    }
+
+    const payload: string = JSON.stringify(this.pendingTerminalOutput);
+    this.pendingTerminalOutput = '';
+    this.runTerminalScript(`window.phoneShell && window.phoneShell.write(${payload});`);
+  }
+
+  private runTerminalScript(script: string): void {
+    try {
+      this.terminalController.runJavaScript(script);
+    } catch (_err) {
+      // Ignore WebView script errors during page transitions.
+    }
+  }
+
+  private onTerminalReady(cols: number, rows: number): void {
+    this.terminalReady = true;
+    this.terminalHint = this.t('等待终端输出...', 'Waiting for terminal output...');
+    this.handleTerminalResize(cols, rows);
+    this.startHistoryLoadIfNeeded();
+    this.applyPendingHistoryReplace();
+    this.flushPendingTerminalOutput();
+    this.runTerminalScript('window.phoneShell && window.phoneShell.focus();');
+  }
+
+  private onTerminalResize(cols: number, rows: number): void {
+    this.handleTerminalResize(cols, rows);
+  }
+
+  private handleTerminalResize(cols: number, rows: number): void {
+    if (cols <= 0 || rows <= 0) {
+      return;
+    }
+
+    if (this.lastReportedCols === cols && this.lastReportedRows === rows) {
+      return;
+    }
+
+    this.lastReportedCols = cols;
+    this.lastReportedRows = rows;
+    this.requestRemoteResize();
+  }
+
+  private requestRemoteResize(): void {
+    if (!this.sessionActive || this.lastReportedCols <= 0 || this.lastReportedRows <= 0) {
+      return;
+    }
+
+    ConnectionManager.sendTerminalResize(this.lastReportedCols, this.lastReportedRows);
+  }
+
+  private resetHistoryState(): void {
+    this.historyPlanned = false;
+    this.historyStarted = false;
+    this.historyLoading = false;
+    this.historyComplete = false;
+    this.historyBeforeSeq = 0;
+    this.historyChunks = [];
+    this.pendingHistoryOutput = '';
+    this.pendingHistoryReplace = '';
+    this.historySessionId = '';
+    this.historyDeviceId = '';
+    this.historyLoadingVisible = false;
+  }
+
+  private syncHistoryLoadingOverlay(): void {
+    this.historyLoadingVisible = this.terminalReady &&
+      this.historyStarted &&
+      !this.historyComplete &&
+      this.sessionActive;
+  }
+
+  private startHistoryLoadIfNeeded(): void {
+    if (!this.historyPlanned || this.historyStarted) {
+      return;
+    }
+    if (!this.sessionActive || this.viewedSessionId.length === 0) {
+      return;
+    }
+    if (!this.terminalReady) {
+      return;
+    }
+
+    this.historyStarted = true;
+    this.historySessionId = this.viewedSessionId;
+    this.historyDeviceId = this.normalizeString(ConnectionManager.getActiveDeviceId());
+    this.historyLoading = false;
+    this.historyComplete = false;
+    this.historyBeforeSeq = 0;
+    this.historyChunks = [];
+    this.pendingHistoryReplace = '';
+
+    this.requestHistoryPage();
+    this.syncHistoryLoadingOverlay();
+  }
+
+  private requestHistoryPage(): void {
+    if (this.historyLoading || this.historyComplete) {
+      return;
+    }
+    if (this.historySessionId.length === 0 || this.historyDeviceId.length === 0) {
+      return;
+    }
+    this.historyLoading = true;
+    ConnectionManager.requestTerminalHistory(
+      this.historyDeviceId,
+      this.historySessionId,
+      this.historyBeforeSeq,
+      this.historyPageChars
+    );
+  }
+
+  private handleHistoryResponse(data: Record<string, Object>): void {
+    if (!this.historyPlanned || !this.isCurrentSessionMessage(data)) {
+      return;
+    }
+    this.historyLoading = false;
+
+    const chunk: string = this.getMessageString(data, 'data');
+    const nextBeforeSeq: number = this.getMessageNumber(data, 'nextBeforeSeq', 0);
+    const hasMore: boolean = this.getMessageBoolean(data, 'hasMore', false);
+
+    if (chunk.length > 0) {
+      this.historyChunks.unshift(chunk);
+    }
+
+    if (hasMore) {
+      this.historyBeforeSeq = nextBeforeSeq;
+      this.syncHistoryLoadingOverlay();
+      this.requestHistoryPage();
+      return;
+    }
+
+    this.historyComplete = true;
+    this.applyHistoryBuffer();
+    this.syncHistoryLoadingOverlay();
+  }
+
+  private appendPendingHistoryOutput(data: string): void {
+    const output: string = this.normalizeString(data);
+    if (output.length === 0) {
+      return;
+    }
+
+    this.pendingHistoryOutput += output;
+    if (this.pendingHistoryOutput.length > this.maxOutputLength) {
+      this.pendingHistoryOutput = this.pendingHistoryOutput.substring(
+        this.pendingHistoryOutput.length - this.maxOutputLength
+      );
+    }
+  }
+
+  private applyHistoryBuffer(): void {
+    const history: string = this.historyChunks.join('');
+    this.historyChunks = [];
+    const merged: string = history + this.pendingHistoryOutput;
+    this.pendingHistoryOutput = '';
+
+    if (!this.terminalReady) {
+      this.pendingHistoryReplace = merged;
+      return;
+    }
+
+    this.replaceTerminalBuffer(merged);
+  }
+
+  private applyPendingHistoryReplace(): void {
+    if (this.pendingHistoryReplace.length === 0) {
+      return;
+    }
+    const payload: string = this.pendingHistoryReplace;
+    this.pendingHistoryReplace = '';
+    this.replaceTerminalBuffer(payload);
+  }
+
+  private replaceTerminalBuffer(data: string): void {
+    if (!this.terminalReady) {
+      this.pendingHistoryReplace = data;
+      return;
+    }
+    if (data.length === 0) {
+      this.runTerminalScript('window.phoneShell && window.phoneShell.clear();');
+      return;
+    }
+    const payload: string = JSON.stringify(data);
+    this.runTerminalScript(`window.phoneShell && (window.phoneShell.clear(), window.phoneShell.write(${payload}));`);
+  }
+
+  private isCurrentSessionMessage(data: Record<string, Object>): boolean {
+    const sessionId: string = this.getMessageString(data, 'sessionId');
+    return sessionId.length > 0 && sessionId === this.viewedSessionId;
+  }
+
+  private sendShortcutKey(data: string): void {
+    ConnectionManager.sendTerminalInput(data);
+    this.runTerminalScript('window.phoneShell && window.phoneShell.focus();');
+  }
+
+  private goBack(): void {
+    // Don't close the terminal session — it stays alive on the PC.
+    // Just navigate back to the session list.
+    this.getUIContext().getRouter().back();
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column() {
+        Blank()
+          .height(2)
+          .width('100%')
+          .backgroundColor(AppColors.ACCENT)
+
+        Row() {
+          Text(this.t('‹ 返回', '‹ Back'))
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor(AppColors.ACCENT)
+            .onClick(() => {
+              this.goBack();
+            })
+            .padding({ right: 12 })
+
+          Column() {
+            Text(this.t('终端', 'Terminal'))
+              .fontSize(AppSizes.FONT_SIZE_BODY)
+              .fontColor(AppColors.TEXT_PRIMARY)
+              .fontWeight(FontWeight.Medium)
+
+            if (this.viewedSessionId.length > 0) {
+              Text(this.viewedSessionId)
+                .fontSize(11)
+                .fontColor(AppColors.TEXT_MUTED)
+                .fontFamily('monospace')
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+
+          Row() {
+            Circle()
+              .width(6)
+              .height(6)
+              .fill(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
+              .margin({ right: 6 })
+
+            Text(this.sessionActive ? this.t('在线', 'ACTIVE') : this.t('离线', 'OFFLINE'))
+              .fontSize(11)
+              .fontColor(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.TEXT_MUTED)
+              .fontFamily('monospace')
+          }
+          .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+          .backgroundColor(AppColors.CHIP_BG)
+          .borderWidth(1)
+          .borderColor(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.CHIP_BORDER)
+          .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+        }
+        .width('100%')
+        .height(54)
+        .padding({
+          left: AppSizes.PADDING_PAGE + this.safeAreaLeft,
+          right: AppSizes.PADDING_PAGE + this.safeAreaRight
+        })
+        .backgroundColor(AppColors.SURFACE_1)
+        .alignItems(VerticalAlign.Center)
+
+        Stack({ alignContent: Alignment.Center }) {
+          Web({ src: this.terminalPageUrl, controller: this.terminalController })
+            .width('100%')
+            .height('100%')
+            .backgroundColor(AppColors.TERMINAL_BG)
+            .javaScriptAccess(true)
+            .domStorageAccess(true)
+            .javaScriptProxy({
+              object: this.terminalBridge,
+              name: 'nativeApp',
+              methodList: ['onTerminalReady', 'onTerminalResize', 'sendInput', 'onTerminalInteraction', 'logMessage'],
+              controller: this.terminalController
+            })
+
+          if (!this.terminalReady || this.historyLoadingVisible) {
+            Column() {
+              Text(!this.terminalReady
+                ? this.terminalHint
+                : this.t('内容较多，加载中，请等待', 'Loading history, please wait'))
+                .fontSize(AppSizes.FONT_SIZE_BODY)
+                .fontColor(AppColors.TEXT_SECONDARY)
+            }
+            .width('100%')
+            .height('100%')
+            .backgroundColor(AppColors.TERMINAL_BG)
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+          }
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .padding({
+          left: 8 + this.safeAreaLeft,
+          right: 8 + this.safeAreaRight,
+          top: 8,
+          bottom: 8
+        })
+        .backgroundColor(AppColors.TERMINAL_BG)
+        .borderWidth(1)
+        .borderColor(AppColors.CARD_BORDER)
+        .borderRadius(AppSizes.BORDER_RADIUS_CARD)
+
+        Column() {
+          Row() {
+            Text(this.t('快捷键', 'SHORTCUT KEYS'))
+              .fontSize(11)
+              .fontColor(AppColors.TEXT_MUTED)
+              .fontFamily('monospace')
+            Blank().layoutWeight(1)
+            Text(this.t('点击发送', 'TAP TO SEND'))
+              .fontSize(11)
+              .fontColor(AppColors.TEXT_MUTED)
+              .fontFamily('monospace')
+          }
+          .width('100%')
+          .padding({
+            left: 12 + this.safeAreaLeft,
+            right: 12 + this.safeAreaRight,
+            top: 6,
+            bottom: 2
+          })
+
+          Scroll() {
+            Row({ space: 8 }) {
+              ForEach(this.shortcutKeys, (key: ShortcutKey) => {
+                Button(key.label)
+                  .height(AppSizes.SHORTCUT_KEY_HEIGHT)
+                  .fontSize(12)
+                  .fontColor(AppColors.TEXT_PRIMARY)
+                  .backgroundColor(AppColors.HIGHLIGHT)
+                  .borderWidth(1)
+                  .borderColor(AppColors.CARD_BORDER)
+                  .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+                  .padding({ left: 10, right: 10 })
+                  .onClick(() => {
+                    this.sendShortcutKey(key.data);
+                  })
+              }, (key: ShortcutKey, index: number) => `${key.label}_${index}`)
+          }
+            .padding({
+              left: 12 + this.safeAreaLeft,
+              right: 12 + this.safeAreaRight,
+              bottom: 8
+            })
+          }
+          .scrollable(ScrollDirection.Horizontal)
+          .scrollBar(BarState.Off)
+        }
+        .width('100%')
+        .height(74)
+        .margin({ bottom: this.getShortcutBarOffset() })
+        .backgroundColor(AppColors.SURFACE_1)
+        .borderWidth(1)
+        .borderColor(AppColors.CARD_BORDER)
+        .align(Alignment.Center)
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ top: this.safeAreaTop, bottom: this.safeAreaBottom })
+      .backgroundColor(AppColors.TERMINAL_BG)
+
+      if (this.showSessionClosedDialog) {
+        Column() {
+          Column() {
+            Text(this.t('PC 端已关闭当前会话', 'Session closed on PC'))
+              .fontSize(18)
+              .fontColor(AppColors.TEXT_PRIMARY)
+              .fontWeight(FontWeight.Medium)
+              .margin({ bottom: 10 })
+
+            Text(this.t('点击下方按钮返回会话列表。', 'Tap the button below to return to the session list.'))
+              .fontSize(13)
+              .fontColor(AppColors.TEXT_SECONDARY)
+              .margin({ bottom: 18 })
+
+            Row() {
+              Button(this.t('返回会话列表', 'Back to Sessions'))
+                .width(180)
+                .height(42)
+                .fontSize(AppSizes.FONT_SIZE_BODY)
+                .fontColor('#FFFFFF')
+                .backgroundColor(AppColors.ACCENT)
+                .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+                .onClick(() => {
+                  this.goBack();
+                })
+            }
+            .width('100%')
+            .justifyContent(FlexAlign.Center)
+          }
+          .width('100%')
+          .padding(24)
+          .backgroundColor(AppColors.SURFACE_2)
+          .borderWidth(1)
+          .borderColor(AppColors.CARD_BORDER)
+          .borderRadius(16)
+          .alignItems(HorizontalAlign.Center)
+        }
+        .width('100%')
+        .height('100%')
+        .padding({ left: 24 + this.safeAreaLeft, right: 24 + this.safeAreaRight })
+        .backgroundColor('#B0000000')
+        .justifyContent(FlexAlign.Center)
+      }
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
