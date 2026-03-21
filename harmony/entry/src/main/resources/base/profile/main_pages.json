@@ -1,7 +1,0 @@
-{
-  "src": [
-    "pages/Index",
-    "pages/DeviceListPage",
-    "pages/TerminalPage"
-  ]
-}
