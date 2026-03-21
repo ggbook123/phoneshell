@@ -533,19 +533,11 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
         });
         return;
       }
-      final httpUrl = _wsUrlToHttpUrl(server);
-      if (httpUrl.isEmpty) {
-        setState(() {
-          parseError = _t('无法解析设备HTTP地址', 'Unable to parse device HTTP address');
-        });
-        return;
-      }
       setState(() {
-        inviteDeviceName = params['serverDeviceId'] ?? _t('新设备', 'New Device');
-        scanInviteHttpUrl = httpUrl;
-        scanInviteDeviceId = params['serverDeviceId'] ?? '';
-        showInviteConfirmDialog = true;
+        scanStatus = _t('正在切换到新服务器...', 'Switching to new server...');
+        parseError = '';
       });
+      ConnectionManager.instance.requestGroupServerChangeExternal(server, groupId, groupSecret);
       return;
     }
 

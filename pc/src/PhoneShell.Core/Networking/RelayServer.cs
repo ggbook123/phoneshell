@@ -1750,6 +1750,30 @@ public sealed class RelayServer : IDisposable
     {
         if (_group is null) return;
         if (string.IsNullOrWhiteSpace(prepare.NewServerUrl)) return;
+        if (string.IsNullOrWhiteSpace(prepare.GroupId) || string.IsNullOrWhiteSpace(prepare.GroupSecret))
+            return;
+
+        var isExternalMigration =
+            !string.Equals(prepare.GroupId, _group.GroupId, StringComparison.Ordinal) ||
+            !string.Equals(prepare.GroupSecret, _group.GroupSecret, StringComparison.Ordinal);
+
+        // For external migrations (switching to a different group), only bound mobile can trigger
+        if (isExternalMigration && client.MemberRole != MemberRole.Mobile)
+        {
+            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+            {
+                Code = "permission_denied",
+                Message = "Only the bound mobile can migrate to another group."
+            }));
+            return;
+        }
+
+        if (isExternalMigration)
+        {
+            _group.GroupId = prepare.GroupId;
+            _group.GroupSecret = prepare.GroupSecret;
+            AuthToken = prepare.GroupSecret;
+        }
 
         // Broadcast commit to all clients so they switch to the new server
         var commitMsg = MessageSerializer.Serialize(new GroupServerChangeCommitMessage

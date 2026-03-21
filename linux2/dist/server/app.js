@@ -106,8 +106,11 @@ export function createApp(config) {
         relay.start();
         wireTerminalOutputToRelay();
     }
-    function startRelayClient(relayUrl, inviteCode, groupSecret) {
-        relay.stop();
+    function startRelayClient(relayUrl, inviteCode, groupSecret, options) {
+        const preserveServer = options?.preserveServer ?? false;
+        if (!preserveServer) {
+            relay.stop();
+        }
         if (relayClient) {
             relayClient.disconnect();
             relayClient = null;
@@ -161,7 +164,9 @@ export function createApp(config) {
                 handleServerChangeCommit(newUrl, newSecret);
             },
         });
-        wireTerminalOutputToClient();
+        if (!preserveServer) {
+            wireTerminalOutputToClient();
+        }
         relayClient.connect(relayUrl, deviceId, displayName, os, availableShells, inviteCode, groupSecret);
     }
     function buildRelayUrlFromConfig() {
@@ -185,9 +190,15 @@ export function createApp(config) {
             members: [],
         });
         membershipStore.clear();
-        if (!modeManager.transitionToRelayFromClient()) {
-            log('[mode] Server migration: failed to switch to relay mode (already relay?)');
+        if (modeManager.isClient()) {
+            if (!modeManager.transitionToRelayFromClient()) {
+                log('[mode] Server migration: failed to switch to relay mode (already relay?)');
+            }
         }
+        else if (modeManager.isStandalone()) {
+            modeManager.transitionToRelay();
+        }
+        relay.stop();
         startRelayServer(groupSecret);
         return newServerUrl;
     }
@@ -321,12 +332,14 @@ export function createApp(config) {
                         return;
                     }
                     log(`[invite] Received invite: relay=${invite.relayUrl} code=${invite.inviteCode}`);
-                    if (!modeManager.transitionToClient(invite.relayUrl, invite.inviteCode)) {
-                        writeJson(res, 409, { type: 'error', code: 'not_standalone', message: 'Device is not in standalone mode.' });
+                    if (modeManager.isClient()) {
+                        startRelayClient(invite.relayUrl, invite.inviteCode, '');
+                        writeJson(res, 200, { status: 'accepted', relayUrl: invite.relayUrl, mode: 'client' });
                         return;
                     }
-                    startRelayClient(invite.relayUrl, invite.inviteCode, '');
-                    writeJson(res, 200, { status: 'accepted', relayUrl: invite.relayUrl });
+                    log('[invite] Keeping server mode; starting relay client in background');
+                    startRelayClient(invite.relayUrl, invite.inviteCode, '', { preserveServer: true });
+                    writeJson(res, 200, { status: 'accepted', relayUrl: invite.relayUrl, mode: 'relay' });
                 }
                 catch {
                     writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'Invalid JSON body.' });

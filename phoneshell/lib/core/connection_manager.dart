@@ -277,6 +277,21 @@ class ConnectionManager {
     _groupConnection!.send(jsonEncode(msg));
   }
 
+  void requestGroupServerChangeExternal(String newServerUrl, String groupId, String groupSecret) {
+    if (newServerUrl.isEmpty || groupId.isEmpty || groupSecret.isEmpty) return;
+    if (_groupConnection == null) return;
+    if (_groupConnection!.connectionState != ConnectionState.connected) return;
+    if (_mobileDeviceId.isEmpty) return;
+    final msg = {
+      'type': 'group.server.change.prepare',
+      'newServerUrl': newServerUrl,
+      'groupId': groupId,
+      'groupSecret': groupSecret,
+      'requesterId': _mobileDeviceId,
+    };
+    _groupConnection!.send(jsonEncode(msg));
+  }
+
   void dissolveGroup() {
     if (_groupConnection == null) return;
     final msg = {'type': 'group.dissolve'};

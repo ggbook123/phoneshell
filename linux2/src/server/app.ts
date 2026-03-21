@@ -120,8 +120,17 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     wireTerminalOutputToRelay();
   }
 
-  function startRelayClient(relayUrl: string, inviteCode: string, groupSecret: string): void {
-    relay.stop();
+  function startRelayClient(
+    relayUrl: string,
+    inviteCode: string,
+    groupSecret: string,
+    options?: { preserveServer?: boolean },
+  ): void {
+    const preserveServer = options?.preserveServer ?? false;
+
+    if (!preserveServer) {
+      relay.stop();
+    }
     if (relayClient) {
       relayClient.disconnect();
       relayClient = null;
@@ -175,7 +184,9 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
       },
     });
 
-    wireTerminalOutputToClient();
+    if (!preserveServer) {
+      wireTerminalOutputToClient();
+    }
     relayClient.connect(relayUrl, deviceId, displayName, os, availableShells, inviteCode, groupSecret);
   }
 
@@ -203,9 +214,15 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     });
     membershipStore.clear();
 
-    if (!modeManager.transitionToRelayFromClient()) {
-      log('[mode] Server migration: failed to switch to relay mode (already relay?)');
+    if (modeManager.isClient()) {
+      if (!modeManager.transitionToRelayFromClient()) {
+        log('[mode] Server migration: failed to switch to relay mode (already relay?)');
+      }
+    } else if (modeManager.isStandalone()) {
+      modeManager.transitionToRelay();
     }
+
+    relay.stop();
     startRelayServer(groupSecret);
     return newServerUrl;
   }
@@ -349,14 +366,16 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
           }
           log(`[invite] Received invite: relay=${invite.relayUrl} code=${invite.inviteCode}`);
 
-          if (!modeManager.transitionToClient(invite.relayUrl, invite.inviteCode)) {
-            writeJson(res, 409, { type: 'error', code: 'not_standalone', message: 'Device is not in standalone mode.' });
+          if (modeManager.isClient()) {
+            startRelayClient(invite.relayUrl, invite.inviteCode, '');
+            writeJson(res, 200, { status: 'accepted', relayUrl: invite.relayUrl, mode: 'client' });
             return;
           }
 
-          startRelayClient(invite.relayUrl, invite.inviteCode, '');
+          log('[invite] Keeping server mode; starting relay client in background');
+          startRelayClient(invite.relayUrl, invite.inviteCode, '', { preserveServer: true });
 
-          writeJson(res, 200, { status: 'accepted', relayUrl: invite.relayUrl });
+          writeJson(res, 200, { status: 'accepted', relayUrl: invite.relayUrl, mode: 'relay' });
         } catch {
           writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'Invalid JSON body.' });
         }
