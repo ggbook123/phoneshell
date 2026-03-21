@@ -15,6 +15,7 @@ Usage:
   phoneshell local [args]        Open local CLI (wraps: node dist/cli.js local)
   phoneshell attach [args]       Attach to existing session
   phoneshell list                List sessions
+  phoneshell group reset         Clear group data (group.json + group-membership.json)
   phoneshell status              Show systemd status
   phoneshell start|stop|restart  Control systemd service
   phoneshell logs                Tail service logs
@@ -106,6 +107,10 @@ case "${cmd}" in
   list)
     require_cli
     node "${CLI_JS}" local --list
+    ;;
+  group)
+    require_cli
+    node "${CLI_JS}" group "$@"
     ;;
   status)
     systemctl status phoneshell --no-pager

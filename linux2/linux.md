@@ -71,6 +71,12 @@ phoneshell status
 phoneshell logs
 ```
 
+- 重置 group（清除 `group.json` 与 `group-membership.json`，需重启服务）
+```bash
+phoneshell group reset
+sudo systemctl restart phoneshell
+```
+
 - 启停服务
 ```bash
 phoneshell start

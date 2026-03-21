@@ -113,8 +113,8 @@ struct LoginPage {
       .width('100%')
 
       Text(this.t(
-        '通过扫码连接 PC 会话，快速进入群组设备与终端控制。',
-        'Scan to connect to your PC session and quickly access group devices and terminal control.'
+        '原生终端体验，任何设备无缝切换',
+        'Native terminal experience, seamless switching across any device.'
       ))
         .fontSize(13)
         .fontColor(AppColors.TEXT_SECONDARY)
@@ -140,10 +140,6 @@ struct LoginPage {
           .fontColor(AppColors.TEXT_MUTED)
           .fontFamily('monospace')
           .layoutWeight(1)
-
-        Text('v0.2.0')
-          .fontSize(11)
-          .fontColor(AppColors.TEXT_MUTED)
       }
       .width('100%')
       .margin({ bottom: 10 })
@@ -154,9 +150,9 @@ struct LoginPage {
         .backgroundColor(AppColors.ACCENT)
         .margin({ bottom: 12 })
 
-      this.InfoLine('01', this.t('扫码即可建立连接', 'Scan to establish connection'))
-      this.InfoLine('02', this.t('支持群组与多设备管理', 'Supports group and multi-device management'))
-      this.InfoLine('03', this.t('无需账号，快速进入控制', 'No account required for quick control'))
+      this.InfoLine('01', this.t('PC上点击启动按钮', 'Click the Start button on the PC'))
+      this.InfoLine('02', this.t('手机扫码连接', 'Scan with your phone to connect'))
+      this.InfoLine('03', this.t('无缝切换，不中断的进行终端会话', 'Seamless switching, keep terminal sessions uninterrupted'))
     }
     .width('100%')
     .padding(16)

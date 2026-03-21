@@ -23,6 +23,10 @@ type LocalOptions = {
   listOnly?: boolean;
 };
 
+type GroupResetOptions = {
+  configPath?: string;
+};
+
 type StandaloneInfo = {
   deviceId: string;
   displayName: string;
@@ -42,6 +46,7 @@ Usage:
   phoneshell [local] [options]
   phoneshell attach [options]
   phoneshell list [options]
+  phoneshell group reset [options]
   phoneshell install [options]
 
 Options (local):
@@ -56,6 +61,22 @@ Options (local):
 
 Install:
   phoneshell install     Run interactive installer (systemd + config)
+
+Group:
+  phoneshell group reset Clear group data (group.json + group-membership.json)
+`);
+}
+
+function showGroupHelp(): void {
+  console.log(`
+Group Commands
+
+Usage:
+  phoneshell group reset [options]
+
+Options:
+  --config <path>        Config file path (default: /etc/phoneshell/config.json)
+  --help                 Show help
 `);
 }
 
@@ -125,6 +146,22 @@ function parseLocalArgs(args: string[]): LocalOptions {
   return opts;
 }
 
+function parseGroupResetArgs(args: string[]): GroupResetOptions {
+  const opts: GroupResetOptions = {};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('--config=')) {
+      opts.configPath = arg.slice('--config='.length);
+      continue;
+    }
+    if (arg === '--config' && i + 1 < args.length) {
+      opts.configPath = args[++i];
+      continue;
+    }
+  }
+  return opts;
+}
+
 function loadConfigJson(configPath: string): Record<string, unknown> | null {
   try {
     if (fs.existsSync(configPath)) {
@@ -150,6 +187,41 @@ function resolvePort(configPath: string): number {
   const port = cfg?.port;
   if (typeof port === 'number' && port >= 1 && port <= 65535) return port;
   return DEFAULT_PORT;
+}
+
+function clearFileIfExists(filePath: string): boolean {
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+function runGroupReset(options: GroupResetOptions): void {
+  const configPath = options.configPath || DEFAULT_CONFIG_PATH;
+  const baseDir = resolveBaseDirectory(configPath);
+  const dataDir = path.join(baseDir, 'data');
+  const groupPath = path.join(dataDir, 'group.json');
+  const membershipPath = path.join(dataDir, 'group-membership.json');
+
+  const clearedGroup = clearFileIfExists(groupPath);
+  const clearedMembership = clearFileIfExists(membershipPath);
+
+  const cleared: string[] = [];
+  if (clearedGroup) cleared.push('group.json');
+  if (clearedMembership) cleared.push('group-membership.json');
+
+  if (cleared.length === 0) {
+    console.log('[psh] no group data found to clear');
+  } else {
+    console.log(`[psh] cleared: ${cleared.join(', ')}`);
+  }
+  console.log(`[psh] base directory: ${baseDir}`);
+  console.log('[psh] restart the service to re-initialize the group');
 }
 
 function normalizeWsUrl(raw: string): string {
@@ -497,6 +569,26 @@ async function main(): Promise<void> {
   if (cmd === 'install') {
     await runInstall(rest);
     return;
+  }
+
+  if (cmd === 'group') {
+    const [sub, ...groupArgs] = rest;
+    if (!sub || sub === 'help' || sub === '--help' || sub === '-h') {
+      showGroupHelp();
+      return;
+    }
+    if (sub === 'reset') {
+      if (groupArgs.includes('--help') || groupArgs.includes('-h')) {
+        showGroupHelp();
+        return;
+      }
+      const opts = parseGroupResetArgs(groupArgs);
+      runGroupReset(opts);
+      return;
+    }
+    console.error(`Unknown group command: ${sub}`);
+    showGroupHelp();
+    process.exit(1);
   }
 
   if (cmd === 'help' || cmd === '--help' || cmd === '-h') {

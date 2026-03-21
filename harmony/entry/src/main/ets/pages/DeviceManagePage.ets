@@ -1574,7 +1574,11 @@ struct DeviceManagePage {
   }
 
   private designateAsServer(): void {
-    ConnectionManager.designateRelay(this.settingsDeviceId);
+    if (ConnectionManager.isInGroup()) {
+      ConnectionManager.requestGroupServerChange(this.settingsDeviceId);
+    } else {
+      ConnectionManager.designateRelay(this.settingsDeviceId);
+    }
     this.closeSettingsSheet();
   }
 

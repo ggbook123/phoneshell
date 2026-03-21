@@ -9,6 +9,8 @@
             <utils:InvertBoolConverter x:Key="InvertBoolConverter" />
             <utils:CountAtLeastConverter x:Key="CountAtLeastConverter" />
             <utils:TabBarAvailableWidthConverter x:Key="TabBarAvailableWidthConverter" />
+            <utils:ShellCardTitleConverter x:Key="ShellCardTitleConverter" />
+            <utils:ShellCardSubtitleConverter x:Key="ShellCardSubtitleConverter" />
 
             <!-- ============================================ -->
             <!-- COMMAND CENTER DARK THEME - Color Palette    -->

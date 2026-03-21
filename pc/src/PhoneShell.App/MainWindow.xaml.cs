@@ -96,6 +96,35 @@ public partial class MainWindow : Window
         Close();
     }
 
+    private void InfoButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (InfoOverlay is not null)
+        {
+            InfoOverlay.Visibility = Visibility.Visible;
+        }
+    }
+
+    private void InfoCloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (InfoOverlay is not null)
+        {
+            InfoOverlay.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void InfoOverlay_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (InfoOverlay is not null)
+        {
+            InfoOverlay.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void InfoDialog_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+    }
+
     private void ToggleMaximize()
     {
         if (WindowState == WindowState.Maximized)

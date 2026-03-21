@@ -124,6 +124,12 @@ class GroupDissolveMsg {
   type: string = 'group.dissolve';
 }
 
+class GroupServerChangeRequestMsg {
+  type: string = 'group.server.change.request';
+  newServerDeviceId: string = '';
+  requesterId: string = '';
+}
+
 class PanelLoginScanMsg {
   type: string = 'panel.login.scan';
   requestId: string = '';
@@ -524,6 +530,20 @@ class ConnectionManagerClass {
   dissolveGroup(): void {
     if (this.groupConnection === null) return;
     let msg: GroupDissolveMsg = new GroupDissolveMsg();
+    this.groupConnection.send(JSON.stringify(msg));
+  }
+
+  // --- Group server change ---
+
+  requestGroupServerChange(newServerDeviceId: string): void {
+    if (newServerDeviceId.length === 0) return;
+    if (this.groupConnection === null) return;
+    if (this.groupConnection.connectionState !== ConnectionState.CONNECTED) return;
+    if (this.mobileDeviceId.length === 0) return;
+    hilog.info(DOMAIN, TAG, 'requestGroupServerChange newServer=%{public}s', newServerDeviceId);
+    let msg: GroupServerChangeRequestMsg = new GroupServerChangeRequestMsg();
+    msg.newServerDeviceId = newServerDeviceId;
+    msg.requesterId = this.mobileDeviceId;
     this.groupConnection.send(JSON.stringify(msg));
   }
 

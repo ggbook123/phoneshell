@@ -37,6 +37,18 @@
             </Setter>
         </Style>
 
+        <!-- Info button (warning accent) -->
+        <Style x:Key="TitleBarInfoBtn" TargetType="Button" BasedOn="{StaticResource TitleBarBtn}">
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Foreground" Value="White" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <!-- Close button (red on hover) -->
         <Style x:Key="TitleBarCloseBtn" TargetType="Button" BasedOn="{StaticResource TitleBarBtn}">
             <Setter Property="Template">
@@ -252,6 +264,8 @@
                 <DockPanel>
                     <!-- Window controls (right) -->
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Content="!" Style="{StaticResource TitleBarInfoBtn}"
+                                Click="InfoButton_Click" ToolTip="操作说明" />
                         <Button Content="&#x2500;" Style="{StaticResource TitleBarBtn}"
                                 Click="MinimizeButton_Click" ToolTip="Minimize" />
                         <Button x:Name="MaximizeBtn" Content="&#x25A1;" Style="{StaticResource TitleBarBtn}"
@@ -617,7 +631,7 @@
                                   Style="{StaticResource SidebarExpander}" IsExpanded="True"
                                   Expanded="SidebarExpander_Expanded">
                             <StackPanel>
-                                <TextBlock Text="API ENDPOINT" Style="{StaticResource SectionLabel}" />
+                                <TextBlock Text="URL example http://***/v1/chat/completion" Style="{StaticResource SectionLabel}" />
                                 <TextBox Text="{Binding AiEndpoint, UpdateSourceTrigger=PropertyChanged}"
                                          Style="{StaticResource DarkTextBox}" Margin="0,0,0,10" />
 
@@ -625,7 +639,7 @@
                                 <PasswordBox x:Name="ApiKeyBox" PasswordChanged="ApiKeyBox_PasswordChanged"
                                              Style="{StaticResource DarkPasswordBox}" Margin="0,0,0,10" />
 
-                                <TextBlock Text="MODEL" Style="{StaticResource SectionLabel}" />
+                                <TextBlock Text="MODEL example gpt-5.2.codex" Style="{StaticResource SectionLabel}" />
                                 <TextBox Text="{Binding AiModelName, UpdateSourceTrigger=PropertyChanged}"
                                          Style="{StaticResource DarkTextBox}" Margin="0,0,0,10" />
 
@@ -637,6 +651,7 @@
 
                         <!-- ===== Debug Log ===== -->
                         <Expander x:Name="DebugLogExpander" DockPanel.Dock="Top" Header="Debug Log"
+                                  Visibility="Collapsed"
                                   Style="{StaticResource SidebarExpander}" IsExpanded="False"
                                   Expanded="SidebarExpander_Expanded">
                             <ListBox ItemsSource="{Binding DebugLogs}" MaxHeight="300"
@@ -912,11 +927,11 @@
                                                         </Style>
                                                     </Border.Style>
                                                     <StackPanel>
-                                                        <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"
+                                                        <TextBlock Text="{Binding Converter={StaticResource ShellCardTitleConverter}}" FontWeight="SemiBold"
                                                                    FontSize="13.5" Foreground="{StaticResource Text1Brush}"
                                                                    HorizontalAlignment="Center"
                                                                    FontFamily="{StaticResource BodyFont}" />
-                                                        <TextBlock Text="{Binding Id}" FontSize="10"
+                                                        <TextBlock Text="{Binding Converter={StaticResource ShellCardSubtitleConverter}}" FontSize="10"
                                                                    Foreground="{StaticResource Text3Brush}"
                                                                    HorizontalAlignment="Center" Margin="0,3,0,0"
                                                                    FontFamily="{StaticResource MonoFont}" />
@@ -1014,6 +1029,75 @@
                                FontFamily="{StaticResource MonoFont}" />
                 </DockPanel>
             </Border>
+
+            <!-- ============================================ -->
+            <!-- INFO OVERLAY                                 -->
+            <!-- ============================================ -->
+            <Grid x:Name="InfoOverlay"
+                  Grid.RowSpan="3"
+                  Visibility="Collapsed"
+                  Background="#B0000000"
+                  MouseDown="InfoOverlay_MouseDown">
+                <Border Width="520"
+                        Background="{StaticResource Surface2Brush}"
+                        BorderBrush="{StaticResource Border2Brush}"
+                        BorderThickness="1"
+                        CornerRadius="12"
+                        Padding="22"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        MouseDown="InfoDialog_MouseDown">
+                    <StackPanel>
+                        <TextBlock Text="操作说明"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Foreground="{StaticResource Text1Brush}"
+                                   FontFamily="{StaticResource BodyFont}" />
+                        <TextBlock Text="1、在连接设置点击启动按钮"
+                                   Margin="0,12,0,0"
+                                   FontSize="12.5"
+                                   Foreground="{StaticResource Text1Brush}"
+                                   FontFamily="{StaticResource BodyFont}" />
+                        <TextBlock Text="2、手机扫码连接"
+                                   Margin="0,6,0,0"
+                                   FontSize="12.5"
+                                   Foreground="{StaticResource Text1Brush}"
+                                   FontFamily="{StaticResource BodyFont}" />
+                        <TextBlock Text="github地址：https://github.com/ggbook123/phoneshell"
+                                   Margin="0,12,0,0"
+                                   FontSize="11.5"
+                                   Foreground="{StaticResource Text2Brush}"
+                                   TextWrapping="Wrap"
+                                   FontFamily="{StaticResource BodyFont}" />
+                        <TextBlock Text="请署名原项目地址"
+                                   Margin="0,6,0,0"
+                                   FontSize="11.5"
+                                   Foreground="{StaticResource Text2Brush}"
+                                   TextWrapping="Wrap"
+                                   FontFamily="{StaticResource BodyFont}" />
+                        <TextBlock Text="本软件为开源软件，仅供学习、交流 请勿用于商业化，原作者拥有最终解释权。"
+                                   Margin="0,8,0,0"
+                                   FontSize="11.5"
+                                   Foreground="{StaticResource Text2Brush}"
+                                   TextWrapping="Wrap"
+                                   FontFamily="{StaticResource BodyFont}" />
+                        <TextBlock Text="版本号v1.0.0"
+                                   Margin="0,12,0,0"
+                                   FontSize="11"
+                                   Foreground="{StaticResource Text3Brush}"
+                                   FontFamily="{StaticResource BodyFont}" />
+                        <StackPanel Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    Margin="0,16,0,0">
+                            <Button Content="知道了"
+                                    Width="80"
+                                    Height="28"
+                                    Style="{StaticResource SubtleButton}"
+                                    Click="InfoCloseButton_Click" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </Grid>
         </Grid>
     </Border>
 </Window>

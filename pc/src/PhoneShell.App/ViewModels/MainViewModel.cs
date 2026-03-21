@@ -283,6 +283,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private int _autoExecStep;
     private const int AutoExecMaxSteps = 10;
     private const int MaxDebugLogEntries = 100;
+    private const bool EnableDebugLog = false;
     private const int HistoryPageChars = 20000;
     private const string CrossDevicePromptText = "跨设备连接请先用手机扫码。";
     private const int CrossDeviceAuthValidHours = 18;
@@ -2373,6 +2374,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnNetworkLog(string message)
     {
+        if (!EnableDebugLog)
+            return;
+
         var timestamp = DateTime.Now.ToString("HH:mm:ss");
         var entry = $"[{timestamp}] [NET] {message}";
         _dispatcher.InvokeAsync(() =>
@@ -3515,6 +3519,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void LogDebug(string requestJson, string responseJson)
     {
+        if (!EnableDebugLog)
+            return;
+
         var timestamp = DateTime.Now.ToString("HH:mm:ss");
 
         void AddEntries()

@@ -132,8 +132,8 @@ class _LoginPageState extends State<LoginPage> {
           const SizedBox(height: 14),
           Text(
             _t(
-              '通过扫码连接 PC 会话，快速进入群组设备与终端控制。',
-              'Scan to connect to your PC session and quickly access group devices and terminal control.',
+              '原生终端体验，任何设备无缝切换',
+              'Native terminal experience, seamless switching across any device.',
             ),
             style: const TextStyle(
               fontSize: 13,
@@ -170,13 +170,6 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                 ),
               ),
-              const Text(
-                'v0.2.0',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: Color(AppColors.textMuted),
-                ),
-              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -186,9 +179,12 @@ class _LoginPageState extends State<LoginPage> {
             margin: const EdgeInsets.only(bottom: 12),
             color: const Color(AppColors.accent),
           ),
-          _infoLine('01', _t('扫码即可建立连接', 'Scan to establish connection')),
-          _infoLine('02', _t('支持群组与多设备管理', 'Supports group and multi-device management')),
-          _infoLine('03', _t('无需账号，快速进入控制', 'No account required for quick control')),
+          _infoLine('01', _t('PC上点击启动按钮', 'Click the Start button on the PC')),
+          _infoLine('02', _t('手机扫码连接', 'Scan with your phone to connect')),
+          _infoLine(
+            '03',
+            _t('无缝切换，不中断的进行终端会话', 'Seamless switching, keep terminal sessions uninterrupted'),
+          ),
         ],
       ),
     );
