@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -8,6 +9,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -297,6 +299,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private ServerSettings _serverSettings;
     private bool _isAutoMode;
     private bool _isRelayServer;
+    private bool _relayModeUserOverride;
+    private bool _suppressRelayModeOverride;
     private int _serverPort = 9090;
     private string _relayServerAddress = string.Empty;
     private bool _isServerRunning;
@@ -527,6 +531,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref _isAutoMode, value))
             {
+                _relayModeUserOverride = false;
                 if (_isAutoMode)
                     ApplyAutoRelayMode();
                 UpdateRelayAddressPreview();
@@ -540,7 +545,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         set
         {
             if (SetProperty(ref _isRelayServer, value))
+            {
+                if (IsAutoMode && !_suppressRelayModeOverride)
+                    _relayModeUserOverride = true;
                 UpdateRelayAddressPreview();
+            }
         }
     }
 
@@ -2010,13 +2019,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (!IsAutoMode || IsServerRunning)
             return;
 
+        if (_relayModeUserOverride)
+        {
+            OnNetworkLog("[AutoMode] User override active - keeping relay preference");
+            return;
+        }
+
         var existingGroup = _groupStore.LoadGroup();
         var membership = _groupStore.LoadMembership();
 
         // Priority 1: If we have a membership file, we're a client
         if (membership is not null)
         {
-            IsRelayServer = false;
+            SetRelayServerMode(false);
             if (string.IsNullOrWhiteSpace(GroupSecret))
                 GroupSecret = membership.GroupSecret;
             OnNetworkLog("[AutoMode] Detected membership file - starting as client");
@@ -2026,7 +2041,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         // Priority 2: If we have a local group file, we're a server
         if (existingGroup is not null)
         {
-            IsRelayServer = true;
+            SetRelayServerMode(true);
             RelayServerAddress = string.Empty;
             if (string.IsNullOrWhiteSpace(GroupSecret))
                 GroupSecret = existingGroup.GroupSecret;
@@ -2037,7 +2052,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         // Priority 3: If RelayServerAddress is configured, we're a client
         if (!string.IsNullOrWhiteSpace(RelayServerAddress))
         {
-            IsRelayServer = false;
+            SetRelayServerMode(false);
             OnNetworkLog("[AutoMode] Relay server address configured - starting as client");
             return;
         }
@@ -2045,7 +2060,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         // Priority 4: If GroupSecret is set but no server address, wait for invite
         if (!string.IsNullOrWhiteSpace(GroupSecret))
         {
-            IsRelayServer = false;
+            SetRelayServerMode(false);
             OnNetworkLog("[AutoMode] Group secret configured but no server address - waiting for invite or manual configuration");
             return;
         }
@@ -2054,12 +2069,28 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OnNetworkLog("[AutoMode] No configuration found - using current relay preference");
     }
 
+    private void SetRelayServerMode(bool value)
+    {
+        _suppressRelayModeOverride = true;
+        try
+        {
+            IsRelayServer = value;
+        }
+        finally
+        {
+            _suppressRelayModeOverride = false;
+        }
+    }
+
     // --- Network Start/Stop ---
 
     private async Task StartNetworkAsync()
     {
         if (IsAutoMode)
             ApplyAutoRelayMode();
+
+        if (ShouldStartLocalServer())
+            TryRegisterUrlAcl(ServerPort);
 
         if (!IsRelayServer && !string.IsNullOrWhiteSpace(RelayServerAddress))
         {
@@ -2262,6 +2293,72 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private bool ShouldStartLocalServer()
+    {
+        if (IsRelayServer)
+            return true;
+
+        return string.IsNullOrWhiteSpace(RelayServerAddress);
+    }
+
+    private void TryRegisterUrlAcl(int port)
+    {
+        if (!IsRunningAsAdmin())
+            return;
+
+        var prefixes = new[]
+        {
+            $"http://+:{port}/ws/",
+            $"http://+:{port}/api/"
+        };
+
+        foreach (var prefix in prefixes)
+        {
+            TryAddUrlAcl(prefix, "Everyone");
+        }
+    }
+
+    private static bool IsRunningAsAdmin()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var principal = new WindowsPrincipal(identity);
+        return principal.IsInRole(WindowsBuiltInRole.Administrator);
+    }
+
+    private void TryAddUrlAcl(string prefix, string user)
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo("netsh", $"http add urlacl url={prefix} user={user}")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            using var process = Process.Start(startInfo);
+            if (process is null)
+                return;
+
+            process.WaitForExit(5000);
+            var output = process.StandardOutput.ReadToEnd();
+            var error = process.StandardError.ReadToEnd();
+            var combined = $"{output}\n{error}";
+
+            if (process.ExitCode != 0 &&
+                !combined.Contains("already exists", StringComparison.OrdinalIgnoreCase) &&
+                !combined.Contains("已存在", StringComparison.OrdinalIgnoreCase))
+            {
+                OnNetworkLog($"[urlacl] add failed: {prefix} ({process.ExitCode}) {combined.Trim()}");
+            }
+        }
+        catch (Exception ex)
+        {
+            OnNetworkLog($"[urlacl] add failed: {prefix} ({ex.Message})");
+        }
+    }
+
     private void StopNetwork()
     {
         if (_relayServer is not null)
@@ -2365,7 +2462,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         IsAutoMode = true;
-        IsRelayServer = true;
+        SetRelayServerMode(true);
         RelayServerAddress = string.Empty;
 
         SaveServerSettings();
@@ -2839,7 +2936,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             CreatedAt = DateTimeOffset.UtcNow
         });
 
-        IsRelayServer = true;
+        SetRelayServerMode(true);
         GroupSecret = groupSecret;
         RelayServerAddress = string.Empty;
         SaveServerSettings();
@@ -2866,7 +2963,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         StopNetwork();
 
         ClearServerGroupFiles();
-        IsRelayServer = false;
+        SetRelayServerMode(false);
         RelayServerAddress = newUrl;
         GroupSecret = newSecret;
         SaveServerSettings();
@@ -3782,7 +3879,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
             // Update settings to reflect client mode
             RelayServerAddress = relayUrl;
-            IsRelayServer = false;
+            SetRelayServerMode(false);
             SaveServerSettings();
 
             // Fire-and-forget: ConnectAsync blocks in its receive loop.
@@ -3809,7 +3906,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
             // Restart in standalone mode
             RelayServerAddress = string.Empty;
-            IsRelayServer = false;
+            SetRelayServerMode(false);
             IsServerRunning = false;
             SaveServerSettings();
             await StartNetworkAsync();
@@ -3827,7 +3924,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ServerStatus = "Kicked from group. Restarting standalone...";
             // Restart in standalone mode
             RelayServerAddress = string.Empty;
-            IsRelayServer = false;
+            SetRelayServerMode(false);
             SaveServerSettings();
             await StartNetworkAsync();
         });
@@ -3844,7 +3941,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ServerStatus = "Group dissolved. Restarting standalone...";
             // Restart in standalone mode
             RelayServerAddress = string.Empty;
-            IsRelayServer = false;
+            SetRelayServerMode(false);
             SaveServerSettings();
             await StartNetworkAsync();
         });

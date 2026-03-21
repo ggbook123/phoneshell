@@ -38,3 +38,6 @@ harmony/.test/
 *.log
 pc/src/PhoneShell.App/data/
 pc/src/PhoneShell.App/bin/**/data/
+pc/installer/out/
+pc/installer/publish/
+pc/installer/certs/
