@@ -14,6 +14,11 @@
 - **多平台覆盖** — Windows 桌面端 + Linux 服务端 + Android / HarmonyOS 手机端（iOS 计划中）。
 - **新手友好** — 无需复杂配置，打开程序、扫码即连，开箱即用。
 
+## 特点
+
+- **Claude / Codex** — 支持 Claude、Codex CLI。
+- **不局限单一 CLI** — 不绑定某一个工具，任意 CLI 都可用。
+
 ---
 
 ## 与同类工具对比

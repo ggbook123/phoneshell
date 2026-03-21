@@ -14,6 +14,11 @@
 - **Multi-Platform** — Windows desktop + Linux server + Android / HarmonyOS mobile (iOS planned).
 - **Beginner Friendly** — No complex configuration needed. Just open the app, scan the QR code, and you're connected.
 
+## Highlights
+
+- **Claude / Codex Ready** — Works smoothly with Claude and Codex CLI.
+- **Not Locked to One CLI** — Use any CLI, not tied to a single tool.
+
 ---
 
 ## Comparison
