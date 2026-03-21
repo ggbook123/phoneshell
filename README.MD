@@ -6,6 +6,10 @@
 
 ---
 
+<p align="center">
+  <img src="assets/phoneshell.png" width="220" />
+</p>
+
 ## Why PhoneShell
 
 - **Phone as Terminal** — Native shell experience on your phone. Code with AI anytime, anywhere.

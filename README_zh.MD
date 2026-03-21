@@ -6,18 +6,18 @@
 
 ---
 
+<p align="center">
+  <img src="assets/phoneshell.png" width="220" />
+</p>
+
 ## 为什么用 PhoneShell
 
 - **手机即终端** — 在手机上获得原生 Shell 体验，随时随地 AI 编程。
 - **会话不中断** — 以群组为概念，在群组中终端会话在手机、PC、Linux 之间无缝切换，进程持续运行。
-- **兼容所有 CLI** — 支持一切命令行工具：`claude`、`codex`、`gemini`、`kiro`、`droid`、`vim`、`top`…
+- **兼容所有 CLI** — 支持一切CLI工具：`claude`、`codex`、`gemini`、`kiro`、`droid`、`vim`、`top`…
 - **多平台覆盖** — Windows 桌面端 + Linux 服务端 + Android / HarmonyOS 手机端（iOS 计划中）。
 - **新手友好** — 无需复杂配置，打开程序、扫码即连，开箱即用。
 
-## 特点
-
-- **Claude / Codex** — 支持 Claude、Codex CLI。
-- **不局限单一 CLI** — 不绑定某一个工具，任意 CLI 都可用。
 
 ---
 
