@@ -6,7 +6,7 @@ public sealed class ServerSettings
     /// Auto mode: decide relay role based on local data (group.json, relay url, etc.).
     /// </summary>
     public bool AutoMode { get; set; } = true;
-    public bool IsRelayServer { get; set; }
+    public bool IsRelayServer { get; set; } = true;
     public int Port { get; set; } = 9090;
     public string? RelayServerAddress { get; set; }
 

@@ -347,7 +347,6 @@
                                 <CheckBox x:Name="EnableRelayServerCheckBox"
                                           Content="Enable Relay Server (this PC as hub)"
                                           IsChecked="{Binding IsRelayServer}"
-                                          IsEnabled="{Binding IsAutoMode, Converter={StaticResource InvertBoolConverter}}"
                                           Style="{StaticResource DarkCheckBox}" Margin="0,0,0,10" />
 
                                 <TextBlock x:Name="ServerPortLabel" Text="PORT" Style="{StaticResource SectionLabel}" />

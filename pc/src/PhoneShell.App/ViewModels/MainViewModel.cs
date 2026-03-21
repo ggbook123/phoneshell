@@ -2050,11 +2050,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        // Default: Start in standalone mode (not as relay server)
-        // This prevents creating a new group when one already exists elsewhere
-        IsRelayServer = false;
-        RelayServerAddress = string.Empty;
-        OnNetworkLog("[AutoMode] No configuration found - starting in standalone mode (waiting for invite)");
+        // Default: No configuration found. Keep user preference (server/client).
+        OnNetworkLog("[AutoMode] No configuration found - using current relay preference");
     }
 
     // --- Network Start/Stop ---
@@ -2358,13 +2355,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         GroupId = string.Empty;
         GroupSecret = string.Empty;
 
-        if (IsRelayServer)
+        var wasRelayServer = IsRelayServer;
+        if (wasRelayServer)
         {
             var group = _groupStore.CreateGroup(_identity.DeviceId);
             GroupId = group.GroupId;
             GroupSecret = group.GroupSecret;
             OnNetworkLog($"Group initialized: {group.GroupId}");
         }
+
+        IsAutoMode = true;
+        IsRelayServer = true;
+        RelayServerAddress = string.Empty;
 
         SaveServerSettings();
         _serverSettings.GroupSecret = string.IsNullOrWhiteSpace(GroupSecret) ? null : GroupSecret;
