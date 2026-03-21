@@ -35,7 +35,7 @@
   <img src="assets/screenshots/mobile-claude.jpg" width="30%" />
 </p>
 <p align="center">
-  <img src="assets/screenshots/pc.png" width="50%" />
+  <img src="assets/screenshots/pc.png" width="60%" />
   <img src="assets/screenshots/mobile-group.jpg" width="30%" />
 </p>
 
@@ -98,6 +98,9 @@ sudo apt-get install -y git nodejs npm python3 build-essential
 git clone https://github.com/ggbook123/phoneshell.git
 cd phoneshell
 sudo bash linux2/deploy/phoneshell install
+
+# Configure
+sudo phoneshell set
 ```
 
 ---
