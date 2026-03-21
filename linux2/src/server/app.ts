@@ -164,7 +164,9 @@ async function detectPublicHost(logger: (msg: string) => void): Promise<PublicHo
 }
 
 export function createApp(config: AppConfig): { start: () => void; stop: () => void } {
-  const webPanelEnabled = !!config.modules.webPanel;
+  const webPanelEnabled = true;
+  const panelAccessDefault: 'public' | 'private' = config.modules.webPanel ? 'public' : 'private';
+  const configPath = config.configPath || '/etc/phoneshell/config.json';
   const tlsRuntime = resolveTlsRuntime(config);
   const primaryPort = config.port;
   const tlsPort = tlsRuntime.enabled ? tlsRuntime.port : 0;
@@ -259,6 +261,8 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
   let relayClient: RelayClient | null = null;
   let pendingServerMigration: { groupId: string; groupSecret: string; newServerUrl: string } | null = null;
   let resolvedPublicHost = '';
+  let panelAccessCache = panelAccessDefault;
+  let panelAccessCacheAt = 0;
 
   const wsScheme = (useTls: boolean) => (useTls ? 'wss' : 'ws');
   const httpScheme = (useTls: boolean) => (useTls ? 'https' : 'http');
@@ -363,6 +367,51 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     const relayUrl = buildWsUrl(host, port, tlsRuntime.enabled);
     relay.setRelayUrl(relayUrl);
     lastResolvedServerUrl = relayUrl;
+  }
+
+  function readPanelAccessFromConfig(): 'public' | 'private' {
+    if (!configPath) return panelAccessCache;
+    try {
+      if (!fs.existsSync(configPath)) return panelAccessCache;
+      const json = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
+        panelAccess?: string;
+        modules?: { webPanel?: boolean };
+      };
+      if (typeof json.panelAccess === 'string') {
+        const v = json.panelAccess.trim().toLowerCase();
+        if (v === 'private' || v === 'internal' || v === 'closed') return 'private';
+        if (v === 'public' || v === 'open') return 'public';
+      }
+      if (json.modules?.webPanel === false) return 'private';
+      if (json.modules?.webPanel === true) return 'public';
+    } catch {}
+    return panelAccessCache;
+  }
+
+  function getPanelAccessMode(): 'public' | 'private' {
+    const now = Date.now();
+    if (now - panelAccessCacheAt < 1500) return panelAccessCache;
+    panelAccessCache = readPanelAccessFromConfig();
+    panelAccessCacheAt = now;
+    return panelAccessCache;
+  }
+
+  function isPanelAuthorized(req: http.IncomingMessage): boolean {
+    const token = extractToken(req);
+    return relay.isAuthorized(token);
+  }
+
+  function buildPanelCookie(token: string, req: http.IncomingMessage): string {
+    const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim().toLowerCase();
+    const secure = proto === 'https' || proto === 'wss' || (req.socket as any)?.encrypted;
+    const parts = [
+      `ps_token=${encodeURIComponent(token)}`,
+      'Path=/',
+      'SameSite=Lax',
+      'HttpOnly',
+    ];
+    if (secure) parts.push('Secure');
+    return parts.join('; ');
   }
 
   function startRelayServerForMigration(groupId: string, groupSecret: string): string {
@@ -521,6 +570,8 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
   const requestHandler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
+    const panelPrivate = getPanelAccessMode() === 'private';
+    const panelAuthorized = isPanelAuthorized(req);
 
     // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -595,9 +646,13 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
     // --- Panel HTML ---
     if (pathname === '/' || pathname === '/panel') {
-      if (!webPanelEnabled) {
+      if (panelPrivate && !panelAuthorized) {
         res.writeHead(404).end();
         return;
+      }
+      const tokenForPanel = panelAuthorized ? extractToken(req) : undefined;
+      if (tokenForPanel) {
+        res.setHeader('Set-Cookie', buildPanelCookie(tokenForPanel, req));
       }
       const html = getPanelHtml();
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
@@ -607,7 +662,7 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
     // --- Panel static assets from web/dist ---
     if (pathname.startsWith('/panel/')) {
-      if (!webPanelEnabled) {
+      if (panelPrivate && !panelAuthorized) {
         res.writeHead(404).end();
         return;
       }
@@ -641,17 +696,17 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
     // --- Panel API (no auth required for bootstrap) ---
     if (pathname === '/api/panel/verify') {
-      if (!webPanelEnabled) {
-        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+      if (panelPrivate && !panelAuthorized) {
+        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
         return;
       }
-      writeJson(res, 200, { valid: false });
+      writeJson(res, 200, { valid: panelAuthorized });
       return;
     }
 
     if (pathname === '/api/panel/pairing') {
-      if (!webPanelEnabled) {
-        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+      if (panelPrivate && !panelAuthorized) {
+        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
         return;
       }
       const serverUrl = resolveServerUrl(req);
@@ -660,8 +715,8 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     }
 
     if (pathname === '/api/panel/qr.png') {
-      if (!webPanelEnabled) {
-        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+      if (panelPrivate && !panelAuthorized) {
+        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
         return;
       }
       const payload = url.searchParams.get('payload') || relay.getBindQrPayload(resolveServerUrl(req));
@@ -683,8 +738,8 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     }
 
     if (pathname === '/api/panel/login/start') {
-      if (!webPanelEnabled) {
-        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+      if (panelPrivate && !panelAuthorized) {
+        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
         return;
       }
       const serverUrl = resolveServerUrl(req);
@@ -695,8 +750,8 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     }
 
     if (pathname.startsWith('/api/panel/login/status/')) {
-      if (!webPanelEnabled) {
-        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+      if (panelPrivate && !panelAuthorized) {
+        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
         return;
       }
       const requestId = pathname.slice('/api/panel/login/status/'.length);
@@ -708,8 +763,8 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     }
 
     if (pathname === '/api/panel/login/qr.png') {
-      if (!webPanelEnabled) {
-        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+      if (panelPrivate && !panelAuthorized) {
+        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
         return;
       }
       const payload = url.searchParams.get('payload');
@@ -927,6 +982,23 @@ function extractToken(req: http.IncomingMessage): string | undefined {
   if (auth?.startsWith('Bearer ')) return auth.slice(7).trim();
   const xToken = req.headers['x-phoneshell-token'] as string | undefined;
   if (xToken) return xToken.trim();
+  const cookie = req.headers['cookie'];
+  if (cookie) {
+    for (const part of cookie.split(';')) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith('ps_token=')) {
+        const value = trimmed.slice('ps_token='.length);
+        if (value) {
+          try {
+            return decodeURIComponent(value.trim());
+          } catch {
+            return value.trim();
+          }
+        }
+      }
+    }
+  }
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   const queryToken = url.searchParams.get('token');
   if (queryToken) return queryToken.trim();

@@ -14,14 +14,26 @@ const authenticated = ref(false);
 const token = ref('');
 
 onMounted(async () => {
-  const stored = localStorage.getItem('phoneshell_token');
-  if (stored) {
+  const url = new URL(window.location.href);
+  const tokenFromUrl = url.searchParams.get('token') || '';
+  const stored = localStorage.getItem('phoneshell_token') || '';
+  const effective = tokenFromUrl.trim() || stored.trim();
+
+  if (tokenFromUrl) {
+    localStorage.setItem('phoneshell_token', tokenFromUrl);
+    url.searchParams.delete('token');
+    window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+  }
+
+  if (effective) {
     // Always re-verify — server returns valid:false to force scan flow
     try {
-      const res = await fetch('/api/panel/verify');
+      const res = await fetch('/api/panel/verify', {
+        headers: { 'Authorization': `Bearer ${effective}` },
+      });
       const data = await res.json();
       if (data.valid) {
-        token.value = stored;
+        token.value = effective;
         authenticated.value = true;
         return;
       }

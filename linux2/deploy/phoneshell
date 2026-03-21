@@ -257,7 +257,7 @@ run_set_menu() {
     echo "PhoneShell Settings / 设置"
     echo "1) Set core port (current: ${port}) / 设置核心端口（当前：${port}）"
     echo "2) Set web panel port (current: ${panel_port}) / 设置面板端口（当前：${panel_port}）"
-    echo "3) Toggle web panel (current: ${web_panel}) / 打开或关闭面板（当前：${web_panel}）"
+    echo "3) Toggle web panel access (current: ${web_panel}) / 面板外网访问开关（当前：${web_panel}）"
     echo "4) TLS/WSS settings / TLS/WSS 设置"
     echo "5) Reset group and restart service / 清除 group 并重启服务"
     echo "6) Restart service / 重启服务"
@@ -288,7 +288,7 @@ run_set_menu() {
       3)
         local next="true"
         if [[ "${web_panel}" == "true" ]]; then next="false"; fi
-        json_set "${config_path}" "modules.webPanel" "${next}" "boolean" && run_systemctl restart phoneshell
+        json_set "${config_path}" "modules.webPanel" "${next}" "boolean"
         ;;
       4)
         run_tls_menu "${config_path}"

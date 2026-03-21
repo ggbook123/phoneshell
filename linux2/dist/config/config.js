@@ -6,6 +6,14 @@ function defaultConfig() {
         publicHost: '',
         port: 19090,
         panelPort: 0,
+        tls: {
+            enabled: true,
+            certPath: '',
+            keyPath: '',
+            caPath: '',
+            passphrase: '',
+            port: 0,
+        },
         relayUrl: '',
         relayAuthToken: '',
         groupSecret: '',
@@ -39,6 +47,16 @@ function applyEnvVars(config) {
         const v = process.env[key];
         return v?.trim() || undefined;
     };
+    const parseBool = (value) => {
+        if (!value)
+            return undefined;
+        const normalized = value.trim().toLowerCase();
+        if (['1', 'true', 'yes', 'on'].includes(normalized))
+            return true;
+        if (['0', 'false', 'no', 'off'].includes(normalized))
+            return false;
+        return undefined;
+    };
     const name = env('PHONESHELL_NAME');
     if (name)
         config.displayName = name;
@@ -54,6 +72,27 @@ function applyEnvVars(config) {
     const publicHost = env('PHONESHELL_PUBLIC_HOST');
     if (publicHost)
         config.publicHost = publicHost;
+    const tlsEnabled = parseBool(env('PHONESHELL_TLS') ?? env('PHONESHELL_TLS_ENABLED'));
+    if (tlsEnabled !== undefined)
+        config.tls.enabled = tlsEnabled;
+    const tlsCert = env('PHONESHELL_TLS_CERT');
+    if (tlsCert)
+        config.tls.certPath = tlsCert;
+    const tlsKey = env('PHONESHELL_TLS_KEY');
+    if (tlsKey)
+        config.tls.keyPath = tlsKey;
+    const tlsCa = env('PHONESHELL_TLS_CA');
+    if (tlsCa)
+        config.tls.caPath = tlsCa;
+    const tlsPass = env('PHONESHELL_TLS_PASSPHRASE');
+    if (tlsPass)
+        config.tls.passphrase = tlsPass;
+    const tlsPortValue = env('PHONESHELL_TLS_PORT');
+    if (tlsPortValue) {
+        const port = parseInt(tlsPortValue, 10);
+        if (port >= 1 && port <= 65535)
+            config.tls.port = port;
+    }
     const portValue = env('PHONESHELL_PORT');
     if (portValue) {
         const port = parseInt(portValue, 10);
@@ -194,6 +233,23 @@ export function loadConfig(args) {
         config.publicHost = fileConfig.publicHost;
     if (fileConfig.port !== undefined)
         config.port = fileConfig.port;
+    if (fileConfig.tls !== undefined) {
+        const tls = fileConfig.tls;
+        if (tls) {
+            if (typeof tls.enabled === 'boolean')
+                config.tls.enabled = tls.enabled;
+            if (typeof tls.certPath === 'string')
+                config.tls.certPath = tls.certPath;
+            if (typeof tls.keyPath === 'string')
+                config.tls.keyPath = tls.keyPath;
+            if (typeof tls.caPath === 'string')
+                config.tls.caPath = tls.caPath;
+            if (typeof tls.passphrase === 'string')
+                config.tls.passphrase = tls.passphrase;
+            if (typeof tls.port === 'number')
+                config.tls.port = tls.port;
+        }
+    }
     if (fileConfig.panelPort !== undefined) {
         const p = fileConfig.panelPort;
         if (typeof p === 'number')
@@ -228,6 +284,10 @@ export function loadConfig(args) {
     config.relayAuthToken = config.relayAuthToken.trim();
     config.groupSecret = config.groupSecret.trim();
     config.relayUrl = config.relayUrl.trim();
+    config.tls.certPath = config.tls.certPath.trim();
+    config.tls.keyPath = config.tls.keyPath.trim();
+    config.tls.caPath = config.tls.caPath.trim();
+    config.tls.passphrase = config.tls.passphrase.trim();
     config.configPath = fs.existsSync(resolvedConfigPath) ? resolvedConfigPath : configPath;
     return config;
 }

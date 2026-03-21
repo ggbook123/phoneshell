@@ -19,6 +19,35 @@ function log(msg) {
     const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
     console.log(`[${ts}] ${msg}`);
 }
+function resolveTlsRuntime(config) {
+    const tls = config.tls;
+    if (!tls)
+        return { enabled: false, port: 0 };
+    const certPath = tls.certPath?.trim() || '';
+    const keyPath = tls.keyPath?.trim() || '';
+    const caPath = tls.caPath?.trim() || '';
+    const passphrase = tls.passphrase?.trim() || '';
+    const tlsConfigured = certPath.length > 0 && keyPath.length > 0;
+    const tlsAllowed = tls.enabled !== false;
+    if (!tlsConfigured || !tlsAllowed)
+        return { enabled: false, port: 0 };
+    const port = tls.port && tls.port >= 1 && tls.port <= 65535 ? tls.port : config.port;
+    try {
+        const options = {
+            key: fs.readFileSync(keyPath),
+            cert: fs.readFileSync(certPath),
+            minVersion: 'TLSv1.2',
+        };
+        if (caPath)
+            options.ca = fs.readFileSync(caPath);
+        if (passphrase)
+            options.passphrase = passphrase;
+        return { enabled: true, port, options };
+    }
+    catch (err) {
+        throw new Error(`[tls] failed to load cert/key: ${err.message}`);
+    }
+}
 const publicIpProviders = [
     {
         name: 'ipify',
@@ -128,8 +157,15 @@ async function detectPublicHost(logger) {
     return null;
 }
 export function createApp(config) {
-    const webPanelEnabled = !!config.modules.webPanel;
-    const panelPort = config.panelPort && config.panelPort !== config.port ? config.panelPort : 0;
+    const webPanelEnabled = true;
+    const panelAccessDefault = config.modules.webPanel ? 'public' : 'private';
+    const configPath = config.configPath || '/etc/phoneshell/config.json';
+    const tlsRuntime = resolveTlsRuntime(config);
+    const primaryPort = config.port;
+    const tlsPort = tlsRuntime.enabled ? tlsRuntime.port : 0;
+    const primaryUsesTls = tlsRuntime.enabled && tlsPort === primaryPort;
+    const panelPortCandidate = config.panelPort && config.panelPort !== primaryPort ? config.panelPort : 0;
+    const panelPort = panelPortCandidate && panelPortCandidate !== tlsPort ? panelPortCandidate : 0;
     const deviceStore = new DeviceStore(config.baseDirectory);
     const groupStore = new GroupStore(config.baseDirectory);
     const membershipStore = new GroupMembershipStore(config.baseDirectory);
@@ -208,6 +244,11 @@ export function createApp(config) {
     let relayClient = null;
     let pendingServerMigration = null;
     let resolvedPublicHost = '';
+    let panelAccessCache = panelAccessDefault;
+    let panelAccessCacheAt = 0;
+    const wsScheme = (useTls) => (useTls ? 'wss' : 'ws');
+    const httpScheme = (useTls) => (useTls ? 'https' : 'http');
+    const buildWsUrl = (host, port, useTls) => `${wsScheme(useTls)}://${normalizeHostWithPort(host, port)}/ws/`;
     function startRelayServer(tokenOverride) {
         if (tokenOverride)
             effectiveToken = tokenOverride;
@@ -286,16 +327,64 @@ export function createApp(config) {
     function buildRelayUrlFromConfig() {
         const publicHost = getRuntimePublicHost();
         if (publicHost) {
-            const ph = normalizeHostWithPort(publicHost, config.port);
-            return `ws://${ph}/ws/`;
+            const port = tlsRuntime.enabled ? tlsPort : primaryPort;
+            return buildWsUrl(publicHost, port, tlsRuntime.enabled);
         }
-        return `ws://localhost:${config.port}/ws/`;
+        const port = tlsRuntime.enabled ? tlsPort : primaryPort;
+        return buildWsUrl('localhost', port, tlsRuntime.enabled);
     }
     function applyPublicHostToRelay(host) {
-        const relayHost = normalizeHostWithPort(host, config.port);
-        const relayUrl = `ws://${relayHost}/ws/`;
+        const port = tlsRuntime.enabled ? tlsPort : primaryPort;
+        const relayUrl = buildWsUrl(host, port, tlsRuntime.enabled);
         relay.setRelayUrl(relayUrl);
         lastResolvedServerUrl = relayUrl;
+    }
+    function readPanelAccessFromConfig() {
+        if (!configPath)
+            return panelAccessCache;
+        try {
+            if (!fs.existsSync(configPath))
+                return panelAccessCache;
+            const json = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+            if (typeof json.panelAccess === 'string') {
+                const v = json.panelAccess.trim().toLowerCase();
+                if (v === 'private' || v === 'internal' || v === 'closed')
+                    return 'private';
+                if (v === 'public' || v === 'open')
+                    return 'public';
+            }
+            if (json.modules?.webPanel === false)
+                return 'private';
+            if (json.modules?.webPanel === true)
+                return 'public';
+        }
+        catch { }
+        return panelAccessCache;
+    }
+    function getPanelAccessMode() {
+        const now = Date.now();
+        if (now - panelAccessCacheAt < 1500)
+            return panelAccessCache;
+        panelAccessCache = readPanelAccessFromConfig();
+        panelAccessCacheAt = now;
+        return panelAccessCache;
+    }
+    function isPanelAuthorized(req) {
+        const token = extractToken(req);
+        return relay.isAuthorized(token);
+    }
+    function buildPanelCookie(token, req) {
+        const proto = req.headers['x-forwarded-proto']?.split(',')[0]?.trim().toLowerCase();
+        const secure = proto === 'https' || proto === 'wss' || req.socket?.encrypted;
+        const parts = [
+            `ps_token=${encodeURIComponent(token)}`,
+            'Path=/',
+            'SameSite=Lax',
+            'HttpOnly',
+        ];
+        if (secure)
+            parts.push('Secure');
+        return parts.join('; ');
     }
     function startRelayServerForMigration(groupId, groupSecret) {
         const newServerUrl = lastResolvedServerUrl || buildRelayUrlFromConfig();
@@ -369,6 +458,7 @@ export function createApp(config) {
         const proto = req.headers['x-forwarded-proto']?.split(',')[0]?.trim();
         let host = req.headers['x-forwarded-host']?.split(',')[0]?.trim();
         const forwardedPort = req.headers['x-forwarded-port']?.split(',')[0]?.trim();
+        const socketEncrypted = req.socket.encrypted === true;
         if (!host) {
             const origin = (req.headers['origin'] || req.headers['referer']);
             if (origin) {
@@ -383,14 +473,19 @@ export function createApp(config) {
         if (forwardedPort && host && !host.includes(':'))
             host = `${host}:${forwardedPort}`;
         const publicHost = getRuntimePublicHost();
+        const scheme = proto?.toLowerCase() || (socketEncrypted ? 'https' : 'http');
+        const wsSchemeValue = scheme === 'https' || scheme === 'wss' ? 'wss' : 'ws';
+        const portForHost = wsSchemeValue === 'wss'
+            ? (tlsRuntime.enabled ? tlsPort : primaryPort)
+            : primaryPort;
         if (host) {
             const { host: hostOnly } = splitHostPort(host);
             if (hostOnly && isLocalHost(hostOnly) && publicHost) {
-                host = normalizeHostWithPort(publicHost, config.port);
+                host = normalizeHostWithPort(publicHost, portForHost);
             }
         }
         else if (publicHost) {
-            host = normalizeHostWithPort(publicHost, config.port);
+            host = normalizeHostWithPort(publicHost, portForHost);
         }
         if (!host) {
             const serverUrl = buildRelayUrlFromConfig();
@@ -400,12 +495,10 @@ export function createApp(config) {
         {
             const { host: hostOnly } = splitHostPort(host);
             if (hostOnly) {
-                host = normalizeHostWithPort(hostOnly, config.port);
+                host = normalizeHostWithPort(hostOnly, portForHost);
             }
         }
-        const scheme = proto?.toLowerCase();
-        const wsScheme = scheme === 'https' || scheme === 'wss' ? 'wss' : 'ws';
-        const serverUrl = `${wsScheme}://${host}/ws/`;
+        const serverUrl = `${wsSchemeValue}://${host}/ws/`;
         lastResolvedServerUrl = serverUrl;
         if (!config.publicHost) {
             const hostOnly = splitHostPort(host).host.toLowerCase() || '';
@@ -439,6 +532,8 @@ export function createApp(config) {
     const requestHandler = async (req, res) => {
         const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
         const pathname = url.pathname.replace(/\/+$/, '') || '/';
+        const panelPrivate = getPanelAccessMode() === 'private';
+        const panelAuthorized = isPanelAuthorized(req);
         // CORS
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Headers', 'Authorization, X-PhoneShell-Token, Content-Type');
@@ -509,9 +604,13 @@ export function createApp(config) {
         }
         // --- Panel HTML ---
         if (pathname === '/' || pathname === '/panel') {
-            if (!webPanelEnabled) {
+            if (panelPrivate && !panelAuthorized) {
                 res.writeHead(404).end();
                 return;
+            }
+            const tokenForPanel = panelAuthorized ? extractToken(req) : undefined;
+            if (tokenForPanel) {
+                res.setHeader('Set-Cookie', buildPanelCookie(tokenForPanel, req));
             }
             const html = getPanelHtml();
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
@@ -520,7 +619,7 @@ export function createApp(config) {
         }
         // --- Panel static assets from web/dist ---
         if (pathname.startsWith('/panel/')) {
-            if (!webPanelEnabled) {
+            if (panelPrivate && !panelAuthorized) {
                 res.writeHead(404).end();
                 return;
             }
@@ -557,16 +656,16 @@ export function createApp(config) {
         }
         // --- Panel API (no auth required for bootstrap) ---
         if (pathname === '/api/panel/verify') {
-            if (!webPanelEnabled) {
-                writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+            if (panelPrivate && !panelAuthorized) {
+                writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
                 return;
             }
-            writeJson(res, 200, { valid: false });
+            writeJson(res, 200, { valid: panelAuthorized });
             return;
         }
         if (pathname === '/api/panel/pairing') {
-            if (!webPanelEnabled) {
-                writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+            if (panelPrivate && !panelAuthorized) {
+                writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
                 return;
             }
             const serverUrl = resolveServerUrl(req);
@@ -574,8 +673,8 @@ export function createApp(config) {
             return;
         }
         if (pathname === '/api/panel/qr.png') {
-            if (!webPanelEnabled) {
-                writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+            if (panelPrivate && !panelAuthorized) {
+                writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
                 return;
             }
             const payload = url.searchParams.get('payload') || relay.getBindQrPayload(resolveServerUrl(req));
@@ -600,8 +699,8 @@ export function createApp(config) {
             return;
         }
         if (pathname === '/api/panel/login/start') {
-            if (!webPanelEnabled) {
-                writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+            if (panelPrivate && !panelAuthorized) {
+                writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
                 return;
             }
             const serverUrl = resolveServerUrl(req);
@@ -611,8 +710,8 @@ export function createApp(config) {
             return;
         }
         if (pathname.startsWith('/api/panel/login/status/')) {
-            if (!webPanelEnabled) {
-                writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+            if (panelPrivate && !panelAuthorized) {
+                writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
                 return;
             }
             const requestId = pathname.slice('/api/panel/login/status/'.length);
@@ -629,8 +728,8 @@ export function createApp(config) {
             return;
         }
         if (pathname === '/api/panel/login/qr.png') {
-            if (!webPanelEnabled) {
-                writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Web panel disabled.' });
+            if (panelPrivate && !panelAuthorized) {
+                writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
                 return;
             }
             const payload = url.searchParams.get('payload');
@@ -710,8 +809,10 @@ export function createApp(config) {
         }
         writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Unknown endpoint.' });
     };
-    const server = http.createServer(requestHandler);
-    const panelServer = panelPort && webPanelEnabled ? http.createServer(requestHandler) : null;
+    const createServer = (useTls) => useTls ? https.createServer(tlsRuntime.options, requestHandler) : http.createServer(requestHandler);
+    const server = createServer(primaryUsesTls);
+    const tlsServer = tlsRuntime.enabled && !primaryUsesTls ? createServer(true) : null;
+    const panelServer = panelPort && webPanelEnabled ? createServer(tlsRuntime.enabled) : null;
     // WebSocket server
     const wss = new WebSocketServer({ noServer: true });
     const handleUpgrade = (req, socket, head) => {
@@ -743,12 +844,15 @@ export function createApp(config) {
         });
     };
     server.on('upgrade', handleUpgrade);
+    if (tlsServer)
+        tlsServer.on('upgrade', handleUpgrade);
     if (panelServer)
         panelServer.on('upgrade', handleUpgrade);
     return {
         start() {
-            server.listen(config.port, '0.0.0.0', () => {
-                log(`PhoneShell server listening on port ${config.port}`);
+            server.listen(primaryPort, '0.0.0.0', () => {
+                const primaryScheme = httpScheme(primaryUsesTls);
+                log(`PhoneShell server listening on port ${primaryPort} (${primaryScheme.toUpperCase()})`);
                 log(`  Device: ${displayName} (${deviceId})`);
                 log(`  OS: ${os}`);
                 log(`  Available shells: ${availableShells.join(', ')}`);
@@ -757,23 +861,41 @@ export function createApp(config) {
                     applyPublicHostToRelay(config.publicHost);
                 }
                 else {
-                    relay.setRelayUrl(`ws://localhost:${config.port}/ws/`);
+                    relay.setRelayUrl(buildRelayUrlFromConfig());
                 }
                 const group = relay.getGroup();
                 if (group) {
                     log(`  Group ID: ${group.groupId}`);
                     log(`  Group Secret: ${group.groupSecret}`);
                 }
-                if (config.publicHost) {
-                    const panelHost = normalizeHostWithPort(config.publicHost, panelPort || config.port);
-                    log(`  Public: http://${panelHost}/panel/`);
+                if (config.publicHost && webPanelEnabled) {
+                    const panelHostPort = panelPort || (tlsRuntime.enabled ? tlsPort : primaryPort);
+                    const panelHost = normalizeHostWithPort(config.publicHost, panelHostPort);
+                    const panelScheme = tlsRuntime.enabled ? 'https' : 'http';
+                    log(`  Public: ${panelScheme}://${panelHost}/panel/`);
                 }
-                log(`  Health: http://localhost:${config.port}/ws/healthz`);
+                log(`  Health: ${primaryScheme}://localhost:${primaryPort}/ws/healthz`);
+                if (tlsServer) {
+                    log(`  Health (TLS): https://localhost:${tlsPort}/ws/healthz`);
+                }
                 if (webPanelEnabled) {
-                    const localPanelPort = panelPort || config.port;
-                    log(`  Panel: http://localhost:${localPanelPort}/panel/`);
+                    if (panelPort) {
+                        const panelScheme = tlsRuntime.enabled ? 'https' : 'http';
+                        log(`  Panel: ${panelScheme}://localhost:${panelPort}/panel/`);
+                    }
+                    else {
+                        log(`  Panel: ${primaryScheme}://localhost:${primaryPort}/panel/`);
+                        if (tlsServer) {
+                            log(`  Panel (TLS): https://localhost:${tlsPort}/panel/`);
+                        }
+                    }
                 }
             });
+            if (tlsServer) {
+                tlsServer.listen(tlsPort, '0.0.0.0', () => {
+                    log(`TLS server listening on port ${tlsPort}`);
+                });
+            }
             if (panelServer) {
                 panelServer.listen(panelPort, '0.0.0.0', () => {
                     log(`Panel server listening on port ${panelPort}`);
@@ -789,8 +911,10 @@ export function createApp(config) {
                     log(`[public] Resolved public host (${result.source}): ${result.host}`);
                     applyPublicHostToRelay(result.host);
                     if (webPanelEnabled) {
-                        const panelHost = normalizeHostWithPort(result.host, panelPort || config.port);
-                        log(`  Public: http://${panelHost}/panel/`);
+                        const panelHostPort = panelPort || (tlsRuntime.enabled ? tlsPort : primaryPort);
+                        const panelHost = normalizeHostWithPort(result.host, panelHostPort);
+                        const panelScheme = tlsRuntime.enabled ? 'https' : 'http';
+                        log(`  Public: ${panelScheme}://${panelHost}/panel/`);
                     }
                 });
             }
@@ -800,6 +924,7 @@ export function createApp(config) {
             terminalManager.disposeAll();
             wss.close();
             server.close();
+            tlsServer?.close();
             panelServer?.close();
             log('PhoneShell server stopped.');
         },
@@ -820,6 +945,25 @@ function extractToken(req) {
     const xToken = req.headers['x-phoneshell-token'];
     if (xToken)
         return xToken.trim();
+    const cookie = req.headers['cookie'];
+    if (cookie) {
+        for (const part of cookie.split(';')) {
+            const trimmed = part.trim();
+            if (!trimmed)
+                continue;
+            if (trimmed.startsWith('ps_token=')) {
+                const value = trimmed.slice('ps_token='.length);
+                if (value) {
+                    try {
+                        return decodeURIComponent(value.trim());
+                    }
+                    catch {
+                        return value.trim();
+                    }
+                }
+            }
+        }
+    }
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const queryToken = url.searchParams.get('token');
     if (queryToken)
