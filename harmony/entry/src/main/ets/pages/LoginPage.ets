@@ -150,9 +150,47 @@ struct LoginPage {
         .backgroundColor(AppColors.ACCENT)
         .margin({ bottom: 12 })
 
-      this.InfoLine('01', this.t('PC上点击启动按钮', 'Click the Start button on the PC'))
-      this.InfoLine('02', this.t('手机扫码连接', 'Scan with your phone to connect'))
-      this.InfoLine('03', this.t('无缝切换，不中断的进行终端会话', 'Seamless switching, keep terminal sessions uninterrupted'))
+      Row() {
+        Text('01')
+          .fontSize(11)
+          .fontColor(AppColors.ACCENT_BLUE)
+          .fontFamily('monospace')
+          .margin({ right: 10 })
+        Text(this.t('PC上点击启动按钮', 'Click the Start button on the PC'))
+          .fontSize(13)
+          .fontColor(AppColors.TEXT_PRIMARY)
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .margin({ bottom: 10 })
+
+      Row() {
+        Text('02')
+          .fontSize(11)
+          .fontColor(AppColors.ACCENT_BLUE)
+          .fontFamily('monospace')
+          .margin({ right: 10 })
+        Text(this.t('手机扫码连接', 'Scan with your phone to connect'))
+          .fontSize(13)
+          .fontColor(AppColors.TEXT_PRIMARY)
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .margin({ bottom: 10 })
+
+      Row() {
+        Text('03')
+          .fontSize(11)
+          .fontColor(AppColors.ACCENT_BLUE)
+          .fontFamily('monospace')
+          .margin({ right: 10 })
+        Text(this.t('无缝切换，不中断的进行终端会话', 'Seamless switching, keep terminal sessions uninterrupted'))
+          .fontSize(13)
+          .fontColor(AppColors.TEXT_PRIMARY)
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .margin({ bottom: 10 })
     }
     .width('100%')
     .padding(16)
@@ -161,24 +199,6 @@ struct LoginPage {
     .borderColor(AppColors.CARD_BORDER)
     .borderRadius(AppSizes.BORDER_RADIUS_CARD)
     .margin({ bottom: 16 })
-  }
-
-  @Builder
-  InfoLine(indexLabel: string, text: string) {
-    Row() {
-      Text(indexLabel)
-        .fontSize(11)
-        .fontColor(AppColors.ACCENT_BLUE)
-        .fontFamily('monospace')
-        .margin({ right: 10 })
-
-      Text(text)
-        .fontSize(13)
-        .fontColor(AppColors.TEXT_PRIMARY)
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .margin({ bottom: 10 })
   }
 
   @Builder
