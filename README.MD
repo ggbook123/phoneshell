@@ -28,6 +28,10 @@
 
 ---
 
+<p align="center">
+  <img src="assets/screenshots/support-platform.png" width="90%" />
+</p>
+
 ## Screenshots
 
 <p align="center">
@@ -81,6 +85,7 @@
 
 1. Run `PhoneShell.App.exe` as Administrator.
 2. Click **Start**.
+3. Open the required firewall port(s) (Important: Windows default port is 9090; Linux default ports are 19090 and 9090; ports are configurable).
 
 ### Android / HarmonyOS
 
@@ -123,6 +128,8 @@ phoneshell local --shell bash    # Specify shell type
 phoneshell set                   # Update configuration
 phoneshell start                 # Start the service
 ```
+
+For multi-device deployment (mobile + Windows + Linux), it is recommended to scan and connect the phone to the PC first, then scan and connect to Linux. If the connection fails, use: the phone’s “Disband Group” button, the PC’s “Initialize” button, or on Linux run `sudo phoneshell set` and choose option 3 to initialize.
 
 ### Configuration
 
@@ -194,6 +201,8 @@ phoneshell/
 | Protocol | WebSocket + JSON messages (TLS/wss supported) |
 
 ---
+
+If you have any questions, contact me at fu648227368@gmail.com
 
 ## License
 

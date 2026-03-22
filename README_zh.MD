@@ -29,6 +29,10 @@
 
 ---
 
+<p align="center">
+  <img src="assets/screenshots/support-platform.png" width="90%" />
+</p>
+
 ## 界面预览
 
 <p align="center">
@@ -82,6 +86,7 @@
 
 1. 以管理员身份运行 `PhoneShell.App.exe`。
 2. 点击 **Start**。
+3. 打开防火墙对应端口（重要，Windows 端口默认 9090；Linux 端口默认 19090 和 9090；可自定义端口）。
 
 ### Android / HarmonyOS 端
 
@@ -124,6 +129,8 @@ phoneshell local --shell bash    # 指定 shell 类型
 phoneshell set                   # 修改配置
 phoneshell start                 # 启动服务
 ```
+
+多端部署（也就是既有手机、又有windows、又linux）建议手机先扫码连PC，再扫码连linux。 若连没连上、手机有个解散群组按钮、PC有个初始化按钮、linux 命令 sudo phoneshell set 选3初始化。
 
 ### 配置
 
@@ -195,6 +202,8 @@ phoneshell/
 | 通信协议 | WebSocket + JSON 消息（支持 TLS/wss） |
 
 ---
+
+有问题直接联系我邮箱 fu648227368@gmail.com
 
 ## 许可证
 
