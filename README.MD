@@ -12,6 +12,8 @@
 
 ## Why PhoneShell
 
+If you start working with Claude/Codex on your computer and need to go out, you can seamlessly take over on your phone, then hand back to your computer when you return.
+
 - **Phone as Terminal** — Native shell experience on your phone. Code with AI anytime, anywhere.
 - **Sessions Never Die** — Built around the group concept, terminal sessions seamlessly hand off between phone, PC, and Linux within a group. Processes keep running.
 - **Works with Every CLI** — Compatible with all command-line tools: `claude`, `codex`, `gemini`, `kiro`, `droid`, `vim`, `top`...
