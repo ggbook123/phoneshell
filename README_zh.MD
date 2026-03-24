@@ -205,6 +205,8 @@ phoneshell/
 
 有问题直接联系我邮箱 fu648227368@gmail.com
 
+本项目认可LINUX DO，https://linux.do
+
 ## 许可证
 
 本项目采用 GNU AGPL-3.0 许可证，详见 [LICENSE](LICENSE)。

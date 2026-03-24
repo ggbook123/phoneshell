@@ -204,6 +204,8 @@ phoneshell/
 
 If you have any questions, contact me at fu648227368@gmail.com
 
+This project acknowledges LINUX DO, https://linux.do
+
 ## License
 
 This project is licensed under the GNU AGPL-3.0. See [LICENSE](LICENSE).
