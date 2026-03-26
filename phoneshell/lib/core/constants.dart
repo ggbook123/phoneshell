@@ -48,6 +48,7 @@ class AppSizes {
 
 class AppStrings {
   static const appName = 'PhoneShell';
+  static const privacyPolicyUrl = 'https://www.phoneshell.sbs/policy';
   static const statusDisconnected = '未连接';
   static const statusConnecting = '连接中...';
   static const statusConnected = '已连接';

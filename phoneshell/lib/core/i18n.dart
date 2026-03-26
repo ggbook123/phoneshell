@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/foundation.dart';
 
 import 'constants.dart';
@@ -22,6 +24,8 @@ class I18n {
       _currentLanguage = AppLanguage.en;
     } else if (saved == 'zh') {
       _currentLanguage = AppLanguage.zh;
+    } else {
+      _currentLanguage = _systemLanguage();
     }
     languageNotifier.value = _currentLanguage;
     return _currentLanguage;
@@ -44,5 +48,13 @@ class I18n {
 
   static String _languageToCode(AppLanguage language) {
     return language == AppLanguage.en ? 'en' : 'zh';
+  }
+
+  static AppLanguage _systemLanguage() {
+    final locale = ui.PlatformDispatcher.instance.locale;
+    final code = locale.languageCode.toLowerCase();
+    if (code == 'zh') return AppLanguage.zh;
+    if (code == 'en') return AppLanguage.en;
+    return AppLanguage.en;
   }
 }

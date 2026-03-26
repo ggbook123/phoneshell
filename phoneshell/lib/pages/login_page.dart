@@ -345,15 +345,10 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _footerInfo() {
-    return Row(
-      children: const [
+    return const Row(
+      children: [
         Text(
           'PhoneShell Mobile',
-          style: TextStyle(fontSize: 11, color: Color(AppColors.textMuted)),
-        ),
-        Spacer(),
-        Text(
-          'v0.2.0',
           style: TextStyle(fontSize: 11, color: Color(AppColors.textMuted)),
         ),
       ],

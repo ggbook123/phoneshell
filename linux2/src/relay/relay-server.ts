@@ -1207,6 +1207,7 @@ export class RelayServer {
       displayName: member.displayName,
     }));
     this.broadcastDeviceList();
+    this.broadcastToAll(serialize({ type: 'group.member.list' as const, members: this.buildGroupMemberInfoList() }));
 
     this.log(`Device settings updated: ${msg.deviceId} �?${member.displayName}`);
   }

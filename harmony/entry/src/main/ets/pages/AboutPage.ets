@@ -1,3 +1,4 @@
+import { Context } from '@kit.AbilityKit';
 import { AppColors, AppSizes } from '../common/Constants';
 import { I18n } from '../common/I18n';
 import { SafeAreaUtil } from '../common/SafeArea';
@@ -28,6 +29,23 @@ struct AboutPage {
 
   private goBack(): void {
     this.getUIContext().getRouter().back();
+  }
+
+  private extractUrl(text: string): string {
+    const match: RegExpMatchArray | null = text.match(/https?:\/\/\S+/);
+    return match ? match[0] : '';
+  }
+
+  private openUrl(url: string): void {
+    const hostContext: Context | undefined = this.getUIContext().getHostContext();
+    if (hostContext === undefined) {
+      return;
+    }
+    try {
+      hostContext.startAbility({ action: 'ohos.want.action.viewData', uri: url });
+    } catch (_e) {
+      // Ignore
+    }
   }
 
   build() {
@@ -89,47 +107,18 @@ struct AboutPage {
         Scroll() {
           Column({ space: 12 }) {
             this.SectionCard(
-              this.t('产品定位', 'Positioning'),
-              this.t('把桌面终端装进口袋', 'Bring your desktop shell to your pocket'),
+              this.t('软件介绍', 'About'),
+              this.t('使用说明', 'Instructions'),
               [
-                this.t('PhoneShell 让手机成为 PC 终端的轻量入口。', 'PhoneShell turns your phone into a lightweight entry for PC shells.'),
-                this.t('面向设备管理与远程控制，减少来回切换成本。', 'Focuses on device management and remote control efficiency.'),
-                this.t('强调快捷、安全与低干扰的操作体验。', 'Designed for fast, secure, and low-friction control.')
+                this.t('PhoneShell在手机上获得电脑端原生 Shell 体验，通过远程到电脑端随时随地 AI 编程。',
+                  'PhoneShell brings a native desktop shell to your phone, enabling AI coding anywhere via remote access.'),
+                this.t('请于到github上下载电脑端：https://github.com/ggbook123/phoneshell',
+                  'Download the desktop app from GitHub: https://github.com/ggbook123/phoneshell'),
+                this.t('第一次请以管理员身份打开电脑端，电脑端点击启动，防火墙打开对应端口，手机扫码连接即可。',
+                  'First run: open the desktop app as administrator, click Start, allow the firewall ports, then scan the QR code on your phone.'),
+                this.t('软件版本：v1.0.0', 'Version: v1.0.0')
               ],
               AppColors.ACCENT
-            )
-
-            this.SectionCard(
-              this.t('核心能力', 'Core Capabilities'),
-              this.t('连接、管理、控制', 'Connect, manage, control'),
-              [
-                this.t('扫码或地址连接，快速进入设备列表。', 'Connect via QR or address to reach device list fast.'),
-                this.t('群组管理多设备，统一授权与状态感知。', 'Group mode manages multi-devices with unified auth.'),
-                this.t('远程终端与快捷键提升操作效率。', 'Remote terminal and shortcuts boost efficiency.')
-              ],
-              AppColors.ACCENT_BLUE
-            )
-
-            this.SectionCard(
-              this.t('安全提示', 'Safety Notes'),
-              this.t('重要操作需要确认', 'Confirm important actions'),
-              [
-                this.t('敏感操作会触发授权请求，请认真核对。', 'Sensitive actions prompt authorization; verify carefully.'),
-                this.t('建议在可信网络环境中使用。', 'Use within trusted network environments.'),
-                this.t('保持群组密钥私密，避免外泄。', 'Keep group secrets private to avoid leakage.')
-              ],
-              AppColors.ACCENT_PINK
-            )
-
-            this.SectionCard(
-              this.t('当前重点', 'Current Focus'),
-              this.t('稳定连接与清晰反馈', 'Stable links and clear feedback'),
-              [
-                this.t('本版本聚焦连接稳定与控制反馈。', 'This version focuses on stable connection and feedback.'),
-                this.t('持续优化跨设备协作与权限流。', 'Ongoing improvements for multi-device collaboration.'),
-                this.t('欢迎反馈以完善体验细节。', 'Feedback is welcome to refine details.')
-              ],
-              AppColors.ACCENT_YELLOW
             )
           }
           .width('100%')
@@ -189,16 +178,28 @@ struct AboutPage {
 
       Column({ space: 6 }) {
         ForEach(lines, (line: string, index: number) => {
+          const linkUrl: string = this.extractUrl(line);
           Row() {
             Circle()
               .width(6)
               .height(6)
               .fill(accent)
               .margin({ right: 8, top: 6 })
-            Text(line)
-              .fontSize(12)
-              .fontColor(AppColors.TEXT_SECONDARY)
-              .lineHeight(18)
+            if (linkUrl.length > 0) {
+              Text(line)
+                .fontSize(12)
+                .fontColor(AppColors.ACCENT_BLUE)
+                .lineHeight(18)
+                .textDecoration({ type: TextDecorationType.Underline })
+                .onClick(() => {
+                  this.openUrl(linkUrl);
+                })
+            } else {
+              Text(line)
+                .fontSize(12)
+                .fontColor(AppColors.TEXT_SECONDARY)
+                .lineHeight(18)
+            }
           }
           .width('100%')
         }, (_line: string, index: number) => `line_${index}`)

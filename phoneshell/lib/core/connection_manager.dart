@@ -299,9 +299,11 @@ class ConnectionManager {
   }
 
   void updateDeviceDisplayName(String deviceId, String newName) {
+    final trimmed = newName.trim();
+    if (deviceId.isEmpty || trimmed.isEmpty) return;
     final conn = _getConnectionForDevice(deviceId);
     if (conn == null) return;
-    final msg = {'type': 'device.settings.update', 'deviceId': deviceId, 'displayName': newName};
+    final msg = {'type': 'device.settings.update', 'deviceId': deviceId, 'displayName': trimmed};
     conn.send(jsonEncode(msg));
   }
 
@@ -508,8 +510,8 @@ class ConnectionManager {
       'groupSecret': groupSecret,
       'inviteCode': inviteCode,
       'deviceId': _mobileDeviceId,
-      'displayName': 'HarmonyOS Phone',
-      'os': 'HarmonyOS',
+      'displayName': 'my phone',
+      'os': 'Android',
       'availableShells': <String>[],
     };
     _groupConnection!.send(jsonEncode(msg));
@@ -521,7 +523,7 @@ class ConnectionManager {
       'type': 'mobile.bind.request',
       'groupId': groupId,
       'mobileDeviceId': _mobileDeviceId,
-      'mobileDisplayName': 'HarmonyOS Phone',
+      'mobileDisplayName': 'my phone',
     };
     _groupConnection!.send(jsonEncode(msg));
   }
@@ -578,6 +580,10 @@ class ConnectionManager {
         _singleDeviceInfos[deviceId] = devices.first;
       }
       _emitDeviceListChanged();
+    } else if (type == 'device.settings.updated') {
+      final targetId = (data['deviceId'] ?? deviceId) as String;
+      final newName = (data['displayName'] ?? '') as String;
+      _updateDeviceNameInLists(targetId, newName);
     } else if (type == 'relay.designated') {
       final relayUrl = (data['relayUrl'] ?? '') as String;
       final newGroupId = (data['groupId'] ?? '') as String;
@@ -790,6 +796,7 @@ class ConnectionManager {
   }
 
   void _updateDeviceNameInLists(String deviceId, String newName) {
+    if (deviceId.isEmpty || newName.isEmpty) return;
     final info = _singleDeviceInfos[deviceId];
     if (info != null) {
       _singleDeviceInfos[deviceId] = info.copyWith(displayName: newName);
@@ -827,7 +834,35 @@ class ConnectionManager {
       conn.displayName = newName;
     }
 
+    _updateSingleDeviceRecordName(deviceId, newName);
     _emitDeviceListChanged();
+  }
+
+  void _updateSingleDeviceRecordName(String deviceId, String newName) {
+    PreferencesUtil.getString(StorageKeys.singleDevices).then((raw) {
+      if (raw.isEmpty) return;
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is! List) return;
+        final records = decoded
+            .whereType<Map<String, dynamic>>()
+            .map((e) => SingleDeviceRecord.fromJson(e))
+            .toList();
+        var updated = false;
+        for (final record in records) {
+          if (record.deviceId == deviceId) {
+            record.displayName = newName;
+            updated = true;
+          }
+        }
+        if (updated) {
+          final json = jsonEncode(records.map((e) => e.toJson()).toList());
+          PreferencesUtil.setString(StorageKeys.singleDevices, json);
+        }
+      } catch (_) {
+        // Ignore parse errors
+      }
+    });
   }
 
   void _saveSingleDevice(String deviceId, String displayName, String wsUrl, String httpUrl) {

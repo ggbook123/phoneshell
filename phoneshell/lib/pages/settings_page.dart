@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/constants.dart';
 import '../core/i18n.dart';
@@ -18,6 +19,12 @@ class SettingsPage extends StatelessWidget {
 
   void _openAboutPage(BuildContext context) {
     Navigator.of(context).pushNamed('pages/AboutPage');
+  }
+
+  Future<void> _openPrivacyPolicy() async {
+    final uri = Uri.tryParse(AppStrings.privacyPolicyUrl);
+    if (uri == null) return;
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   @override
@@ -116,6 +123,15 @@ class SettingsPage extends StatelessWidget {
                         subtitle: _t('版本、目标与许可', 'Version and overview'),
                         accent: const Color(AppColors.accentBlue),
                         onOpen: () => _openAboutPage(context),
+                      ),
+                      const SizedBox(height: 12),
+                      _settingsItem(
+                        context,
+                        indexLabel: '03',
+                        title: _t('隐私政策', 'Privacy Policy'),
+                        subtitle: _t('查看隐私条款', 'View privacy policy'),
+                        accent: const Color(AppColors.accentPink),
+                        onOpen: _openPrivacyPolicy,
                       ),
                     ],
                   ),

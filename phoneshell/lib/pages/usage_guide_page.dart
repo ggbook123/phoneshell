@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/constants.dart';
 import '../core/i18n.dart';
@@ -10,6 +11,34 @@ class UsageGuidePage extends StatelessWidget {
 
   void _goBack(BuildContext context) {
     Navigator.of(context).pop();
+  }
+
+  String _extractUrl(String text) {
+    final match = RegExp(r'https?://\\S+').firstMatch(text);
+    return match?.group(0) ?? '';
+  }
+
+  Future<void> _openUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Widget _buildLine(String line) {
+    final url = _extractUrl(line);
+    final isLink = url.isNotEmpty;
+    final style = TextStyle(
+      fontSize: 12,
+      color: Color(isLink ? AppColors.accentBlue : AppColors.textSecondary),
+      height: 18 / 12,
+      decoration: isLink ? TextDecoration.underline : TextDecoration.none,
+    );
+    final text = Text(line, style: style);
+    if (!isLink) return text;
+    return GestureDetector(
+      onTap: () => _openUrl(url),
+      child: text,
+    );
   }
 
   @override
@@ -96,9 +125,12 @@ class UsageGuidePage extends StatelessWidget {
                         title: _t('快速开始', 'Quick Start'),
                         subtitle: _t('三步完成第一次连接', 'Three steps to first connection'),
                         lines: [
-                          _t('确保 PC 端已启动并保持在线。', 'Make sure the PC client is running and online.'),
-                          _t('在设备列表页扫码或输入地址连接。', 'Connect via QR or address from the device list page.'),
-                          _t('进入会话列表，选择 Shell 创建终端。', 'Enter the session list and create a shell.'),
+                          _t('到https://github.com/ggbook123/phoneshell下载pc端',
+                              'Download the PC app from https://github.com/ggbook123/phoneshell'),
+                          _t('PC端点击启动按钮（第一次请以右键管理员打开）',
+                              'Click Start in the PC app (first run: open as administrator).'),
+                          _t('PC端防火墙打开对应端口', 'Open the required firewall ports on the PC.'),
+                          _t('手机扫码即可连接', 'Scan the QR code on your phone to connect.'),
                         ],
                         accent: const Color(AppColors.accent),
                         tag: 'GUIDE',
@@ -108,9 +140,9 @@ class UsageGuidePage extends StatelessWidget {
                         title: _t('设备与群组', 'Devices & Group'),
                         subtitle: _t('单连与群组的切换逻辑', 'Switching between single and group'),
                         lines: [
-                          _t('单连适合快速连接单台设备。', 'Single mode is for quick one-device control.'),
-                          _t('群组可管理多设备并集中授权。', 'Group mode manages multiple devices with centralized auth.'),
-                          _t('长按在线设备可尝试加入群组。', 'Long-press an online device to add it to the group.'),
+                          _t('扫码自动加入群组', 'Scan to join a group automatically.'),
+                          _t('群组之间可以互连', 'Groups can connect with each other.'),
+                          _t('互连时只需扫码一下即可。', 'For interconnection, just scan once.'),
                         ],
                         accent: const Color(AppColors.accentBlue),
                         tag: 'GUIDE',
@@ -132,9 +164,9 @@ class UsageGuidePage extends StatelessWidget {
                         title: _t('远程终端', 'Remote Terminal'),
                         subtitle: _t('操作流畅与快捷键支持', 'Smooth control with shortcuts'),
                         lines: [
-                          _t('选择 Shell 后新建会话进入终端。', 'Pick a shell and create a session.'),
-                          _t('底部快捷键区支持常用操作。', 'Use the shortcut bar for common actions.'),
-                          _t('无响应时可下拉刷新会话列表。', 'Pull to refresh if a session becomes unresponsive.'),
+                          _t('终端无缝切换到手机', 'Seamlessly switch the terminal to your phone.'),
+                          _t('手机可以随时唤醒电脑终端', 'Your phone can wake the PC terminal anytime.'),
+                          _t('终端即时同步', 'The terminal syncs in real time.'),
                         ],
                         accent: const Color(AppColors.accentYellow),
                         tag: 'GUIDE',
@@ -228,10 +260,7 @@ class UsageGuidePage extends StatelessWidget {
                             decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
                           ),
                           Expanded(
-                            child: Text(
-                              line,
-                              style: const TextStyle(fontSize: 12, color: Color(AppColors.textSecondary), height: 18 / 12),
-                            ),
+                            child: _buildLine(line),
                           ),
                         ],
                       ),

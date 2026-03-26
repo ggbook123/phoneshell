@@ -58,6 +58,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
   String settingsRole = '';
   bool settingsIsGroupDevice = false;
   final TextEditingController _settingsNameController = TextEditingController();
+  bool showDeviceRenameDialog = false;
+  String renameDeviceId = '';
+  String renameDeviceTitle = '';
+  final TextEditingController _renameDeviceController = TextEditingController();
 
   bool showAuthDialog = false;
   String authRequestId = '';
@@ -88,6 +92,8 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
   @override
   void dispose() {
     _deactivatePage();
+    _settingsNameController.dispose();
+    _renameDeviceController.dispose();
     super.dispose();
   }
 
@@ -295,14 +301,37 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     });
   }
 
-  void _saveDeviceName() {
-    final trimmed = _settingsNameController.text.trim();
-    if (trimmed.isEmpty) return;
-    if (trimmed != settingsDisplayName) {
-      ConnectionManager.instance.updateDeviceDisplayName(settingsDeviceId, trimmed);
-      _updateDeviceNameLocal(settingsDeviceId, trimmed);
-      settingsDisplayName = trimmed;
+  void _openDeviceRenameDialog() {
+    renameDeviceId = settingsDeviceId;
+    renameDeviceTitle = settingsDisplayName;
+    _renameDeviceController.text = settingsDisplayName;
+    setState(() {
+      showDeviceRenameDialog = true;
+    });
+  }
+
+  void _closeDeviceRenameDialog() {
+    setState(() {
+      showDeviceRenameDialog = false;
+      renameDeviceId = '';
+      renameDeviceTitle = '';
+      _renameDeviceController.text = '';
+    });
+  }
+
+  void _confirmDeviceRename() {
+    final trimmed = _renameDeviceController.text.trim();
+    if (trimmed.isEmpty || renameDeviceId.isEmpty) {
+      _closeDeviceRenameDialog();
+      return;
     }
+    if (trimmed != settingsDisplayName) {
+      ConnectionManager.instance.updateDeviceDisplayName(renameDeviceId, trimmed);
+      _updateDeviceNameLocal(renameDeviceId, trimmed);
+      settingsDisplayName = trimmed;
+      _settingsNameController.text = trimmed;
+    }
+    _closeDeviceRenameDialog();
     _closeSettingsSheet();
   }
 
@@ -943,6 +972,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
             ),
           ),
           if (showSettingsSheet) _settingsSheet(padding),
+          if (showDeviceRenameDialog) _deviceRenameDialog(padding),
           if (showAuthDialog) _authDialog(padding),
           if (showInviteConfirmDialog) _inviteConfirmDialog(padding),
         ],
@@ -1387,11 +1417,16 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
 
   Widget _settingsSheet(EdgeInsets padding) {
     return Positioned.fill(
-      child: GestureDetector(
-        onTap: _closeSettingsSheet,
-        child: Container(
-          color: const Color(0xB0000000),
-          child: Align(
+      child: Stack(
+        children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _closeSettingsSheet,
+            child: Container(
+              color: const Color(0xB0000000),
+            ),
+          ),
+          Align(
             alignment: Alignment.bottomCenter,
             child: Container(
               width: double.infinity,
@@ -1499,7 +1534,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                     width: double.infinity,
                     height: 44,
                     child: ElevatedButton(
-                      onPressed: _saveDeviceName,
+                      onPressed: _openDeviceRenameDialog,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(AppColors.accent),
                         shape: RoundedRectangleBorder(
@@ -1538,7 +1573,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                         height: 44,
                         child: ElevatedButton(
                           onPressed: () {
-                            ConnectionManager.instance.designateRelay(settingsDeviceId);
+                            ConnectionManager.instance.requestGroupServerChange(settingsDeviceId);
                             _closeSettingsSheet();
                           },
                           style: ElevatedButton.styleFrom(
@@ -1592,7 +1627,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
               ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -1677,6 +1712,112 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                         child: Text(
                           _t('批准', 'Approve'),
                           style: const TextStyle(color: Colors.white, fontSize: AppSizes.fontSizeBody),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _deviceRenameDialog(EdgeInsets padding) {
+    return Positioned.fill(
+      child: Container(
+        color: const Color(0xB0000000),
+        padding: EdgeInsets.symmetric(horizontal: 24 + padding.left, vertical: 24),
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: const Color(AppColors.surface2),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(AppColors.cardBorder)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _t('重命名设备', 'Rename Device'),
+                  style: const TextStyle(
+                    fontSize: 18,
+                    color: Color(AppColors.textPrimary),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                if (renameDeviceTitle.isNotEmpty)
+                  Text(
+                    renameDeviceTitle,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(AppColors.textMuted),
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    SizedBox(
+                      width: 48,
+                      child: Text(
+                        _t('名称:', 'Name:'),
+                        style: const TextStyle(fontSize: 12, color: Color(AppColors.textSecondary)),
+                      ),
+                    ),
+                    Expanded(
+                      child: TextField(
+                        controller: _renameDeviceController,
+                        style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Color(AppColors.textPrimary)),
+                        decoration: InputDecoration(
+                          filled: true,
+                          fillColor: const Color(AppColors.inputBg),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(AppSizes.borderRadiusInput),
+                            borderSide: BorderSide.none,
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    SizedBox(
+                      width: 120,
+                      height: 40,
+                      child: OutlinedButton(
+                        onPressed: _closeDeviceRenameDialog,
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Color(AppColors.textMuted)),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton)),
+                        ),
+                        child: Text(
+                          _t('取消', 'Cancel'),
+                          style: const TextStyle(color: Color(AppColors.textPrimary), fontSize: AppSizes.fontSizeSmall),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    SizedBox(
+                      width: 120,
+                      height: 40,
+                      child: ElevatedButton(
+                        onPressed: _confirmDeviceRename,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(AppColors.accent),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton)),
+                        ),
+                        child: Text(
+                          _t('确认', 'Confirm'),
+                          style: const TextStyle(color: Colors.white, fontSize: AppSizes.fontSizeSmall),
                         ),
                       ),
                     ),

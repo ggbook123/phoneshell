@@ -1,3 +1,4 @@
+import { Context } from '@kit.AbilityKit';
 import { AppColors, AppSizes } from '../common/Constants';
 import { I18n } from '../common/I18n';
 import { SafeAreaUtil } from '../common/SafeArea';
@@ -28,6 +29,23 @@ struct UsageGuidePage {
 
   private goBack(): void {
     this.getUIContext().getRouter().back();
+  }
+
+  private extractUrl(text: string): string {
+    const match: RegExpMatchArray | null = text.match(/https?:\/\/\S+/);
+    return match ? match[0] : '';
+  }
+
+  private openUrl(url: string): void {
+    const hostContext: Context | undefined = this.getUIContext().getHostContext();
+    if (hostContext === undefined) {
+      return;
+    }
+    try {
+      hostContext.startAbility({ action: 'ohos.want.action.viewData', uri: url });
+    } catch (_e) {
+      // Ignore
+    }
   }
 
   build() {
@@ -92,9 +110,12 @@ struct UsageGuidePage {
               this.t('快速开始', 'Quick Start'),
               this.t('三步完成第一次连接', 'Three steps to first connection'),
               [
-                this.t('确保 PC 端已启动并保持在线。', 'Make sure the PC client is running and online.'),
-                this.t('在设备列表页扫码或输入地址连接。', 'Connect via QR or address from the device list page.'),
-                this.t('进入会话列表，选择 Shell 创建终端。', 'Enter the session list and create a shell.')
+                this.t('到https://github.com/ggbook123/phoneshell下载pc端',
+                  'Download the PC app from https://github.com/ggbook123/phoneshell'),
+                this.t('PC端点击启动按钮（第一次请以右键管理员打开）',
+                  'Click Start in the PC app (first run: open as administrator).'),
+                this.t('PC端防火墙打开对应端口', 'Open the required firewall ports on the PC.'),
+                this.t('手机扫码即可连接', 'Scan the QR code on your phone to connect.')
               ],
               AppColors.ACCENT
             )
@@ -103,9 +124,9 @@ struct UsageGuidePage {
               this.t('设备与群组', 'Devices & Group'),
               this.t('单连与群组的切换逻辑', 'Switching between single and group'),
               [
-                this.t('单连适合快速连接单台设备。', 'Single mode is for quick one-device control.'),
-                this.t('群组可管理多设备并集中授权。', 'Group mode manages multiple devices with centralized auth.'),
-                this.t('长按在线设备可尝试加入群组。', 'Long-press an online device to add it to the group.')
+                this.t('扫码自动加入群组', 'Scan to join a group automatically.'),
+                this.t('群组之间可以互连', 'Groups can connect with each other.'),
+                this.t('互连时只需扫码一下即可。', 'For interconnection, just scan once.')
               ],
               AppColors.ACCENT_BLUE
             )
@@ -125,9 +146,9 @@ struct UsageGuidePage {
               this.t('远程终端', 'Remote Terminal'),
               this.t('操作流畅与快捷键支持', 'Smooth control with shortcuts'),
               [
-                this.t('选择 Shell 后新建会话进入终端。', 'Pick a shell and create a session.'),
-                this.t('底部快捷键区支持常用操作。', 'Use the shortcut bar for common actions.'),
-                this.t('无响应时可下拉刷新会话列表。', 'Pull to refresh if a session becomes unresponsive.')
+                this.t('终端无缝切换到手机', 'Seamlessly switch the terminal to your phone.'),
+                this.t('手机可以随时唤醒电脑终端', 'Your phone can wake the PC terminal anytime.'),
+                this.t('终端即时同步', 'The terminal syncs in real time.')
               ],
               AppColors.ACCENT_YELLOW
             )
@@ -200,16 +221,28 @@ struct UsageGuidePage {
 
       Column({ space: 6 }) {
         ForEach(lines, (line: string, index: number) => {
+          const linkUrl: string = this.extractUrl(line);
           Row() {
             Circle()
               .width(6)
               .height(6)
               .fill(accent)
               .margin({ right: 8, top: 6 })
-            Text(line)
-              .fontSize(12)
-              .fontColor(AppColors.TEXT_SECONDARY)
-              .lineHeight(18)
+            if (linkUrl.length > 0) {
+              Text(line)
+                .fontSize(12)
+                .fontColor(AppColors.ACCENT_BLUE)
+                .lineHeight(18)
+                .textDecoration({ type: TextDecorationType.Underline })
+                .onClick(() => {
+                  this.openUrl(linkUrl);
+                })
+            } else {
+              Text(line)
+                .fontSize(12)
+                .fontColor(AppColors.TEXT_SECONDARY)
+                .lineHeight(18)
+            }
           }
           .width('100%')
         }, (_line: string, index: number) => `line_${index}`)

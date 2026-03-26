@@ -1931,6 +1931,7 @@ public sealed class RelayServer : IDisposable
             device.DisplayName = newName;
         }
         NotifyDeviceListChanged();
+        GroupMemberListChanged?.Invoke(BuildGroupMemberInfoList());
 
         Log?.Invoke($"Device settings updated: {update.DeviceId} -> {newName}");
     }
