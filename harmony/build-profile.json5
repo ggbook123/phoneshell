@@ -5,13 +5,13 @@
         "name": "default",
         "type": "HarmonyOS",
         "material": {
-          "certpath": "C:\\Users\\小符\\.ohos\\config\\default_harmony_nFHrbuKbN1kRjCNr6jP7RjdUXPBZXHlEkE2u5CHuwEg=.cer",
-          "keyAlias": "debugKey",
-          "keyPassword": "0000001B390115B5A7AEF60049AB6164D5B8E6C510587197EF1385C66CD2D793EB29D64FD76073B4D4AD9C",
-          "profile": "C:\\Users\\小符\\.ohos\\config\\default_harmony_nFHrbuKbN1kRjCNr6jP7RjdUXPBZXHlEkE2u5CHuwEg=.p7b",
+          "storeFile": "D:/2/keyphoneshell/keyphoneshell.p12",
+          "storePassword": "0000001958292274AF2C50E86DC72709F72171F17064D69F230657F5078405D37F042DEF61CFFBE6B5",
+          "keyAlias": "ggnike123",
+          "keyPassword": "00000019DAA46CA3CDEAE06A22B7CAAA673ADB3E3145CF6D366C870A2D0B5796B891F097B4E70F5571",
           "signAlg": "SHA256withECDSA",
-          "storeFile": "C:\\Users\\小符\\.ohos\\config\\default_harmony_nFHrbuKbN1kRjCNr6jP7RjdUXPBZXHlEkE2u5CHuwEg=.p12",
-          "storePassword": "0000001B081BD50B452DFCFAF9A810A42A37CB1F71D23CAEAC7F31874D6517694F1892515197476CFB9E66"
+          "profile": "D:/2/keyphoneshell/phoneshellRelease.p7b",
+          "certpath": "D:/2/keyphoneshell/phoneshell4.cer"
         }
       }
     ],

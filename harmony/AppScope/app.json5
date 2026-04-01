@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.example.phoneshell",
     "vendor": "example",
-    "versionCode": 1000000,
-    "versionName": "1.0.0",
+    "versionCode": 1000001,
+    "versionName": "1.0.1",
     "icon": "$media:phoneshell",
     "label": "$string:app_name"
   }
