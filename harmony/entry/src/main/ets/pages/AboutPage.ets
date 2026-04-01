@@ -1,7 +1,20 @@
-import { Context } from '@kit.AbilityKit';
+import { common, Want } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { promptAction } from '@kit.ArkUI';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppColors, AppSizes } from '../common/Constants';
 import { I18n } from '../common/I18n';
 import { SafeAreaUtil } from '../common/SafeArea';
+
+const DOMAIN = 0xFF12;
+const PAGE_TAG = 'AboutPage';
+
+@Observed
+class AboutLineItem {
+  line: string = '';
+  linkUrl: string = '';
+  key: string = '';
+}
 
 @Entry
 @Component
@@ -32,20 +45,58 @@ struct AboutPage {
   }
 
   private extractUrl(text: string): string {
-    const match: RegExpMatchArray | null = text.match(/https?:\/\/\S+/);
-    return match ? match[0] : '';
+    const match: RegExpMatchArray | null = text.match(/(https?:\/\/\S+|www\.\S+)/i);
+    if (match === null) {
+      return '';
+    }
+    return this.normalizeUrl(match[0]);
   }
 
-  private openUrl(url: string): void {
-    const hostContext: Context | undefined = this.getUIContext().getHostContext();
-    if (hostContext === undefined) {
+  private normalizeUrl(url: string): string {
+    const rawUrl: string = url.trim().replace(/[),.;!?，。；！？]+$/, '');
+    if (rawUrl.startsWith('www.')) {
+      return `https://${rawUrl}`;
+    }
+    return rawUrl;
+  }
+
+  private async openUrl(url: string): Promise<void> {
+    const normalizedUrl: string = this.normalizeUrl(url);
+    if (normalizedUrl.length === 0) {
       return;
     }
     try {
-      hostContext.startAbility({ action: 'ohos.want.action.viewData', uri: url });
-    } catch (_e) {
-      // Ignore
+      const abilityContext: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      const want: Want = {
+        action: 'ohos.want.action.viewData',
+        entities: ['entity.system.browsable'],
+        uri: normalizedUrl,
+        parameters: {
+          'ohos.ability.params.showDefaultPicker': true
+        }
+      };
+      await abilityContext.startAbility(want);
+      hilog.info(DOMAIN, PAGE_TAG, 'openUrl success %{public}s', normalizedUrl);
+    } catch (err) {
+      const error: BusinessError = err as BusinessError;
+      hilog.error(DOMAIN, PAGE_TAG, 'openUrl failed code=%{public}d msg=%{public}s url=%{public}s',
+        error.code ?? -1, error.message ?? '', normalizedUrl);
+      promptAction.showToast({
+        message: this.t('打开链接失败，请检查设备浏览器或查看日志。', 'Failed to open link. Check browser availability or logs.')
+      });
     }
+  }
+
+  private buildLineItems(lines: Array<string>): Array<AboutLineItem> {
+    const items: Array<AboutLineItem> = [];
+    for (let i: number = 0; i < lines.length; i++) {
+      const item: AboutLineItem = new AboutLineItem();
+      item.line = lines[i];
+      item.linkUrl = this.extractUrl(lines[i]);
+      item.key = `line_${i}`;
+      items.push(item);
+    }
+    return items;
   }
 
   build() {
@@ -114,14 +165,18 @@ struct AboutPage {
                   'PhoneShell brings a native desktop shell to your phone, enabling AI coding anywhere via remote access.'),
                 this.t('请于到github上下载电脑端：https://github.com/ggbook123/phoneshell',
                   'Download the desktop app from GitHub: https://github.com/ggbook123/phoneshell'),
+                this.t('或者官网：https://www.phoneshell.sbs',
+                  'Or use the official website: https://www.phoneshell.sbs'),
                 this.t('第一次请以管理员身份打开电脑端，电脑端点击启动，防火墙打开对应端口，手机扫码连接即可。',
                   'First run: open the desktop app as administrator, click Start, allow the firewall ports, then scan the QR code on your phone.'),
-                this.t('软件版本：v1.0.0', 'Version: v1.0.0')
+                this.t('软件版本：v1.0.1', 'Version: v1.0.1')
               ],
               AppColors.ACCENT
             )
           }
           .width('100%')
+          .alignItems(HorizontalAlign.Start)
+          .justifyContent(FlexAlign.Start)
           .padding({
             left: AppSizes.PADDING_PAGE + this.safeAreaLeft,
             right: AppSizes.PADDING_PAGE + this.safeAreaRight,
@@ -133,6 +188,8 @@ struct AboutPage {
       }
       .width('100%')
       .height('100%')
+      .alignItems(HorizontalAlign.Start)
+      .justifyContent(FlexAlign.Start)
       .padding({ top: this.safeAreaTop, bottom: this.safeAreaBottom })
     }
     .width('100%')
@@ -150,19 +207,16 @@ struct AboutPage {
         .opacity(0.7)
         .margin({ bottom: 10 })
 
-      Row() {
-        Column() {
-          Text(title)
-            .fontSize(AppSizes.FONT_SIZE_BODY)
-            .fontColor(AppColors.TEXT_PRIMARY)
-            .fontWeight(FontWeight.Medium)
+      Column({ space: 8 }) {
+        Text(title)
+          .fontSize(AppSizes.FONT_SIZE_BODY)
+          .fontColor(AppColors.TEXT_PRIMARY)
+          .fontWeight(FontWeight.Medium)
 
-          Text(subtitle)
-            .fontSize(11)
-            .fontColor(AppColors.TEXT_MUTED)
-            .fontFamily('monospace')
-        }
-        .layoutWeight(1)
+        Text(subtitle)
+          .fontSize(11)
+          .fontColor(AppColors.TEXT_MUTED)
+          .fontFamily('monospace')
 
         Text('ABOUT')
           .fontSize(10)
@@ -175,39 +229,49 @@ struct AboutPage {
           .borderRadius(AppSizes.BORDER_RADIUS_TAG)
       }
       .width('100%')
+      .alignItems(HorizontalAlign.Start)
 
       Column({ space: 6 }) {
-        ForEach(lines, (line: string, index: number) => {
-          const linkUrl: string = this.extractUrl(line);
+        ForEach(this.buildLineItems(lines), (item: AboutLineItem) => {
           Row() {
             Circle()
               .width(6)
               .height(6)
               .fill(accent)
               .margin({ right: 8, top: 6 })
-            if (linkUrl.length > 0) {
-              Text(line)
+            if (item.linkUrl.length > 0) {
+              Text(item.line)
                 .fontSize(12)
                 .fontColor(AppColors.ACCENT_BLUE)
                 .lineHeight(18)
-                .textDecoration({ type: TextDecorationType.Underline })
+                .decoration({ type: TextDecorationType.Underline })
+                .layoutWeight(1)
                 .onClick(() => {
-                  this.openUrl(linkUrl);
+                  this.openUrl(item.linkUrl);
                 })
             } else {
-              Text(line)
+              Text(item.line)
                 .fontSize(12)
                 .fontColor(AppColors.TEXT_SECONDARY)
                 .lineHeight(18)
+                .layoutWeight(1)
             }
           }
           .width('100%')
-        }, (_line: string, index: number) => `line_${index}`)
+          .alignItems(VerticalAlign.Top)
+          .onClick(() => {
+            if (item.linkUrl.length > 0) {
+              this.openUrl(item.linkUrl);
+            }
+          })
+        }, (item: AboutLineItem) => item.key)
       }
       .width('100%')
       .margin({ top: 12 })
     }
     .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .justifyContent(FlexAlign.Start)
     .padding(16)
     .backgroundColor(AppColors.SURFACE_2)
     .borderWidth(1)

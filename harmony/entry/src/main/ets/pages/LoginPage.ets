@@ -1,9 +1,16 @@
+import { common, Want } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { promptAction } from '@kit.ArkUI';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppColors, AppSizes, AppStrings } from '../common/Constants';
 import { AppLanguage, I18n } from '../common/I18n';
 import { SafeAreaUtil } from '../common/SafeArea';
 import { PreferencesUtil } from '../services/PreferencesUtil';
 import { ConnectionManager } from '../services/ConnectionManager';
 import { AuthManager } from '../services/AuthManager';
+
+const DOMAIN = 0xFF12;
+const PAGE_TAG = 'LoginPage';
 
 @Entry
 @Component
@@ -29,7 +36,7 @@ struct LoginPage {
   }
 
   private async initApp(): Promise<void> {
-    const context: Context | undefined = this.getUIContext().getHostContext();
+    const context: common.Context | undefined = this.getUIContext().getHostContext();
     if (context !== undefined) {
       await PreferencesUtil.init(context);
       await I18n.syncFromPreferences();
@@ -61,6 +68,41 @@ struct LoginPage {
 
   private getReadyStatusText(): string {
     return this.isReady ? this.t('系统就绪', 'System Ready') : this.t('正在初始化...', 'Initializing...');
+  }
+
+  private normalizeUrl(url: string): string {
+    const rawUrl: string = url.trim();
+    if (rawUrl.startsWith('www.')) {
+      return `https://${rawUrl}`;
+    }
+    return rawUrl;
+  }
+
+  private async openExternalUrl(url: string): Promise<void> {
+    const normalizedUrl: string = this.normalizeUrl(url);
+    if (normalizedUrl.length === 0) {
+      return;
+    }
+    try {
+      const abilityContext: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      const want: Want = {
+        action: 'ohos.want.action.viewData',
+        entities: ['entity.system.browsable'],
+        uri: normalizedUrl,
+        parameters: {
+          'ohos.ability.params.showDefaultPicker': true
+        }
+      };
+      await abilityContext.startAbility(want);
+      hilog.info(DOMAIN, PAGE_TAG, 'openExternalUrl success %{public}s', normalizedUrl);
+    } catch (err) {
+      const error: BusinessError = err as BusinessError;
+      hilog.error(DOMAIN, PAGE_TAG, 'openExternalUrl failed code=%{public}d msg=%{public}s url=%{public}s',
+        error.code ?? -1, error.message ?? '', normalizedUrl);
+      promptAction.showToast({
+        message: this.t('打开链接失败，请检查设备浏览器。', 'Failed to open link. Please check browser availability.')
+      });
+    }
   }
 
   @Builder
@@ -259,16 +301,63 @@ struct LoginPage {
 
   @Builder
   FooterInfo() {
-    Row() {
-      Text('PhoneShell Mobile')
-        .fontSize(11)
-        .fontColor(AppColors.TEXT_MUTED)
-      Blank().layoutWeight(1)
-      Text('v0.2.0')
-        .fontSize(11)
-        .fontColor(AppColors.TEXT_MUTED)
+    Column({ space: 8 }) {
+      Row() {
+        Text('PhoneShell Mobile')
+          .fontSize(11)
+          .fontColor(AppColors.TEXT_MUTED)
+        Blank().layoutWeight(1)
+        Text('v1.0.1')
+          .fontSize(11)
+          .fontColor(AppColors.TEXT_MUTED)
+      }
+      .width('100%')
+
+      Row({ space: 10 }) {
+        this.FooterLinkButton(
+          this.t('官网', 'Official'),
+          AppColors.ACCENT,
+          () => {
+            this.openExternalUrl('https://www.phoneshell.sbs');
+          }
+        )
+
+        this.FooterLinkButton(
+          'GitHub',
+          AppColors.ACCENT_BLUE,
+          () => {
+            this.openExternalUrl('https://github.com/ggbook123/phoneshell');
+          }
+        )
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.Start)
     }
     .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  FooterLinkButton(title: string, accent: string, onTap: () => void) {
+    Row({ space: 6 }) {
+      Text(title)
+        .fontSize(11)
+        .fontColor(accent)
+        .fontWeight(FontWeight.Medium)
+
+      Text('OPEN')
+        .fontSize(9)
+        .fontColor(AppColors.TEXT_MUTED)
+        .fontFamily('monospace')
+    }
+    .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+    .backgroundColor(AppColors.SURFACE_2)
+    .borderWidth(1)
+    .borderColor(AppColors.CARD_BORDER)
+    .borderRadius(10)
+    .onClick(() => {
+      onTap();
+    })
   }
 
   build() {

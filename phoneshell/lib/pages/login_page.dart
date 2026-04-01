@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/auth_manager.dart';
 import '../core/constants.dart';
@@ -47,6 +48,12 @@ class _LoginPageState extends State<LoginPage> {
 
   void _enterApp() {
     Navigator.of(context).pushNamed('pages/DeviceManagePage');
+  }
+
+  Future<void> _openExternalUrl(String url) async {
+    final uri = Uri.tryParse(url.trim());
+    if (uri == null) return;
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   Widget _brandHeader() {
@@ -345,13 +352,72 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _footerInfo() {
-    return const Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
+        const Text(
           'PhoneShell Mobile',
           style: TextStyle(fontSize: 11, color: Color(AppColors.textMuted)),
         ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 10,
+          runSpacing: 8,
+          children: [
+            _footerLinkButton(
+              title: _t('官网', 'Official'),
+              accent: const Color(AppColors.accent),
+              onTap: () => _openExternalUrl('https://www.phoneshell.sbs'),
+            ),
+            _footerLinkButton(
+              title: 'GitHub',
+              accent: const Color(AppColors.accentBlue),
+              onTap: () => _openExternalUrl('https://github.com/ggbook123/phoneshell'),
+            ),
+          ],
+        ),
       ],
+    );
+  }
+
+  Widget _footerLinkButton({
+    required String title,
+    required Color accent,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(AppColors.surface2),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(AppColors.cardBorder), width: 1),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 11,
+                color: accent,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(width: 6),
+            const Text(
+              'OPEN',
+              style: TextStyle(
+                fontSize: 9,
+                color: Color(AppColors.textMuted),
+                fontFamily: 'monospace',
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

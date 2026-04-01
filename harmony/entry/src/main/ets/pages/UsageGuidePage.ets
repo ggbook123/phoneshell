@@ -1,7 +1,20 @@
-import { Context } from '@kit.AbilityKit';
+import { common, Want } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { promptAction } from '@kit.ArkUI';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppColors, AppSizes } from '../common/Constants';
 import { I18n } from '../common/I18n';
 import { SafeAreaUtil } from '../common/SafeArea';
+
+const DOMAIN = 0xFF12;
+const PAGE_TAG = 'UsageGuidePage';
+
+@Observed
+class UsageGuideLineItem {
+  line: string = '';
+  linkUrl: string = '';
+  key: string = '';
+}
 
 @Entry
 @Component
@@ -32,20 +45,58 @@ struct UsageGuidePage {
   }
 
   private extractUrl(text: string): string {
-    const match: RegExpMatchArray | null = text.match(/https?:\/\/\S+/);
-    return match ? match[0] : '';
+    const match: RegExpMatchArray | null = text.match(/(https?:\/\/\S+|www\.\S+)/i);
+    if (match === null) {
+      return '';
+    }
+    return this.normalizeUrl(match[0]);
   }
 
-  private openUrl(url: string): void {
-    const hostContext: Context | undefined = this.getUIContext().getHostContext();
-    if (hostContext === undefined) {
+  private normalizeUrl(url: string): string {
+    const rawUrl: string = url.trim().replace(/[),.;!?，。；！？]+$/, '');
+    if (rawUrl.startsWith('www.')) {
+      return `https://${rawUrl}`;
+    }
+    return rawUrl;
+  }
+
+  private async openUrl(url: string): Promise<void> {
+    const normalizedUrl: string = this.normalizeUrl(url);
+    if (normalizedUrl.length === 0) {
       return;
     }
     try {
-      hostContext.startAbility({ action: 'ohos.want.action.viewData', uri: url });
-    } catch (_e) {
-      // Ignore
+      const abilityContext: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      const want: Want = {
+        action: 'ohos.want.action.viewData',
+        entities: ['entity.system.browsable'],
+        uri: normalizedUrl,
+        parameters: {
+          'ohos.ability.params.showDefaultPicker': true
+        }
+      };
+      await abilityContext.startAbility(want);
+      hilog.info(DOMAIN, PAGE_TAG, 'openUrl success %{public}s', normalizedUrl);
+    } catch (err) {
+      const error: BusinessError = err as BusinessError;
+      hilog.error(DOMAIN, PAGE_TAG, 'openUrl failed code=%{public}d msg=%{public}s url=%{public}s',
+        error.code ?? -1, error.message ?? '', normalizedUrl);
+      promptAction.showToast({
+        message: this.t('打开链接失败，请检查设备浏览器或查看日志。', 'Failed to open link. Check browser availability or logs.')
+      });
     }
+  }
+
+  private buildLineItems(lines: Array<string>): Array<UsageGuideLineItem> {
+    const items: Array<UsageGuideLineItem> = [];
+    for (let i: number = 0; i < lines.length; i++) {
+      const item: UsageGuideLineItem = new UsageGuideLineItem();
+      item.line = lines[i];
+      item.linkUrl = this.extractUrl(lines[i]);
+      item.key = `line_${i}`;
+      items.push(item);
+    }
+    return items;
   }
 
   build() {
@@ -220,32 +271,37 @@ struct UsageGuidePage {
       .width('100%')
 
       Column({ space: 6 }) {
-        ForEach(lines, (line: string, index: number) => {
-          const linkUrl: string = this.extractUrl(line);
+        ForEach(this.buildLineItems(lines), (item: UsageGuideLineItem) => {
           Row() {
             Circle()
               .width(6)
               .height(6)
               .fill(accent)
               .margin({ right: 8, top: 6 })
-            if (linkUrl.length > 0) {
-              Text(line)
+            if (item.linkUrl.length > 0) {
+              Text(item.line)
                 .fontSize(12)
                 .fontColor(AppColors.ACCENT_BLUE)
                 .lineHeight(18)
-                .textDecoration({ type: TextDecorationType.Underline })
+                .decoration({ type: TextDecorationType.Underline })
                 .onClick(() => {
-                  this.openUrl(linkUrl);
+                  this.openUrl(item.linkUrl);
                 })
             } else {
-              Text(line)
+              Text(item.line)
                 .fontSize(12)
                 .fontColor(AppColors.TEXT_SECONDARY)
                 .lineHeight(18)
             }
           }
           .width('100%')
-        }, (_line: string, index: number) => `line_${index}`)
+          .alignItems(VerticalAlign.Top)
+          .onClick(() => {
+            if (item.linkUrl.length > 0) {
+              this.openUrl(item.linkUrl);
+            }
+          })
+        }, (item: UsageGuideLineItem) => item.key)
       }
       .width('100%')
       .margin({ top: 12 })

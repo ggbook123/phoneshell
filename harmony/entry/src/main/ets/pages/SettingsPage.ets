@@ -150,21 +150,33 @@ struct SettingsPage {
         .opacity(0.6)
         .margin({ bottom: 10 })
 
-      Row() {
-        Column() {
+      Column({ space: 10 }) {
+        Row() {
           Text(indexLabel)
             .fontSize(11)
             .fontColor(accent)
             .fontFamily('monospace')
-        }
-        .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-        .backgroundColor(AppColors.HIGHLIGHT)
-        .borderWidth(1)
-        .borderColor(accent)
-        .borderRadius(AppSizes.BORDER_RADIUS_TAG)
-        .margin({ right: 12 })
+            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+            .backgroundColor(AppColors.HIGHLIGHT)
+            .borderWidth(1)
+            .borderColor(accent)
+            .borderRadius(AppSizes.BORDER_RADIUS_TAG)
 
-        Column() {
+          Blank().layoutWeight(1)
+
+          Text('OPEN')
+            .fontSize(10)
+            .fontColor(accent)
+            .fontFamily('monospace')
+            .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+            .backgroundColor(AppColors.CHIP_BG)
+            .borderWidth(1)
+            .borderColor(accent)
+            .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+        }
+        .width('100%')
+
+        Column({ space: 4 }) {
           Text(title)
             .fontSize(AppSizes.FONT_SIZE_BODY)
             .fontColor(AppColors.TEXT_PRIMARY)
@@ -174,21 +186,11 @@ struct SettingsPage {
             .fontColor(AppColors.TEXT_MUTED)
             .fontFamily('monospace')
         }
-        .layoutWeight(1)
-
-        Column() {
-          Text('OPEN')
-            .fontSize(10)
-            .fontColor(accent)
-            .fontFamily('monospace')
-        }
-        .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-        .backgroundColor(AppColors.CHIP_BG)
-        .borderWidth(1)
-        .borderColor(accent)
-        .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
       }
       .width('100%')
+      .alignItems(HorizontalAlign.Start)
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 14, bottom: 14 })
