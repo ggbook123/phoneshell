@@ -50,6 +50,9 @@ public partial class MainWindow : Window
         await TerminalWebView.EnsureCoreWebView2Async();
         TerminalWebView.DefaultBackgroundColor =
             System.Drawing.Color.FromArgb(255, 0x0A, 0x0E, 0x14);
+        // Let terminal.html handle copy/paste/select shortcuts instead of WebView2 browser accelerators.
+        TerminalWebView.CoreWebView2.Settings.AreBrowserAcceleratorKeysEnabled = false;
+        TerminalWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
         TerminalWebView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
         var assetsPath = Path.Combine(AppContext.BaseDirectory, "Assets");

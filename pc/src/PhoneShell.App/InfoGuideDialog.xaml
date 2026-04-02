@@ -7,7 +7,7 @@
         Width="560"
         ResizeMode="NoResize"
         ShowInTaskbar="False"
-        WindowStyle="ToolWindow"
+        WindowStyle="None"
         Background="{StaticResource Surface1Brush}"
         FontFamily="{StaticResource BodyFont}">
     <Border Background="{StaticResource Surface2Brush}"
@@ -25,7 +25,8 @@
                     Background="{StaticResource Surface0Brush}"
                     BorderBrush="{StaticResource Border1Brush}"
                     BorderThickness="0,0,0,1"
-                    Padding="16,0">
+                    Padding="16,0"
+                    MouseLeftButtonDown="Header_MouseLeftButtonDown">
                 <DockPanel LastChildFill="True">
                     <TextBlock DockPanel.Dock="Left"
                                Text="操作说明"
