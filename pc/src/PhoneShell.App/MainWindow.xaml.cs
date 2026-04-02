@@ -98,31 +98,12 @@ public partial class MainWindow : Window
 
     private void InfoButton_Click(object sender, RoutedEventArgs e)
     {
-        if (InfoOverlay is not null)
+        var dialog = new InfoGuideDialog
         {
-            InfoOverlay.Visibility = Visibility.Visible;
-        }
-    }
-
-    private void InfoCloseButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (InfoOverlay is not null)
-        {
-            InfoOverlay.Visibility = Visibility.Collapsed;
-        }
-    }
-
-    private void InfoOverlay_MouseDown(object sender, MouseButtonEventArgs e)
-    {
-        if (InfoOverlay is not null)
-        {
-            InfoOverlay.Visibility = Visibility.Collapsed;
-        }
-    }
-
-    private void InfoDialog_MouseDown(object sender, MouseButtonEventArgs e)
-    {
-        e.Handled = true;
+            Owner = this,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+        dialog.ShowDialog();
     }
 
     private void ToggleMaximize()
@@ -170,6 +151,46 @@ public partial class MainWindow : Window
                     {
                         _viewModel.StartActiveTabTerminal(cols, rows);
                     }
+                }
+                break;
+            case "clipboard.write":
+                if (root.TryGetProperty("text", out var clipboardWriteElement))
+                {
+                    var clipboardWriteText = clipboardWriteElement.GetString();
+                    if (!string.IsNullOrEmpty(clipboardWriteText))
+                    {
+                        try
+                        {
+                            Clipboard.SetText(clipboardWriteText);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                break;
+            case "clipboard.read":
+                var requestId = root.TryGetProperty("requestId", out var requestIdElement)
+                    ? requestIdElement.GetString()
+                    : null;
+                if (!string.IsNullOrEmpty(requestId))
+                {
+                    var clipboardReadText = string.Empty;
+                    try
+                    {
+                        if (Clipboard.ContainsText())
+                        {
+                            clipboardReadText = Clipboard.GetText();
+                        }
+                    }
+                    catch
+                    {
+                    }
+
+                    var requestIdJson = JsonSerializer.Serialize(requestId);
+                    var clipboardTextJson = JsonSerializer.Serialize(clipboardReadText);
+                    TerminalWebView.CoreWebView2.ExecuteScriptAsync(
+                        $"window.handleHostClipboardReadResult && window.handleHostClipboardReadResult({requestIdJson}, {clipboardTextJson})");
                 }
                 break;
         }

@@ -173,6 +173,9 @@
   var manualGeometryLock = false;
   var lastReportedCols = 0;
   var lastReportedRows = 0;
+  var clipboardReadRequestSeq = 0;
+  var clipboardReadRequests = {};
+  var clipboardReadFallbackTimeoutMs = 1000;
 
   term.loadAddon(fitAddon);
   term.open(terminalElement);
@@ -276,6 +279,156 @@
     lastReportedRows = rows;
     stabilizeViewport();
   }
+
+  function resolveClipboardReadRequest(requestId, text) {
+    var resolver = clipboardReadRequests[requestId];
+    if (!resolver) {
+      return;
+    }
+
+    delete clipboardReadRequests[requestId];
+    resolver(text || '');
+  }
+
+  function requestClipboardReadFromHost() {
+    if (!(window.chrome && window.chrome.webview)) {
+      return Promise.resolve('');
+    }
+
+    return new Promise(function(resolve) {
+      var requestId = 'clip-' + (++clipboardReadRequestSeq);
+      clipboardReadRequests[requestId] = resolve;
+
+      window.chrome.webview.postMessage(JSON.stringify({
+        type: 'clipboard.read',
+        requestId: requestId
+      }));
+
+      setTimeout(function() {
+        resolveClipboardReadRequest(requestId, '');
+      }, clipboardReadFallbackTimeoutMs);
+    });
+  }
+
+  async function readClipboardText() {
+    if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+      try {
+        return await navigator.clipboard.readText();
+      } catch (error) {
+      }
+    }
+
+    return requestClipboardReadFromHost();
+  }
+
+  function writeClipboardTextViaExecCommand(text) {
+    try {
+      var helper = document.createElement('textarea');
+      helper.value = text;
+      helper.setAttribute('readonly', '');
+      helper.style.position = 'fixed';
+      helper.style.opacity = '0';
+      helper.style.left = '-10000px';
+      helper.style.top = '-10000px';
+      document.body.appendChild(helper);
+      helper.focus();
+      helper.select();
+      var copied = document.execCommand && document.execCommand('copy');
+      document.body.removeChild(helper);
+      return !!copied;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async function writeClipboardText(text) {
+    if (text === null || text === undefined || text === '') {
+      return false;
+    }
+
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (error) {
+      }
+    }
+
+    if (window.chrome && window.chrome.webview) {
+      window.chrome.webview.postMessage(JSON.stringify({
+        type: 'clipboard.write',
+        text: text
+      }));
+      return true;
+    }
+
+    return writeClipboardTextViaExecCommand(text);
+  }
+
+  function copyTerminalSelection() {
+    var selection = term.getSelection();
+    if (!selection) {
+      return;
+    }
+
+    writeClipboardText(selection);
+  }
+
+  async function pasteClipboardToTerminal() {
+    var text = await readClipboardText();
+    if (!text) {
+      return;
+    }
+
+    term.focus();
+    term.paste(text);
+  }
+
+  function selectAllTerminalText() {
+    term.selectAll();
+  }
+
+  function consumeTerminalShortcut(event, action) {
+    event.preventDefault();
+    event.stopPropagation();
+    action();
+    return false;
+  }
+
+  function handleTerminalShortcutKeydown(event) {
+    var key = (event.key || '').toLowerCase();
+    var isInsert = event.key === 'Insert';
+    var hasCtrl = event.ctrlKey;
+    var hasShift = event.shiftKey;
+    var hasAlt = event.altKey;
+
+    // Keep right-click menu unchanged; only handle explicit keyboard shortcuts.
+    if (hasCtrl && hasShift && !hasAlt && key === 'c') {
+      return consumeTerminalShortcut(event, copyTerminalSelection);
+    }
+
+    if (hasCtrl && hasShift && !hasAlt && key === 'v') {
+      return consumeTerminalShortcut(event, function() {
+        pasteClipboardToTerminal();
+      });
+    }
+
+    if (hasCtrl && !hasShift && !hasAlt && isInsert) {
+      return consumeTerminalShortcut(event, copyTerminalSelection);
+    }
+
+    if (hasCtrl && hasShift && !hasAlt && key === 'a') {
+      return consumeTerminalShortcut(event, selectAllTerminalText);
+    }
+
+    return true;
+  }
+
+  window.handleHostClipboardReadResult = function(requestId, text) {
+    resolveClipboardReadRequest(requestId, text);
+  };
+
+  term.attachCustomKeyEventHandler(handleTerminalShortcutKeydown);
 
   window.writeTerminal = function(data) {
     term.write(data, function() {
