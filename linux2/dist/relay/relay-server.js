@@ -62,8 +62,12 @@ export class RelayServer {
             existing.role = 'Server';
             existing.availableShells = availableShells;
         }
-        if (!this.authToken)
-            this.authToken = this.group.groupSecret;
+        // Keep transport authentication aligned with the persisted group secret.
+        // Otherwise a stale configured token can reject mobile WS handshake while QR uses group secret.
+        if (this.authToken && !this.tokenManager.tokensEqual(this.authToken, this.group.groupSecret)) {
+            this.log('Auth token mismatched persisted group secret; syncing to group secret.');
+        }
+        this.authToken = this.group.groupSecret;
         groupStore.saveGroup(this.group);
         this.log(`Group initialized: ${this.group.groupId} (secret: ${this.group.groupSecret.slice(0, 8)}...)`);
     }
@@ -1060,6 +1064,7 @@ export class RelayServer {
             displayName: member.displayName,
         }));
         this.broadcastDeviceList();
+        this.broadcastToAll(serialize({ type: 'group.member.list', members: this.buildGroupMemberInfoList() }));
         this.log(`Device settings updated: ${msg.deviceId} �?${member.displayName}`);
     }
     // --- Device kick handler (new: sends device.kicked to target) ---

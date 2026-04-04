@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using Microsoft.Web.WebView2.Core;
 using PhoneShell.Core.Terminals;
 using PhoneShell.Core.Protocol;
@@ -24,8 +25,21 @@ public partial class MainWindow : Window
     private const double SidebarCollapsedWidth = 8;
     private const double SidebarExpandedMinWidth = 260;
     private const double SidebarExpandedMaxWidth = 440;
+    private bool _isRightSidebarCollapsed;
+    private GridLength _rightSidebarExpandedWidth = new(320);
+    private const double RightSidebarCollapsedWidth = 8;
+    private const double RightSidebarExpandedMinWidth = 260;
+    private const double RightSidebarExpandedMaxWidth = 460;
     private const string CompactModeIcon = "\U0001F4F1";
     private const string ExpandModeIcon = "\U0001F4BB";
+    private Point _explorerDragStartPoint;
+
+    private enum RightSidebarSection
+    {
+        Explorer,
+        QuickCommands,
+        RecentInputs
+    }
 
     public MainWindow()
     {
@@ -67,6 +81,7 @@ public partial class MainWindow : Window
         ApiKeyBox.Password = _viewModel.AiApiKey;
 
         UpdatePanelVisibility();
+        SetRightSidebarSection(RightSidebarSection.Explorer);
         LoadLanguagePreference();
     }
 
@@ -139,7 +154,10 @@ public partial class MainWindow : Window
             case "input":
                 var data = root.GetProperty("data").GetString();
                 if (data is not null && _viewModel.ActiveTab is not null)
+                {
                     _viewModel.WriteTabInput(_viewModel.ActiveTab, data);
+                    _viewModel.TrackTerminalUserInput(data);
+                }
                 break;
             case "resize":
                 var cols = root.GetProperty("cols").GetInt32();
@@ -577,6 +595,275 @@ public partial class MainWindow : Window
         }
     }
 
+    // --- Right Sidebar ---
+
+    private void RightSidebarToggleButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (RightSidebarColumn is null) return;
+
+        if (!_isRightSidebarCollapsed)
+        {
+            _rightSidebarExpandedWidth = RightSidebarColumn.Width;
+            RightSidebarColumn.Width = new GridLength(RightSidebarCollapsedWidth);
+            RightSidebarColumn.MinWidth = RightSidebarCollapsedWidth;
+            RightSidebarColumn.MaxWidth = RightSidebarCollapsedWidth;
+
+            if (RightSidebarContent is not null) RightSidebarContent.Visibility = Visibility.Collapsed;
+            if (RightSidebarSplitter is not null) RightSidebarSplitter.Visibility = Visibility.Collapsed;
+            if (RightSidebarToggleButton is not null)
+            {
+                RightSidebarToggleButton.Content = "\u276E";
+                RightSidebarToggleButton.ToolTip = "Expand sidebar";
+            }
+
+            _isRightSidebarCollapsed = true;
+        }
+        else
+        {
+            RightSidebarColumn.Width = _rightSidebarExpandedWidth;
+            RightSidebarColumn.MinWidth = RightSidebarExpandedMinWidth;
+            RightSidebarColumn.MaxWidth = RightSidebarExpandedMaxWidth;
+
+            if (RightSidebarContent is not null) RightSidebarContent.Visibility = Visibility.Visible;
+            if (RightSidebarSplitter is not null) RightSidebarSplitter.Visibility = Visibility.Visible;
+            if (RightSidebarToggleButton is not null)
+            {
+                RightSidebarToggleButton.Content = "\u276F";
+                RightSidebarToggleButton.ToolTip = "Collapse sidebar";
+            }
+
+            _isRightSidebarCollapsed = false;
+        }
+    }
+
+    private void RightExplorerButton_Click(object sender, RoutedEventArgs e)
+    {
+        SetRightSidebarSection(RightSidebarSection.Explorer);
+    }
+
+    private void RightQuickCommandsButton_Click(object sender, RoutedEventArgs e)
+    {
+        SetRightSidebarSection(RightSidebarSection.QuickCommands);
+    }
+
+    private void RightRecentInputsButton_Click(object sender, RoutedEventArgs e)
+    {
+        SetRightSidebarSection(RightSidebarSection.RecentInputs);
+    }
+
+    private void SetRightSidebarSection(RightSidebarSection section)
+    {
+        if (ExplorerPanel is not null)
+            ExplorerPanel.Visibility = section == RightSidebarSection.Explorer
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        if (QuickCommandsPanel is not null)
+            QuickCommandsPanel.Visibility = section == RightSidebarSection.QuickCommands
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        if (RecentInputsPanel is not null)
+            RecentInputsPanel.Visibility = section == RightSidebarSection.RecentInputs
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+
+        SetRightSidebarSectionButtonStyle(RightExplorerButton, section == RightSidebarSection.Explorer);
+        SetRightSidebarSectionButtonStyle(RightQuickCommandsButton, section == RightSidebarSection.QuickCommands);
+        SetRightSidebarSectionButtonStyle(RightRecentInputsButton, section == RightSidebarSection.RecentInputs);
+    }
+
+    private void SetRightSidebarSectionButtonStyle(Button? button, bool isActive)
+    {
+        if (button is null) return;
+
+        button.Background = isActive
+            ? (Brush)FindResource("AccentSubtleBrush")
+            : Brushes.Transparent;
+        button.Foreground = isActive
+            ? (Brush)FindResource("Text1Brush")
+            : (Brush)FindResource("Text2Brush");
+    }
+
+    // --- Drag & Drop to Active Session ---
+
+    private void SessionDropHost_PreviewDragOver(object sender, DragEventArgs e)
+    {
+        var hasSupportedPayload = e.Data.GetDataPresent(DataFormats.FileDrop) ||
+                                  e.Data.GetDataPresent(DataFormats.Text);
+
+        e.Effects = hasSupportedPayload && _viewModel.HasActiveSessionInputTarget
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void SessionDropHost_Drop(object sender, DragEventArgs e)
+    {
+        try
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                if (e.Data.GetData(DataFormats.FileDrop) is string[] fileDrop &&
+                    fileDrop.Length > 0)
+                {
+                    _viewModel.TryInsertPathsIntoActiveSession(fileDrop);
+                }
+            }
+            else if (e.Data.GetDataPresent(DataFormats.Text))
+            {
+                if (e.Data.GetData(DataFormats.Text) is string text &&
+                    !string.IsNullOrWhiteSpace(text))
+                {
+                    _viewModel.TryInsertTextIntoActiveSession(text);
+                }
+            }
+        }
+        finally
+        {
+            e.Handled = true;
+        }
+    }
+
+    // --- Explorer ---
+
+    private void ExplorerReloadButton_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.LoadExplorerRoot();
+    }
+
+    private void ExplorerTreeItem_Expanded(object sender, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is FrameworkElement fe && fe.DataContext is FileExplorerNode node)
+        {
+            _viewModel.EnsureExplorerNodeChildren(node);
+        }
+    }
+
+    private void ExplorerTree_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _explorerDragStartPoint = e.GetPosition(null);
+    }
+
+    private void ExplorerTree_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed)
+            return;
+
+        var current = e.GetPosition(null);
+        if (Math.Abs(current.X - _explorerDragStartPoint.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(current.Y - _explorerDragStartPoint.Y) < SystemParameters.MinimumVerticalDragDistance)
+            return;
+
+        if (!TryGetSelectedExplorerNode(out var node) || node.IsPlaceholder)
+            return;
+
+        var data = new DataObject();
+        data.SetData(DataFormats.Text, node.FullPath);
+        if (File.Exists(node.FullPath) || Directory.Exists(node.FullPath))
+        {
+            data.SetData(DataFormats.FileDrop, new[] { node.FullPath });
+        }
+
+        DragDrop.DoDragDrop(ExplorerTree, data, DragDropEffects.Copy);
+    }
+
+    private void ExplorerTree_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (!TryGetSelectedExplorerNode(out var node) || node.IsPlaceholder)
+            return;
+
+        if (node.IsDirectory)
+        {
+            _viewModel.EnsureExplorerNodeChildren(node);
+            return;
+        }
+
+        OpenFileSessionWindow(node.FullPath);
+    }
+
+    private bool TryGetSelectedExplorerNode(out FileExplorerNode node)
+    {
+        if (ExplorerTree?.SelectedItem is FileExplorerNode selected)
+        {
+            node = selected;
+            return true;
+        }
+
+        node = null!;
+        return false;
+    }
+
+    private void OpenFileSessionWindow(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return;
+
+        var session = new FileSessionWindow(filePath)
+        {
+            Owner = this,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+
+        session.InsertPathRequested += path =>
+        {
+            _viewModel.TryInsertPathsIntoActiveSession(new[] { path });
+        };
+        session.Show();
+    }
+
+    // --- Quick Commands ---
+
+    private void QuickCommandInsertButton_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.TryInsertSelectedQuickCommand(executeImmediately: false);
+    }
+
+    private void QuickCommandRunButton_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.TryInsertSelectedQuickCommand(executeImmediately: true);
+    }
+
+    private void QuickCommandSaveButton_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.SaveQuickCommandDraft();
+    }
+
+    private void QuickCommandNewButton_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.BeginNewQuickCommandEdit();
+    }
+
+    private void QuickCommandDeleteButton_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.DeleteSelectedQuickCommand();
+    }
+
+    private void QuickCommandsListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        _viewModel.TryInsertSelectedQuickCommand(executeImmediately: true);
+    }
+
+    // --- Recent Inputs ---
+
+    private void RecentInputInsertButton_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.TryInsertRecentInput(RecentInputsListBox?.SelectedItem as string, executeImmediately: false);
+    }
+
+    private void RecentInputRunButton_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.TryInsertRecentInput(RecentInputsListBox?.SelectedItem as string, executeImmediately: true);
+    }
+
+    private void RecentInputClearButton_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.ClearRecentInputs();
+    }
+
+    private void RecentInputsListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        _viewModel.TryInsertRecentInput(RecentInputsListBox?.SelectedItem as string, executeImmediately: true);
+    }
+
     // --- Language Switching ---
 
     private void LanguageRadio_Checked(object sender, RoutedEventArgs e)
@@ -617,6 +904,20 @@ public partial class MainWindow : Window
             if (DebugLogExpander is not null) DebugLogExpander.Header = "Debug Log";
             if (NewTabButtonInline is not null) NewTabButtonInline.ToolTip = "New Session";
             if (CrossDevicePromptText is not null) CrossDevicePromptText.Text = "Scan with your phone to continue cross-device access.";
+            if (RightExplorerButton is not null) RightExplorerButton.Content = "Explorer";
+            if (RightQuickCommandsButton is not null) RightQuickCommandsButton.Content = "Quick Commands";
+            if (RightRecentInputsButton is not null) RightRecentInputsButton.Content = "Recent Commands";
+            if (ExplorerReloadButton is not null) ExplorerReloadButton.Content = "Load";
+            if (QuickCommandInsertButton is not null) QuickCommandInsertButton.Content = "Insert";
+            if (QuickCommandRunButton is not null) QuickCommandRunButton.Content = "Run";
+            if (QuickCommandSaveButton is not null) QuickCommandSaveButton.Content = "Save";
+            if (QuickCommandNewButton is not null) QuickCommandNewButton.Content = "New";
+            if (QuickCommandDeleteButton is not null) QuickCommandDeleteButton.Content = "Delete";
+            if (RecentInputsHintText is not null) RecentInputsHintText.Text = "Keep the latest 20 commands entered by this PC user";
+            if (RecentInputInsertButton is not null) RecentInputInsertButton.Content = "Insert";
+            if (RecentInputRunButton is not null) RecentInputRunButton.Content = "Run";
+            if (RecentInputClearButton is not null) RecentInputClearButton.Content = "Clear";
+            if (RightSidebarToggleButton is not null) RightSidebarToggleButton.ToolTip = "Collapse sidebar";
         }
         else
         {
@@ -645,6 +946,20 @@ public partial class MainWindow : Window
             if (DebugLogExpander is not null) DebugLogExpander.Header = "调试日志";
             if (NewTabButtonInline is not null) NewTabButtonInline.ToolTip = "新会话";
             if (CrossDevicePromptText is not null) CrossDevicePromptText.Text = "跨设备连接请先用手机扫码。";
+            if (RightExplorerButton is not null) RightExplorerButton.Content = "资源管理器";
+            if (RightQuickCommandsButton is not null) RightQuickCommandsButton.Content = "快捷指令";
+            if (RightRecentInputsButton is not null) RightRecentInputsButton.Content = "历史指令";
+            if (ExplorerReloadButton is not null) ExplorerReloadButton.Content = "加载";
+            if (QuickCommandInsertButton is not null) QuickCommandInsertButton.Content = "插入";
+            if (QuickCommandRunButton is not null) QuickCommandRunButton.Content = "运行";
+            if (QuickCommandSaveButton is not null) QuickCommandSaveButton.Content = "保存";
+            if (QuickCommandNewButton is not null) QuickCommandNewButton.Content = "新建";
+            if (QuickCommandDeleteButton is not null) QuickCommandDeleteButton.Content = "删除";
+            if (RecentInputsHintText is not null) RecentInputsHintText.Text = "保存当前PC用户最近20条输入";
+            if (RecentInputInsertButton is not null) RecentInputInsertButton.Content = "插入";
+            if (RecentInputRunButton is not null) RecentInputRunButton.Content = "运行";
+            if (RecentInputClearButton is not null) RecentInputClearButton.Content = "清空";
+            if (RightSidebarToggleButton is not null) RightSidebarToggleButton.ToolTip = "收起侧边栏";
         }
     }
 

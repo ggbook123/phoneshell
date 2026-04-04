@@ -203,7 +203,7 @@ public sealed class TerminalTab : ObservableObject, IDisposable
     }
 }
 
-public sealed class MainViewModel : ObservableObject, IDisposable
+public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
     // Key token mapping: {TOKEN} -> VT sequence
     private static readonly Dictionary<string, string> KeyTokens = new(StringComparer.OrdinalIgnoreCase)
@@ -285,7 +285,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private int _autoExecStep;
     private const int AutoExecMaxSteps = 10;
     private const int MaxDebugLogEntries = 100;
-    private const bool EnableDebugLog = false;
+    private const bool EnableDebugLog = true;
+    private static readonly string NetLogFile =
+        System.IO.Path.Combine(AppContext.BaseDirectory, "data", "net-debug.log");
     private const int HistoryPageChars = 20000;
     private const string CrossDevicePromptText = "跨设备连接请先用手机扫码。";
     private const int CrossDeviceAuthValidHours = 18;
@@ -384,6 +386,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SwitchTabCommand = new RelayCommand<string>(SwitchTab);
         ToggleCompactModeCommand = new RelayCommand<string>(ToggleCompactMode);
 
+        InitializeDesktopCommandCenter();
         Initialize();
     }
 
@@ -701,7 +704,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _activeTab, value))
             {
                 OnPropertyChanged(nameof(HasTabs));
+                OnPropertyChanged(nameof(HasActiveSessionInputTarget));
                 UpdateExecuteTerminalCommand();
+                OnActiveSessionTargetChanged();
             }
         }
     }
@@ -1238,6 +1243,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         tab.Dispose();
+        RemoveTerminalInputDraft(tab.TabId);
         Tabs.Remove(tab);
         OnPropertyChanged(nameof(HasTabs));
         RefreshVisibleTabs(nextActiveTab);
@@ -2361,6 +2367,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void StopNetwork()
     {
+        StopNetwork("unknown");
+    }
+
+    private void StopNetwork(string reason)
+    {
+        OnNetworkLog($"StopNetwork: {reason}");
         if (_relayServer is not null)
         {
             _relayServer.Log -= OnNetworkLog;
@@ -2429,7 +2441,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void InitializeGroupData()
     {
-        StopNetwork();
+        StopNetwork("initialize_group_data");
 
         try
         {
@@ -2473,11 +2485,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnNetworkLog(string message)
     {
-        if (!EnableDebugLog)
-            return;
-
         var timestamp = DateTime.Now.ToString("HH:mm:ss");
         var entry = $"[{timestamp}] [NET] {message}";
+        try
+        {
+            var dir = System.IO.Path.GetDirectoryName(NetLogFile);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+            System.IO.File.AppendAllText(NetLogFile, entry + Environment.NewLine);
+        }
+        catch
+        {
+            // Ignore logging failures
+        }
+
+        if (!EnableDebugLog)
+            return;
         _dispatcher.InvokeAsync(() =>
         {
             while (DebugLogs.Count >= MaxDebugLogEntries)
@@ -2552,7 +2575,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 OnNetworkLog($"Clear membership failed: {ex.Message}");
             }
 
-            StopNetwork();
+            StopNetwork("device_unbound");
             GroupStatus = "Device unbound. Please rebind.";
             ServerStatus = "Device unbound by mobile.";
         });
@@ -2708,7 +2731,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             ResetCrossDeviceAuthorization();
             OnNetworkLog($"Kicked from group: {reason}");
-            StopNetwork();
+            StopNetwork("device_kicked");
             GroupStatus = $"Kicked: {reason}";
             ServerStatus = "Kicked from group. Returning to standalone.";
         });
@@ -2720,7 +2743,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             ResetCrossDeviceAuthorization();
             OnNetworkLog($"Group dissolved: {reason}");
-            StopNetwork();
+            StopNetwork("group_dissolved");
             GroupStatus = $"Group dissolved: {reason}";
             ServerStatus = "Group dissolved. Returning to standalone.";
         });
@@ -2960,7 +2983,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(newUrl) || string.IsNullOrWhiteSpace(newSecret))
             return;
 
-        StopNetwork();
+        StopNetwork("switch_to_client");
 
         ClearServerGroupFiles();
         SetRelayServerMode(false);
@@ -3919,7 +3942,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             ResetCrossDeviceAuthorization();
             OnNetworkLog($"[standalone] Kicked from group: {reason}");
-            StopNetwork();
+            StopNetwork("standalone_client_kicked");
             GroupStatus = $"Kicked: {reason}";
             ServerStatus = "Kicked from group. Restarting standalone...";
             // Restart in standalone mode
@@ -3936,7 +3959,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             ResetCrossDeviceAuthorization();
             OnNetworkLog($"[standalone] Group dissolved: {reason}");
-            StopNetwork();
+            StopNetwork("standalone_client_dissolved");
             GroupStatus = $"Group dissolved: {reason}";
             ServerStatus = "Group dissolved. Restarting standalone...";
             // Restart in standalone mode

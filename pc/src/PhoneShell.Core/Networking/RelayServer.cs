@@ -220,9 +220,13 @@ public sealed class RelayServer : IDisposable
             serverMember.AvailableShells = availableShells;
         }
 
-        // Use GroupSecret as the AuthToken for WebSocket authentication
-        if (string.IsNullOrWhiteSpace(AuthToken))
-            AuthToken = _group.GroupSecret;
+        // Keep transport authentication aligned with the persisted group secret.
+        // Otherwise a stale settings token can reject mobile WS handshake while QR uses group secret.
+        if (!string.IsNullOrWhiteSpace(AuthToken) && !TokensEqual(AuthToken, _group.GroupSecret))
+        {
+            Log?.Invoke("Auth token mismatched persisted group secret; syncing to group secret.");
+        }
+        AuthToken = _group.GroupSecret;
 
         _groupStore?.SaveGroup(_group);
 
@@ -532,6 +536,7 @@ public sealed class RelayServer : IDisposable
             {
                 var context = await listener.GetContextAsync();
                 var path = NormalizeRequestPath(context.Request.Url?.AbsolutePath);
+                Log?.Invoke($"Incoming {(context.Request.IsWebSocketRequest ? "WS" : context.Request.HttpMethod)} {path} from {context.Request.RemoteEndPoint}");
                 if (context.Request.IsWebSocketRequest)
                 {
                     if (!IsWebSocketPath(path))
@@ -569,8 +574,18 @@ public sealed class RelayServer : IDisposable
                     await HandleHttpRequestAsync(context, path);
                 }
             }
-            catch (ObjectDisposedException) { break; }
-            catch (HttpListenerException) { break; }
+            catch (ObjectDisposedException ex)
+            {
+                if (!ct.IsCancellationRequested)
+                    Log?.Invoke($"Accept error (disposed): {ex.Message}");
+                break;
+            }
+            catch (HttpListenerException ex)
+            {
+                Log?.Invoke($"Accept error (http listener): {ex.ErrorCode} {ex.Message}");
+                if (ct.IsCancellationRequested || listener is null || !listener.IsListening)
+                    break;
+            }
             catch (Exception ex)
             {
                 Log?.Invoke($"Accept error: {ex.Message}");
@@ -2135,8 +2150,8 @@ public sealed class RelayServer : IDisposable
     {
         var attempts = new (string Description, IReadOnlyList<string> Prefixes)[]
         {
-            ("LAN addresses", RelayAddressHelper.GetBindableHttpPrefixes(port)),
             ("wildcard host", new[] { RelayAddressHelper.GetWildcardHttpPrefix(port) }),
+            ("LAN addresses", RelayAddressHelper.GetBindableHttpPrefixes(port)),
             ("localhost only", new[] { RelayAddressHelper.GetLocalhostHttpPrefix(port) })
         };
 
