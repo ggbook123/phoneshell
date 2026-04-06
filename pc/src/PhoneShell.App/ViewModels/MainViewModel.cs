@@ -285,7 +285,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private int _autoExecStep;
     private const int AutoExecMaxSteps = 10;
     private const int MaxDebugLogEntries = 100;
-    private const bool EnableDebugLog = true;
+    private static readonly bool EnableDebugLog = true;
     private static readonly string NetLogFile =
         System.IO.Path.Combine(AppContext.BaseDirectory, "data", "net-debug.log");
     private const int HistoryPageChars = 20000;

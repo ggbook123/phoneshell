@@ -1,8 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -12,6 +16,7 @@ using Microsoft.Web.WebView2.Core;
 using PhoneShell.Core.Terminals;
 using PhoneShell.Core.Protocol;
 using PhoneShell.ViewModels;
+using ComIDataObject = System.Runtime.InteropServices.ComTypes.IDataObject;
 
 namespace PhoneShell;
 
@@ -25,14 +30,27 @@ public partial class MainWindow : Window
     private const double SidebarCollapsedWidth = 8;
     private const double SidebarExpandedMinWidth = 260;
     private const double SidebarExpandedMaxWidth = 440;
-    private bool _isRightSidebarCollapsed;
-    private GridLength _rightSidebarExpandedWidth = new(320);
-    private const double RightSidebarCollapsedWidth = 8;
-    private const double RightSidebarExpandedMinWidth = 260;
-    private const double RightSidebarExpandedMaxWidth = 460;
+    private bool _isToolsPanelVisible;
     private const string CompactModeIcon = "\U0001F4F1";
     private const string ExpandModeIcon = "\U0001F4BB";
+    private const string ExplorerVirtualRootEn = "This PC";
+    private const string ExplorerVirtualRootZh = "此电脑";
     private Point _explorerDragStartPoint;
+    private WebViewDropTarget? _webViewDropTarget;
+    private readonly List<IntPtr> _webViewDropTargetHandles = new();
+    private string? _explorerForwardPath;
+    private bool _isExplorerNavigating;
+    private bool _isFolderScrollDragging;
+    private bool _isFolderScrollDragArmed;
+    private Point _folderScrollDragStart;
+    private double _folderScrollStartOffset;
+    private QuickCommandFolder? _folderSelectedOnMouseDown;
+    private readonly ContextMenu _quickCommandFolderContextMenu = new();
+    private readonly ContextMenu _quickCommandContextMenu = new();
+    private readonly MenuItem _folderContextEditMenuItem = new();
+    private readonly MenuItem _folderContextDeleteMenuItem = new();
+    private readonly MenuItem _commandContextEditMenuItem = new();
+    private readonly MenuItem _commandContextDeleteMenuItem = new();
 
     private enum RightSidebarSection
     {
@@ -43,9 +61,11 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
-        InitializeComponent();
         _viewModel = new MainViewModel();
+        InitializeComponent();
         DataContext = _viewModel;
+
+        InitializeQuickCommandContextMenus();
 
         _viewModel.TerminalOutputForwarded += OnTerminalOutputForwarded;
         _viewModel.TerminalBufferReplaceRequested += OnTerminalBufferReplaceRequested;
@@ -57,6 +77,38 @@ public partial class MainWindow : Window
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
 
         Loaded += MainWindow_Loaded;
+        Closed += MainWindow_Closed;
+
+        TerminalWebView.Loaded += TerminalWebView_Loaded;
+        TerminalWebView.CoreWebView2InitializationCompleted += TerminalWebView_CoreWebView2InitializationCompleted;
+    }
+
+    private void InitializeQuickCommandContextMenus()
+    {
+        _folderContextEditMenuItem.Header = "编辑";
+        _folderContextEditMenuItem.Click += QuickCommandFolderContextEdit_Click;
+        _folderContextDeleteMenuItem.Header = "删除";
+        _folderContextDeleteMenuItem.Click += QuickCommandFolderContextDelete_Click;
+        _quickCommandFolderContextMenu.Items.Add(_folderContextEditMenuItem);
+        _quickCommandFolderContextMenu.Items.Add(_folderContextDeleteMenuItem);
+
+        _commandContextEditMenuItem.Header = "编辑";
+        _commandContextEditMenuItem.Click += QuickCommandContextEdit_Click;
+        _commandContextDeleteMenuItem.Header = "删除";
+        _commandContextDeleteMenuItem.Click += QuickCommandContextDelete_Click;
+        _quickCommandContextMenu.Items.Add(_commandContextEditMenuItem);
+        _quickCommandContextMenu.Items.Add(_commandContextDeleteMenuItem);
+    }
+
+    protected override void OnPreviewMouseDown(MouseButtonEventArgs e)
+    {
+        if (_viewModel.QuickCommandFolders.Any(folder => folder.IsEditing) &&
+            !IsDescendantOfFolderEditBox(e.OriginalSource as DependencyObject))
+        {
+            _viewModel.CommitInlineQuickCommandFolderEdits();
+        }
+
+        base.OnPreviewMouseDown(e);
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -64,10 +116,12 @@ public partial class MainWindow : Window
         await TerminalWebView.EnsureCoreWebView2Async();
         TerminalWebView.DefaultBackgroundColor =
             System.Drawing.Color.FromArgb(255, 0x0A, 0x0E, 0x14);
+        ConfigureWebViewDropBehavior();
         // Let terminal.html handle copy/paste/select shortcuts instead of WebView2 browser accelerators.
         TerminalWebView.CoreWebView2.Settings.AreBrowserAcceleratorKeysEnabled = false;
         TerminalWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
         TerminalWebView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+        TerminalWebView.CoreWebView2.NavigationStarting += TerminalWebView_NavigationStarting;
 
         var assetsPath = Path.Combine(AppContext.BaseDirectory, "Assets");
         TerminalWebView.CoreWebView2.SetVirtualHostNameToFolderMapping(
@@ -83,6 +137,25 @@ public partial class MainWindow : Window
         UpdatePanelVisibility();
         SetRightSidebarSection(RightSidebarSection.Explorer);
         LoadLanguagePreference();
+        UpdateSideRailButtonStates();
+        UpdateExplorerNavButtons();
+    }
+
+    private void MainWindow_Closed(object? sender, EventArgs e)
+    {
+        UnregisterWebViewDropTarget();
+    }
+
+    private void TerminalWebView_Loaded(object sender, RoutedEventArgs e)
+    {
+        RegisterWebViewDropTarget();
+    }
+
+    private void TerminalWebView_CoreWebView2InitializationCompleted(
+        object? sender,
+        CoreWebView2InitializationCompletedEventArgs e)
+    {
+        RegisterWebViewDropTarget();
     }
 
     // --- Custom Title Bar ---
@@ -215,6 +288,27 @@ public partial class MainWindow : Window
                 }
                 break;
         }
+    }
+
+    private void TerminalWebView_NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(e.Uri))
+            return;
+
+        if (IsAllowedTerminalUri(e.Uri))
+            return;
+
+        // Prevent WebView2 from navigating away (e.g., file drops opening about:blank#blocked).
+        e.Cancel = true;
+    }
+
+    private static bool IsAllowedTerminalUri(string uri)
+    {
+        if (!Uri.TryCreate(uri, UriKind.Absolute, out var parsed))
+            return false;
+
+        return parsed.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) &&
+               parsed.Host.Equals("app.local", StringComparison.OrdinalIgnoreCase);
     }
 
     private void OnTerminalViewportLockRequested(int cols, int rows)
@@ -379,6 +473,14 @@ public partial class MainWindow : Window
         if (e.PropertyName == nameof(MainViewModel.IsCrossDeviceAuthRequired))
         {
             Dispatcher.InvokeAsync(UpdatePanelVisibility);
+        }
+        else if (e.PropertyName == nameof(MainViewModel.ExplorerRootPath))
+        {
+            Dispatcher.InvokeAsync(UpdateExplorerNavButtons);
+        }
+        else if (e.PropertyName == nameof(MainViewModel.ExplorerCurrentPath))
+        {
+            Dispatcher.InvokeAsync(UpdateExplorerNavButtons);
         }
     }
 
@@ -568,6 +670,7 @@ public partial class MainWindow : Window
             SidebarColumn.MaxWidth = SidebarCollapsedWidth;
 
             if (SidebarContent is not null) SidebarContent.Visibility = Visibility.Collapsed;
+            if (ToolsSidebarContent is not null) ToolsSidebarContent.Visibility = Visibility.Collapsed;
             if (SidebarSplitter is not null) SidebarSplitter.Visibility = Visibility.Collapsed;
             if (SidebarToggleButton is not null)
             {
@@ -583,7 +686,10 @@ public partial class MainWindow : Window
             SidebarColumn.MinWidth = SidebarExpandedMinWidth;
             SidebarColumn.MaxWidth = SidebarExpandedMaxWidth;
 
-            if (SidebarContent is not null) SidebarContent.Visibility = Visibility.Visible;
+            if (ToolsSidebarContent is not null)
+                ToolsSidebarContent.Visibility = _isToolsPanelVisible ? Visibility.Visible : Visibility.Collapsed;
+            if (SidebarContent is not null)
+                SidebarContent.Visibility = _isToolsPanelVisible ? Visibility.Collapsed : Visibility.Visible;
             if (SidebarSplitter is not null) SidebarSplitter.Visibility = Visibility.Visible;
             if (SidebarToggleButton is not null)
             {
@@ -593,47 +699,30 @@ public partial class MainWindow : Window
 
             _isSidebarCollapsed = false;
         }
+
+        UpdateSideRailButtonStates();
     }
 
     // --- Right Sidebar ---
 
     private void RightSidebarToggleButton_Click(object sender, RoutedEventArgs e)
     {
-        if (RightSidebarColumn is null) return;
-
-        if (!_isRightSidebarCollapsed)
+        if (_isSidebarCollapsed)
         {
-            _rightSidebarExpandedWidth = RightSidebarColumn.Width;
-            RightSidebarColumn.Width = new GridLength(RightSidebarCollapsedWidth);
-            RightSidebarColumn.MinWidth = RightSidebarCollapsedWidth;
-            RightSidebarColumn.MaxWidth = RightSidebarCollapsedWidth;
-
-            if (RightSidebarContent is not null) RightSidebarContent.Visibility = Visibility.Collapsed;
-            if (RightSidebarSplitter is not null) RightSidebarSplitter.Visibility = Visibility.Collapsed;
-            if (RightSidebarToggleButton is not null)
-            {
-                RightSidebarToggleButton.Content = "\u276E";
-                RightSidebarToggleButton.ToolTip = "Expand sidebar";
-            }
-
-            _isRightSidebarCollapsed = true;
+            SidebarToggleButton_Click(sender, e);
         }
-        else
+
+        SetToolsPanelVisible(true);
+    }
+
+    private void SettingsSidebarToggleButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isSidebarCollapsed)
         {
-            RightSidebarColumn.Width = _rightSidebarExpandedWidth;
-            RightSidebarColumn.MinWidth = RightSidebarExpandedMinWidth;
-            RightSidebarColumn.MaxWidth = RightSidebarExpandedMaxWidth;
-
-            if (RightSidebarContent is not null) RightSidebarContent.Visibility = Visibility.Visible;
-            if (RightSidebarSplitter is not null) RightSidebarSplitter.Visibility = Visibility.Visible;
-            if (RightSidebarToggleButton is not null)
-            {
-                RightSidebarToggleButton.Content = "\u276F";
-                RightSidebarToggleButton.ToolTip = "Collapse sidebar";
-            }
-
-            _isRightSidebarCollapsed = false;
+            SidebarToggleButton_Click(sender, e);
         }
+
+        SetToolsPanelVisible(false);
     }
 
     private void RightExplorerButton_Click(object sender, RoutedEventArgs e)
@@ -681,6 +770,113 @@ public partial class MainWindow : Window
         button.Foreground = isActive
             ? (Brush)FindResource("Text1Brush")
             : (Brush)FindResource("Text2Brush");
+        button.FontWeight = isActive ? FontWeights.SemiBold : FontWeights.Normal;
+    }
+
+    private void SetToolsPanelVisible(bool visible)
+    {
+        _isToolsPanelVisible = visible;
+
+        if (ToolsSidebarContent is not null)
+            ToolsSidebarContent.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (SidebarContent is not null)
+            SidebarContent.Visibility = visible ? Visibility.Collapsed : Visibility.Visible;
+
+        UpdateToolsToggleToolTip();
+        UpdateSideRailButtonStates();
+    }
+
+    private void UpdateToolsToggleToolTip()
+    {
+        var isEnglish = LangEnRadio?.IsChecked == true;
+        if (RightSidebarToggleButton is not null)
+            RightSidebarToggleButton.ToolTip = isEnglish ? "Open tools" : "打开工具面板";
+        if (SettingsSidebarToggleButton is not null)
+            SettingsSidebarToggleButton.ToolTip = isEnglish ? "Open settings" : "打开设置面板";
+    }
+
+    private void UpdateSideRailButtonStates()
+    {
+        var activeBrush = TryFindResource("Text1Brush") as Brush ?? Brushes.White;
+        var inactiveBrush = TryFindResource("AccentBrush") as Brush ?? Brushes.LimeGreen;
+
+        if (RightSidebarToggleButton is not null)
+        {
+            RightSidebarToggleButton.Foreground = (!_isSidebarCollapsed && _isToolsPanelVisible)
+                ? activeBrush
+                : inactiveBrush;
+        }
+
+        if (SettingsSidebarToggleButton is not null)
+        {
+            SettingsSidebarToggleButton.Foreground = (!_isSidebarCollapsed && !_isToolsPanelVisible)
+                ? activeBrush
+                : inactiveBrush;
+        }
+
+        if (SidebarToggleButton is not null)
+        {
+            SidebarToggleButton.Foreground = _isSidebarCollapsed
+                ? activeBrush
+                : inactiveBrush;
+        }
+    }
+
+    private void ConfigureWebViewDropBehavior()
+    {
+        if (TerminalWebView is null)
+            return;
+
+        try
+        {
+            TerminalWebView.AllowExternalDrop = false;
+        }
+        catch
+        {
+            // Best effort; if unavailable, drag/drop may still be handled by WebView2.
+        }
+
+        RegisterWebViewDropTarget();
+    }
+
+    private void RegisterWebViewDropTarget()
+    {
+        if (TerminalWebView is null)
+            return;
+
+        var handle = TerminalWebView.Handle;
+        if (handle == IntPtr.Zero)
+        {
+            Dispatcher.BeginInvoke(RegisterWebViewDropTarget, System.Windows.Threading.DispatcherPriority.Loaded);
+            return;
+        }
+
+        _webViewDropTarget ??= new WebViewDropTarget(
+            files => _viewModel.TryInsertPathsIntoActiveSession(files),
+            text => _viewModel.TryInsertTextIntoActiveSession(text));
+
+        var handles = NativeDropTarget.CollectDropTargetHandles(handle);
+        if (handles.Count == 0)
+            return;
+
+        UnregisterWebViewDropTarget();
+
+        foreach (var hwnd in handles)
+        {
+            if (NativeDropTarget.TryRegisterDropTarget(hwnd, _webViewDropTarget))
+                _webViewDropTargetHandles.Add(hwnd);
+        }
+    }
+
+    private void UnregisterWebViewDropTarget()
+    {
+        if (_webViewDropTargetHandles.Count > 0)
+        {
+            foreach (var hwnd in _webViewDropTargetHandles)
+                NativeDropTarget.RevokeDragDrop(hwnd);
+
+            _webViewDropTargetHandles.Clear();
+        }
     }
 
     // --- Drag & Drop to Active Session ---
@@ -688,7 +884,8 @@ public partial class MainWindow : Window
     private void SessionDropHost_PreviewDragOver(object sender, DragEventArgs e)
     {
         var hasSupportedPayload = e.Data.GetDataPresent(DataFormats.FileDrop) ||
-                                  e.Data.GetDataPresent(DataFormats.Text);
+                                  e.Data.GetDataPresent(DataFormats.Text) ||
+                                  e.Data.GetDataPresent(DataFormats.UnicodeText);
 
         e.Effects = hasSupportedPayload && _viewModel.HasActiveSessionInputTarget
             ? DragDropEffects.Copy
@@ -716,6 +913,14 @@ public partial class MainWindow : Window
                     _viewModel.TryInsertTextIntoActiveSession(text);
                 }
             }
+            else if (e.Data.GetDataPresent(DataFormats.UnicodeText))
+            {
+                if (e.Data.GetData(DataFormats.UnicodeText) is string text &&
+                    !string.IsNullOrWhiteSpace(text))
+                {
+                    _viewModel.TryInsertTextIntoActiveSession(text);
+                }
+            }
         }
         finally
         {
@@ -723,11 +928,438 @@ public partial class MainWindow : Window
         }
     }
 
+    // --- WebView2 Drop Target (native) ---
+
+    [ComVisible(true)]
+    private sealed class WebViewDropTarget : IDropTarget
+    {
+        private readonly Action<string[]> _onFiles;
+        private readonly Action<string> _onText;
+        private bool _hasSupportedData;
+
+        public WebViewDropTarget(Action<string[]> onFiles, Action<string> onText)
+        {
+            _onFiles = onFiles;
+            _onText = onText;
+        }
+
+        public int DragEnter(ComIDataObject pDataObj, int grfKeyState, POINTL pt, ref int pdwEffect)
+        {
+            _hasSupportedData = NativeDropTarget.HasFileDrop(pDataObj) || NativeDropTarget.HasText(pDataObj);
+            pdwEffect = _hasSupportedData ? NativeDropTarget.DROPEFFECT_COPY : NativeDropTarget.DROPEFFECT_NONE;
+            return NativeDropTarget.S_OK;
+        }
+
+        public int DragOver(int grfKeyState, POINTL pt, ref int pdwEffect)
+        {
+            pdwEffect = _hasSupportedData
+                ? NativeDropTarget.DROPEFFECT_COPY
+                : NativeDropTarget.DROPEFFECT_NONE;
+            return NativeDropTarget.S_OK;
+        }
+
+        public int DragLeave()
+        {
+            _hasSupportedData = false;
+            return NativeDropTarget.S_OK;
+        }
+
+        public int Drop(ComIDataObject pDataObj, int grfKeyState, POINTL pt, ref int pdwEffect)
+        {
+            pdwEffect = NativeDropTarget.DROPEFFECT_NONE;
+
+            try
+            {
+                if (pDataObj is not null && NativeDropTarget.TryGetFileList(pDataObj, out var files))
+                {
+                    _onFiles(files);
+                    pdwEffect = NativeDropTarget.DROPEFFECT_COPY;
+                    return NativeDropTarget.S_OK;
+                }
+
+                if (pDataObj is not null && NativeDropTarget.TryGetText(pDataObj, out var text))
+                {
+                    var paths = NativeDropTarget.ExtractExistingPaths(text);
+                    if (paths.Length > 0)
+                        _onFiles(paths);
+                    else
+                        _onText(text);
+
+                    pdwEffect = NativeDropTarget.DROPEFFECT_COPY;
+                }
+            }
+            catch
+            {
+                pdwEffect = NativeDropTarget.DROPEFFECT_NONE;
+            }
+
+            return NativeDropTarget.S_OK;
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINTL
+    {
+        public int X;
+        public int Y;
+    }
+
+    [ComImport]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    [Guid("00000122-0000-0000-C000-000000000046")]
+    private interface IDropTarget
+    {
+        [PreserveSig]
+        int DragEnter(ComIDataObject pDataObj, int grfKeyState, POINTL pt, ref int pdwEffect);
+
+        [PreserveSig]
+        int DragOver(int grfKeyState, POINTL pt, ref int pdwEffect);
+
+        [PreserveSig]
+        int DragLeave();
+
+        [PreserveSig]
+        int Drop(ComIDataObject pDataObj, int grfKeyState, POINTL pt, ref int pdwEffect);
+    }
+
+    private static class NativeDropTarget
+    {
+        public const int S_OK = 0;
+        public const int DROPEFFECT_NONE = 0;
+        public const int DROPEFFECT_COPY = 1;
+        private const int DRAGDROP_E_ALREADYREGISTERED = unchecked((int)0x80040101);
+        private const short CF_TEXT = 1;
+        private const short CF_UNICODETEXT = 13;
+        private const short CF_HDROP = 15;
+
+        [DllImport("ole32.dll")]
+        public static extern int RegisterDragDrop(IntPtr hwnd, IDropTarget pDropTarget);
+
+        [DllImport("ole32.dll")]
+        public static extern int RevokeDragDrop(IntPtr hwnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumChildWindows(IntPtr hwndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+        public static List<IntPtr> CollectDropTargetHandles(IntPtr hostHandle)
+        {
+            var handles = new List<IntPtr> { hostHandle };
+            EnumChildWindows(hostHandle, (hwnd, _) =>
+            {
+                if (hwnd != IntPtr.Zero)
+                    handles.Add(hwnd);
+                return true;
+            }, IntPtr.Zero);
+
+            return handles.Distinct().ToList();
+        }
+
+        public static bool TryRegisterDropTarget(IntPtr hwnd, IDropTarget target)
+        {
+            if (hwnd == IntPtr.Zero)
+                return false;
+
+            var hr = RegisterDragDrop(hwnd, target);
+            if (hr == DRAGDROP_E_ALREADYREGISTERED)
+            {
+                RevokeDragDrop(hwnd);
+                hr = RegisterDragDrop(hwnd, target);
+            }
+
+            return hr == S_OK;
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern uint DragQueryFile(IntPtr hDrop, uint iFile, StringBuilder? lpszFile, uint cch);
+
+        [DllImport("ole32.dll")]
+        private static extern void ReleaseStgMedium(ref STGMEDIUM pmedium);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GlobalLock(IntPtr hMem);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool GlobalUnlock(IntPtr hMem);
+
+        public static bool HasFileDrop(ComIDataObject dataObj)
+        {
+            var format = CreateFormat(CF_HDROP);
+            return dataObj.QueryGetData(ref format) == S_OK;
+        }
+
+        public static bool HasText(ComIDataObject dataObj)
+        {
+            var format = CreateFormat(CF_UNICODETEXT);
+            return dataObj.QueryGetData(ref format) == S_OK;
+        }
+
+        public static bool TryGetFileList(ComIDataObject dataObj, out string[] files)
+        {
+            files = Array.Empty<string>();
+            var format = CreateFormat(CF_HDROP);
+            if (dataObj.QueryGetData(ref format) != S_OK)
+                return false;
+
+            dataObj.GetData(ref format, out var medium);
+            try
+            {
+                var hDrop = medium.unionmember;
+                var count = DragQueryFile(hDrop, 0xFFFFFFFF, null, 0);
+                if (count == 0)
+                    return false;
+
+                var list = new string[count];
+                for (uint i = 0; i < count; i++)
+                {
+                    var length = DragQueryFile(hDrop, i, null, 0);
+                    var sb = new StringBuilder((int)length + 1);
+                    DragQueryFile(hDrop, i, sb, (uint)sb.Capacity);
+                    list[i] = sb.ToString();
+                }
+
+                files = list;
+                return true;
+            }
+            finally
+            {
+                ReleaseStgMedium(ref medium);
+            }
+        }
+
+        public static bool TryGetText(ComIDataObject dataObj, out string text)
+        {
+            if (TryGetString(dataObj, CF_UNICODETEXT, out text))
+                return !string.IsNullOrWhiteSpace(text);
+
+            if (TryGetString(dataObj, CF_TEXT, out text))
+                return !string.IsNullOrWhiteSpace(text);
+
+            text = string.Empty;
+            return false;
+        }
+
+        public static string[] ExtractExistingPaths(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return Array.Empty<string>();
+
+            var lines = text
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim())
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .ToArray();
+
+            if (lines.Length == 0)
+                return Array.Empty<string>();
+
+            var existing = lines
+                .Where(line => File.Exists(line) || Directory.Exists(line))
+                .ToArray();
+
+            return existing;
+        }
+
+        private static bool TryGetString(ComIDataObject dataObj, short formatId, out string text)
+        {
+            text = string.Empty;
+            var format = CreateFormat(formatId);
+            if (dataObj.QueryGetData(ref format) != S_OK)
+                return false;
+
+            dataObj.GetData(ref format, out var medium);
+            try
+            {
+                var dataPtr = GlobalLock(medium.unionmember);
+                if (dataPtr == IntPtr.Zero)
+                    return false;
+
+                try
+                {
+                    text = formatId == CF_UNICODETEXT
+                        ? Marshal.PtrToStringUni(dataPtr) ?? string.Empty
+                        : Marshal.PtrToStringAnsi(dataPtr) ?? string.Empty;
+                }
+                finally
+                {
+                    GlobalUnlock(medium.unionmember);
+                }
+
+                return true;
+            }
+            finally
+            {
+                ReleaseStgMedium(ref medium);
+            }
+        }
+
+        private static FORMATETC CreateFormat(short format)
+        {
+            return new FORMATETC
+            {
+                cfFormat = format,
+                dwAspect = DVASPECT.DVASPECT_CONTENT,
+                lindex = -1,
+                tymed = TYMED.TYMED_HGLOBAL
+            };
+        }
+    }
+
     // --- Explorer ---
 
-    private void ExplorerReloadButton_Click(object sender, RoutedEventArgs e)
+    private void ExplorerRefreshButton_Click(object sender, RoutedEventArgs e)
     {
+        var before = _viewModel.ExplorerRootPath;
         _viewModel.LoadExplorerRoot();
+        if (!string.Equals(before, _viewModel.ExplorerRootPath, StringComparison.OrdinalIgnoreCase))
+            _explorerForwardPath = null;
+
+        UpdateExplorerNavButtons();
+    }
+
+    private void ExplorerUpButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryGetExplorerParent(out var parent))
+            return;
+
+        _explorerForwardPath = GetExplorerActivePath();
+
+        if (IsExplorerVirtualRootPath(_viewModel.ExplorerRootPath))
+        {
+            _viewModel.ExplorerCurrentPath = parent;
+            UpdateExplorerNavButtons();
+            return;
+        }
+
+        NavigateExplorerToPath(parent, preserveForward: true);
+    }
+
+    private void ExplorerForwardButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_explorerForwardPath))
+            return;
+
+        var target = _explorerForwardPath;
+        _explorerForwardPath = null;
+        if (IsExplorerVirtualRootPath(_viewModel.ExplorerRootPath))
+        {
+            _viewModel.ExplorerCurrentPath = target;
+            UpdateExplorerNavButtons();
+            return;
+        }
+
+        NavigateExplorerToPath(target, preserveForward: true);
+    }
+
+    private void UpdateExplorerNavButtons()
+    {
+        if (ExplorerForwardButton is not null)
+            ExplorerForwardButton.IsEnabled = !string.IsNullOrWhiteSpace(_explorerForwardPath);
+
+        if (ExplorerUpButton is not null)
+            ExplorerUpButton.IsEnabled = TryGetExplorerParent(out _);
+    }
+
+    private bool TryGetExplorerParent(out string parentPath)
+    {
+        parentPath = string.Empty;
+        var current = GetExplorerActivePath()?.Trim();
+        if (string.IsNullOrWhiteSpace(current))
+            return false;
+
+        if (IsExplorerVirtualRootPath(current))
+            return false;
+
+        try
+        {
+            var full = Path.GetFullPath(current);
+            var parent = Directory.GetParent(full);
+            if (parent is null)
+            {
+                parentPath = GetExplorerVirtualRootDisplay();
+                return true;
+            }
+
+            if (!Directory.Exists(parent.FullName))
+                return false;
+
+            parentPath = parent.FullName;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void NavigateExplorerToPath(string path, bool preserveForward)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        if (!preserveForward)
+            _explorerForwardPath = null;
+
+        _viewModel.ExplorerRootPath = path;
+        _viewModel.ExplorerCurrentPath = path;
+        _viewModel.LoadExplorerRoot();
+        UpdateExplorerNavButtons();
+    }
+
+    private void ExplorerTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+    {
+        if (_isExplorerNavigating)
+            return;
+
+        if (e.NewValue is not FileExplorerNode node || node.IsPlaceholder || !node.IsDirectory)
+            return;
+
+        var target = node.FullPath;
+        if (string.IsNullOrWhiteSpace(target))
+            return;
+
+        if (string.Equals(_viewModel.ExplorerRootPath, target, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _isExplorerNavigating = true;
+        try
+        {
+            _explorerForwardPath = null;
+            if (IsExplorerVirtualRootPath(_viewModel.ExplorerRootPath))
+            {
+                _viewModel.ExplorerCurrentPath = target;
+                UpdateExplorerNavButtons();
+            }
+            else
+            {
+                NavigateExplorerToPath(target, preserveForward: true);
+            }
+        }
+        finally
+        {
+            _isExplorerNavigating = false;
+        }
+    }
+
+    private static bool IsExplorerVirtualRootPath(string? path)
+    {
+        return string.Equals(path, ExplorerVirtualRootEn, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(path, ExplorerVirtualRootZh, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string GetExplorerVirtualRootDisplay()
+    {
+        var isEnglish = LangEnRadio?.IsChecked == true;
+        return isEnglish ? ExplorerVirtualRootEn : ExplorerVirtualRootZh;
+    }
+
+    private string GetExplorerActivePath()
+    {
+        if (IsExplorerVirtualRootPath(_viewModel.ExplorerRootPath))
+            return _viewModel.ExplorerCurrentPath;
+
+        return _viewModel.ExplorerRootPath;
     }
 
     private void ExplorerTreeItem_Expanded(object sender, RoutedEventArgs e)
@@ -758,10 +1390,7 @@ public partial class MainWindow : Window
 
         var data = new DataObject();
         data.SetData(DataFormats.Text, node.FullPath);
-        if (File.Exists(node.FullPath) || Directory.Exists(node.FullPath))
-        {
-            data.SetData(DataFormats.FileDrop, new[] { node.FullPath });
-        }
+        data.SetData(DataFormats.UnicodeText, node.FullPath);
 
         DragDrop.DoDragDrop(ExplorerTree, data, DragDropEffects.Copy);
     }
@@ -812,14 +1441,196 @@ public partial class MainWindow : Window
 
     // --- Quick Commands ---
 
-    private void QuickCommandInsertButton_Click(object sender, RoutedEventArgs e)
+    private void QuickCommandsPanel_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
-        _viewModel.TryInsertSelectedQuickCommand(executeImmediately: false);
+        if (!_viewModel.QuickCommandFolders.Any(folder => folder.IsEditing))
+            return;
+
+        if (IsDescendantOfFolderEditBox(e.OriginalSource as DependencyObject))
+            return;
+
+        _viewModel.CommitInlineQuickCommandFolderEdits();
     }
 
-    private void QuickCommandRunButton_Click(object sender, RoutedEventArgs e)
+    private void QuickCommandFolderListBox_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
-        _viewModel.TryInsertSelectedQuickCommand(executeImmediately: true);
+        if (sender is not ListBox listBox)
+            return;
+
+        var container = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject);
+        if (container?.DataContext is not QuickCommandFolder folder)
+            return;
+
+        listBox.SelectedItem = folder;
+        _quickCommandFolderContextMenu.DataContext = folder;
+        _quickCommandFolderContextMenu.PlacementTarget = container;
+        _quickCommandFolderContextMenu.IsOpen = true;
+        e.Handled = true;
+    }
+
+    private void QuickCommandFolderListBox_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not ListBox listBox)
+            return;
+
+        _folderSelectedOnMouseDown = null;
+        _isFolderScrollDragging = false;
+        _isFolderScrollDragArmed = false;
+
+        if (IsDescendantOfFolderEditBox(e.OriginalSource as DependencyObject))
+            return;
+
+        var clickedContainer = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject);
+        var clickedFolder = clickedContainer?.DataContext as QuickCommandFolder;
+        if (clickedFolder is not null &&
+            ReferenceEquals(listBox.SelectedItem, clickedFolder))
+        {
+            _folderSelectedOnMouseDown = clickedFolder;
+        }
+
+        var scrollViewer = FindDescendantScrollViewer(listBox);
+        if (scrollViewer is null)
+            return;
+
+        _folderScrollDragStart = e.GetPosition(scrollViewer);
+        _folderScrollStartOffset = scrollViewer.HorizontalOffset;
+        _isFolderScrollDragArmed = true;
+    }
+
+    private void QuickCommandFolderListBox_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (sender is not ListBox listBox || e.LeftButton != MouseButtonState.Pressed)
+            return;
+
+        if (!_isFolderScrollDragArmed)
+            return;
+
+        var scrollViewer = FindDescendantScrollViewer(listBox);
+        if (scrollViewer is null)
+            return;
+
+        var current = e.GetPosition(scrollViewer);
+        var delta = current.X - _folderScrollDragStart.X;
+        if (!_isFolderScrollDragging)
+        {
+            if (Math.Abs(delta) < SystemParameters.MinimumHorizontalDragDistance)
+                return;
+
+            _isFolderScrollDragging = true;
+            _folderSelectedOnMouseDown = null;
+            listBox.CaptureMouse();
+        }
+
+        scrollViewer.ScrollToHorizontalOffset(_folderScrollStartOffset - delta);
+        e.Handled = true;
+    }
+
+    private void QuickCommandFolderListBox_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not ListBox listBox)
+            return;
+
+        if (_isFolderScrollDragging)
+            e.Handled = true;
+
+        if (listBox.IsMouseCaptured)
+            listBox.ReleaseMouseCapture();
+
+        _isFolderScrollDragging = false;
+        _isFolderScrollDragArmed = false;
+    }
+
+    private void QuickCommandFolderListBox_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (sender is not ListBox listBox)
+            return;
+
+        if (listBox.IsMouseCaptured)
+            listBox.ReleaseMouseCapture();
+
+        _isFolderScrollDragging = false;
+        _isFolderScrollDragArmed = false;
+    }
+
+    private void QuickCommandFolderAddButton_Click(object sender, RoutedEventArgs e)
+    {
+        var folder = _viewModel.BeginInlineQuickCommandFolderCreate();
+        FocusQuickCommandFolderEditor(folder);
+    }
+
+    private void QuickCommandFolderName_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_isFolderScrollDragging)
+            return;
+
+        if (sender is not FrameworkElement element || element.DataContext is not QuickCommandFolder folder)
+            return;
+
+        if (folder.IsEditing)
+            return;
+
+        if (!ReferenceEquals(_folderSelectedOnMouseDown, folder))
+            return;
+
+        _folderSelectedOnMouseDown = null;
+
+        if (QuickCommandFolderListBox is not null)
+            QuickCommandFolderListBox.SelectedItem = folder;
+
+        _viewModel.BeginInlineQuickCommandFolderEdit(folder);
+        FocusQuickCommandFolderEditor(folder);
+        e.Handled = true;
+    }
+
+    private void QuickCommandFolderContextEdit_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem menuItem || menuItem.DataContext is not QuickCommandFolder folder)
+            return;
+
+        if (QuickCommandFolderListBox is not null)
+            QuickCommandFolderListBox.SelectedItem = folder;
+
+        _viewModel.BeginInlineQuickCommandFolderEdit(folder);
+        FocusQuickCommandFolderEditor(folder);
+    }
+
+    private void QuickCommandFolderContextDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem menuItem || menuItem.DataContext is not QuickCommandFolder folder)
+            return;
+
+        _viewModel.DeleteQuickCommandFolder(folder);
+    }
+
+    private void QuickCommandFolderEditBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is not FrameworkElement element || element.DataContext is not QuickCommandFolder folder)
+            return;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (element.IsKeyboardFocusWithin)
+                return;
+
+            _viewModel.CommitInlineQuickCommandFolderEdit(folder);
+        }, System.Windows.Threading.DispatcherPriority.Background);
+    }
+
+    private void QuickCommandFolderEditBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is not FrameworkElement element || element.DataContext is not QuickCommandFolder folder)
+            return;
+
+        if (e.Key == Key.Enter)
+        {
+            _viewModel.CommitInlineQuickCommandFolderEdit(folder);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            _viewModel.CancelInlineQuickCommandFolderEdit(folder);
+            e.Handled = true;
+        }
     }
 
     private void QuickCommandSaveButton_Click(object sender, RoutedEventArgs e)
@@ -829,7 +1640,8 @@ public partial class MainWindow : Window
 
     private void QuickCommandNewButton_Click(object sender, RoutedEventArgs e)
     {
-        _viewModel.BeginNewQuickCommandEdit();
+        var item = _viewModel.BeginInlineQuickCommandCreate();
+        FocusQuickCommandEditor(item);
     }
 
     private void QuickCommandDeleteButton_Click(object sender, RoutedEventArgs e)
@@ -837,31 +1649,251 @@ public partial class MainWindow : Window
         _viewModel.DeleteSelectedQuickCommand();
     }
 
-    private void QuickCommandsListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    private void QuickCommandItem_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        _viewModel.TryInsertSelectedQuickCommand(executeImmediately: true);
+        if (sender is not ListBoxItem item || item.DataContext is not QuickCommandItem)
+            return;
+
+        if (item.DataContext is QuickCommandItem quickCommand && quickCommand.IsEditing)
+            return;
+
+        if (e.ClickCount > 1)
+            return;
+
+        if (IsDescendantOfButton(e.OriginalSource as DependencyObject))
+            return;
+
+        _viewModel.CommitInlineQuickCommandEdits();
+
+        if (QuickCommandsListBox is not null)
+            QuickCommandsListBox.SelectedItem = item.DataContext;
+
+        _viewModel.TryInsertSelectedQuickCommand(executeImmediately: false);
+        e.Handled = true;
+    }
+
+    private void QuickCommandEditButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement element && element.DataContext is QuickCommandItem item)
+        {
+            if (QuickCommandsListBox is not null)
+                QuickCommandsListBox.SelectedItem = item;
+            _viewModel.BeginInlineQuickCommandEdit(item);
+            FocusQuickCommandEditor(item);
+        }
+    }
+
+    private void QuickCommandsListBox_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not ListBox listBox)
+            return;
+
+        var container = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject);
+        if (container?.DataContext is not QuickCommandItem item)
+            return;
+
+        listBox.SelectedItem = item;
+        _quickCommandContextMenu.DataContext = item;
+        _quickCommandContextMenu.PlacementTarget = container;
+        _quickCommandContextMenu.IsOpen = true;
+        e.Handled = true;
+    }
+
+    private void QuickCommandContextEdit_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem menuItem || menuItem.DataContext is not QuickCommandItem item)
+            return;
+
+        if (QuickCommandsListBox is not null)
+            QuickCommandsListBox.SelectedItem = item;
+
+        _viewModel.BeginInlineQuickCommandEdit(item);
+        FocusQuickCommandEditor(item);
+    }
+
+    private void QuickCommandContextDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem menuItem || menuItem.DataContext is not QuickCommandItem item)
+            return;
+
+        _viewModel.DeleteQuickCommand(item);
+    }
+
+    private void QuickCommandEditPanel_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is not FrameworkElement panel || panel.DataContext is not QuickCommandItem item)
+            return;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (panel.IsKeyboardFocusWithin)
+                return;
+
+            _viewModel.CommitInlineQuickCommandEdit(item);
+        }, System.Windows.Threading.DispatcherPriority.Background);
+    }
+
+    private void FocusQuickCommandFolderEditor(QuickCommandFolder folder)
+    {
+        if (QuickCommandFolderListBox is null)
+            return;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            QuickCommandFolderListBox.ScrollIntoView(folder);
+            QuickCommandFolderListBox.UpdateLayout();
+
+            if (QuickCommandFolderListBox.ItemContainerGenerator.ContainerFromItem(folder) is not ListBoxItem container)
+                return;
+
+            EnsureFolderChipFullyVisible(container);
+            QuickCommandFolderListBox.UpdateLayout();
+
+            var textBox = FindVisualChild<TextBox>(container);
+            if (textBox is null)
+                return;
+
+            textBox.Focus();
+            textBox.SelectAll();
+        }, System.Windows.Threading.DispatcherPriority.Background);
+    }
+
+    private void EnsureFolderChipFullyVisible(ListBoxItem container)
+    {
+        if (QuickCommandFolderListBox is null)
+            return;
+
+        var scrollViewer = FindDescendantScrollViewer(QuickCommandFolderListBox);
+        if (scrollViewer is null || scrollViewer.ViewportWidth <= 0)
+            return;
+
+        Rect bounds;
+        try
+        {
+            bounds = container.TransformToAncestor(scrollViewer)
+                .TransformBounds(new Rect(new Point(0, 0), container.RenderSize));
+        }
+        catch (InvalidOperationException)
+        {
+            return;
+        }
+
+        const double edgePadding = 8;
+        if (bounds.Right > scrollViewer.ViewportWidth)
+        {
+            var shiftRight = bounds.Right - scrollViewer.ViewportWidth + edgePadding;
+            scrollViewer.ScrollToHorizontalOffset(scrollViewer.HorizontalOffset + shiftRight);
+        }
+        else if (bounds.Left < 0)
+        {
+            var target = Math.Max(0, scrollViewer.HorizontalOffset + bounds.Left - edgePadding);
+            scrollViewer.ScrollToHorizontalOffset(target);
+        }
+    }
+
+    private void FocusQuickCommandEditor(QuickCommandItem item)
+    {
+        if (QuickCommandsListBox is null)
+            return;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            QuickCommandsListBox.ScrollIntoView(item);
+            QuickCommandsListBox.UpdateLayout();
+
+            if (QuickCommandsListBox.ItemContainerGenerator.ContainerFromItem(item) is not ListBoxItem container)
+                return;
+
+            var textBox = FindVisualChild<TextBox>(container);
+            if (textBox is null)
+                return;
+
+            textBox.Focus();
+            textBox.SelectAll();
+        }, System.Windows.Threading.DispatcherPriority.Background);
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(parent);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T typed)
+                return typed;
+
+            var descendant = FindVisualChild<T>(child);
+            if (descendant is not null)
+                return descendant;
+        }
+
+        return null;
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? source) where T : DependencyObject
+    {
+        while (source is not null)
+        {
+            if (source is T typed)
+                return typed;
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        return null;
+    }
+
+    private static ScrollViewer? FindDescendantScrollViewer(DependencyObject parent)
+    {
+        return FindVisualChild<ScrollViewer>(parent);
+    }
+
+    private static bool IsDescendantOfFolderEditBox(DependencyObject? source)
+    {
+        while (source is not null)
+        {
+            if (source is TextBox textBox && textBox.DataContext is QuickCommandFolder)
+                return true;
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        return false;
+    }
+
+    private static bool IsDescendantOfButton(DependencyObject? source)
+    {
+        while (source is not null)
+        {
+            if (source is Button)
+                return true;
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        return false;
     }
 
     // --- Recent Inputs ---
 
-    private void RecentInputInsertButton_Click(object sender, RoutedEventArgs e)
+    private void RecentInputItem_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        _viewModel.TryInsertRecentInput(RecentInputsListBox?.SelectedItem as string, executeImmediately: false);
-    }
+        if (sender is not ListBoxItem item || item.DataContext is not string recentInput)
+            return;
 
-    private void RecentInputRunButton_Click(object sender, RoutedEventArgs e)
-    {
-        _viewModel.TryInsertRecentInput(RecentInputsListBox?.SelectedItem as string, executeImmediately: true);
+        if (e.ClickCount > 1)
+            return;
+
+        if (IsDescendantOfButton(e.OriginalSource as DependencyObject))
+            return;
+
+        if (RecentInputsListBox is not null)
+            RecentInputsListBox.SelectedItem = recentInput;
+
+        _viewModel.TryInsertRecentInput(recentInput, executeImmediately: false);
+        e.Handled = true;
     }
 
     private void RecentInputClearButton_Click(object sender, RoutedEventArgs e)
     {
         _viewModel.ClearRecentInputs();
-    }
-
-    private void RecentInputsListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        _viewModel.TryInsertRecentInput(RecentInputsListBox?.SelectedItem as string, executeImmediately: true);
     }
 
     // --- Language Switching ---
@@ -907,17 +1939,21 @@ public partial class MainWindow : Window
             if (RightExplorerButton is not null) RightExplorerButton.Content = "Explorer";
             if (RightQuickCommandsButton is not null) RightQuickCommandsButton.Content = "Quick Commands";
             if (RightRecentInputsButton is not null) RightRecentInputsButton.Content = "Recent Commands";
-            if (ExplorerReloadButton is not null) ExplorerReloadButton.Content = "Load";
-            if (QuickCommandInsertButton is not null) QuickCommandInsertButton.Content = "Insert";
-            if (QuickCommandRunButton is not null) QuickCommandRunButton.Content = "Run";
-            if (QuickCommandSaveButton is not null) QuickCommandSaveButton.Content = "Save";
-            if (QuickCommandNewButton is not null) QuickCommandNewButton.Content = "New";
-            if (QuickCommandDeleteButton is not null) QuickCommandDeleteButton.Content = "Delete";
-            if (RecentInputsHintText is not null) RecentInputsHintText.Text = "Keep the latest 20 commands entered by this PC user";
-            if (RecentInputInsertButton is not null) RecentInputInsertButton.Content = "Insert";
-            if (RecentInputRunButton is not null) RecentInputRunButton.Content = "Run";
+            if (ExplorerRefreshButton is not null) ExplorerRefreshButton.ToolTip = "Refresh";
+            if (ExplorerUpButton is not null) ExplorerUpButton.ToolTip = "Up";
+            if (ExplorerForwardButton is not null) ExplorerForwardButton.ToolTip = "Forward";
+            if (RightSidebarTitleText is not null) RightSidebarTitleText.Text = "Quick Panel";
+            if (ExplorerHintText is not null) ExplorerHintText.Text = "Drag files into the session terminal to recognize as paths";
+            if (QuickCommandHintText is not null) QuickCommandHintText.Text = "Click an item to insert into the active session";
+            if (QuickCommandFolderAddButton is not null) QuickCommandFolderAddButton.ToolTip = "New Folder";
+            _folderContextEditMenuItem.Header = "Edit";
+            _folderContextDeleteMenuItem.Header = "Delete";
+            _commandContextEditMenuItem.Header = "Edit";
+            _commandContextDeleteMenuItem.Header = "Delete";
+            if (QuickCommandNewButton is not null) QuickCommandNewButton.Content = "Add";
+            if (RecentInputsHintText is not null) RecentInputsHintText.Text = "Keep the latest 18 commands and click an item to insert";
             if (RecentInputClearButton is not null) RecentInputClearButton.Content = "Clear";
-            if (RightSidebarToggleButton is not null) RightSidebarToggleButton.ToolTip = "Collapse sidebar";
+            UpdateToolsToggleToolTip();
         }
         else
         {
@@ -949,17 +1985,37 @@ public partial class MainWindow : Window
             if (RightExplorerButton is not null) RightExplorerButton.Content = "资源管理器";
             if (RightQuickCommandsButton is not null) RightQuickCommandsButton.Content = "快捷指令";
             if (RightRecentInputsButton is not null) RightRecentInputsButton.Content = "历史指令";
-            if (ExplorerReloadButton is not null) ExplorerReloadButton.Content = "加载";
-            if (QuickCommandInsertButton is not null) QuickCommandInsertButton.Content = "插入";
-            if (QuickCommandRunButton is not null) QuickCommandRunButton.Content = "运行";
-            if (QuickCommandSaveButton is not null) QuickCommandSaveButton.Content = "保存";
-            if (QuickCommandNewButton is not null) QuickCommandNewButton.Content = "新建";
-            if (QuickCommandDeleteButton is not null) QuickCommandDeleteButton.Content = "删除";
-            if (RecentInputsHintText is not null) RecentInputsHintText.Text = "保存当前PC用户最近20条输入";
-            if (RecentInputInsertButton is not null) RecentInputInsertButton.Content = "插入";
-            if (RecentInputRunButton is not null) RecentInputRunButton.Content = "运行";
+            if (ExplorerRefreshButton is not null) ExplorerRefreshButton.ToolTip = "刷新";
+            if (ExplorerUpButton is not null) ExplorerUpButton.ToolTip = "上级";
+            if (ExplorerForwardButton is not null) ExplorerForwardButton.ToolTip = "前进";
+            if (RightSidebarTitleText is not null) RightSidebarTitleText.Text = "快捷面板";
+            if (ExplorerHintText is not null) ExplorerHintText.Text = "文件拖拽进会话终端可识别为路径";
+            if (QuickCommandHintText is not null) QuickCommandHintText.Text = "点击条目直接插入到当前会话";
+            if (QuickCommandFolderAddButton is not null) QuickCommandFolderAddButton.ToolTip = "新增文件夹";
+            _folderContextEditMenuItem.Header = "编辑";
+            _folderContextDeleteMenuItem.Header = "删除";
+            _commandContextEditMenuItem.Header = "编辑";
+            _commandContextDeleteMenuItem.Header = "删除";
+            if (QuickCommandNewButton is not null) QuickCommandNewButton.Content = "新增";
+            if (RecentInputsHintText is not null) RecentInputsHintText.Text = "保存最近18条输入，点击条目直接插入到当前会话";
             if (RecentInputClearButton is not null) RecentInputClearButton.Content = "清空";
-            if (RightSidebarToggleButton is not null) RightSidebarToggleButton.ToolTip = "收起侧边栏";
+            UpdateToolsToggleToolTip();
+        }
+
+        var desiredRoot = isEnglish ? ExplorerVirtualRootEn : ExplorerVirtualRootZh;
+        if (IsExplorerVirtualRootPath(_viewModel.ExplorerRootPath) &&
+            !string.Equals(_viewModel.ExplorerRootPath, desiredRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            _viewModel.ExplorerRootPath = desiredRoot;
+            _viewModel.LoadExplorerRoot();
+            UpdateExplorerNavButtons();
+        }
+
+        if (IsExplorerVirtualRootPath(_viewModel.ExplorerCurrentPath) &&
+            !string.Equals(_viewModel.ExplorerCurrentPath, desiredRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            _viewModel.ExplorerCurrentPath = desiredRoot;
+            UpdateExplorerNavButtons();
         }
     }
 

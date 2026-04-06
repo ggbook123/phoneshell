@@ -110,6 +110,34 @@
             <Setter Property="Margin" Value="0,0,6,0" />
         </Style>
 
+        <!-- Right panel list styles -->
+        <Style x:Key="RightListBox" TargetType="ListBox">
+            <Setter Property="Background" Value="{StaticResource Surface0Brush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource Border1Brush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
+            <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto" />
+        </Style>
+
+        <Style x:Key="RightListBoxItem" TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="10,8" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{StaticResource Border1Brush}" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{StaticResource Surface4Brush}" />
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{StaticResource Surface3Brush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <!-- Tab bar items control -->
         <Style x:Key="TabItemsControlStyle" TargetType="ItemsControl">
             <Setter Property="ItemsPanel">
@@ -325,19 +353,18 @@
             <!-- ============================================ -->
             <!-- MAIN CONTENT AREA                            -->
             <!-- ============================================ -->
-            <Grid Grid.Row="1">
+            <Grid Grid.Row="1" x:Name="MainContentGrid">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition x:Name="SidebarColumn" Width="320" MinWidth="260" MaxWidth="440" />
                     <ColumnDefinition Width="Auto" /> <!-- Splitter -->
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" /> <!-- Right splitter -->
-                    <ColumnDefinition x:Name="RightSidebarColumn" Width="320" MinWidth="260" MaxWidth="460" />
                 </Grid.ColumnDefinitions>
 
                 <!-- LEFT SIDEBAR -->
                 <Border Grid.Column="0" Background="{StaticResource Surface1Brush}"
                         BorderThickness="0,0,1,0" BorderBrush="{StaticResource Border1Brush}">
-                    <DockPanel x:Name="SidebarContent" LastChildFill="True">
+                    <Grid>
+                        <DockPanel x:Name="SidebarContent" LastChildFill="True">
 
                         <!-- ===== Language ===== -->
                         <Expander x:Name="LanguageExpander" DockPanel.Dock="Top" Header="Language / 语言"
@@ -806,7 +833,362 @@
                             </ListBox>
                         </DockPanel>
                     </DockPanel>
-                </Border>
+
+                    <!-- Tools panel (replaces sidebar content when toggled) -->
+                    <DockPanel x:Name="ToolsSidebarContent" Visibility="Collapsed">
+                        <Border DockPanel.Dock="Top"
+                                Padding="12,12,12,10"
+                                BorderThickness="0,0,0,1"
+                                BorderBrush="{StaticResource Border1Brush}"
+                                Background="{StaticResource Surface2Brush}">
+                            <StackPanel>
+                                <TextBlock x:Name="RightSidebarTitleText"
+                                           Text="快捷面板"
+                                           FontSize="12.5"
+                                           FontWeight="SemiBold"
+                                           Foreground="{StaticResource Text1Brush}"
+                                           FontFamily="{StaticResource DisplayFont}" />
+                                <Border Background="{StaticResource Surface1Brush}"
+                                        BorderBrush="{StaticResource Border1Brush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        Padding="2">
+                                    <UniformGrid Columns="3">
+                                        <Button x:Name="RightExplorerButton"
+                                                Content="资源管理器"
+                                                Style="{StaticResource SubtleButton}"
+                                                Margin="2,0,2,0"
+                                                Padding="8,5"
+                                                Click="RightExplorerButton_Click" />
+                                        <Button x:Name="RightQuickCommandsButton"
+                                                Content="快捷指令"
+                                                Style="{StaticResource SubtleButton}"
+                                                Margin="2,0,2,0"
+                                                Padding="8,5"
+                                                Click="RightQuickCommandsButton_Click" />
+                                        <Button x:Name="RightRecentInputsButton"
+                                                Content="历史指令"
+                                                Style="{StaticResource SubtleButton}"
+                                                Margin="2,0,2,0"
+                                                Padding="8,5"
+                                                Click="RightRecentInputsButton_Click" />
+                                    </UniformGrid>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <Grid Margin="12" VerticalAlignment="Stretch">
+                            <!-- Explorer -->
+                            <Grid x:Name="ExplorerPanel" Visibility="Visible">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <Grid Grid.Row="0" Margin="0,0,0,8">
+                                    <TextBox x:Name="ExplorerRootPathBox"
+                                             Text="{Binding ExplorerCurrentPath, UpdateSourceTrigger=PropertyChanged}"
+                                             Style="{StaticResource DarkTextBox}"
+                                             FontSize="11.5"
+                                             ToolTip="{Binding ExplorerStatus}" />
+                                </Grid>
+
+                                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+                                    <Button x:Name="ExplorerRefreshButton"
+                                            Content="⟳"
+                                            Style="{StaticResource GhostButton}"
+                                            FontFamily="Segoe UI Symbol"
+                                            FontSize="13"
+                                            Padding="10,4"
+                                            ToolTip="刷新"
+                                            Click="ExplorerRefreshButton_Click" />
+                                    <Button x:Name="ExplorerUpButton"
+                                            Content="↑"
+                                            Style="{StaticResource GhostButton}"
+                                            FontFamily="Segoe UI Symbol"
+                                            FontSize="13"
+                                            Margin="6,0,0,0"
+                                            Padding="10,4"
+                                            ToolTip="上级"
+                                            Click="ExplorerUpButton_Click" />
+                                    <Button x:Name="ExplorerForwardButton"
+                                            Content="→"
+                                            Style="{StaticResource GhostButton}"
+                                            FontFamily="Segoe UI Symbol"
+                                            FontSize="13"
+                                            Margin="6,0,0,0"
+                                            Padding="10,4"
+                                            ToolTip="前进"
+                                            Click="ExplorerForwardButton_Click" />
+                                </StackPanel>
+
+                                <Border Grid.Row="2"
+                                        Background="{StaticResource Surface0Brush}"
+                                        BorderBrush="{StaticResource Border1Brush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        Padding="6">
+                                    <TreeView x:Name="ExplorerTree"
+                                              ItemsSource="{Binding ExplorerRootNodes}"
+                                              Background="Transparent"
+                                              BorderThickness="0"
+                                              Foreground="{StaticResource Text2Brush}"
+                                              Padding="2"
+                                              ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                              SelectedItemChanged="ExplorerTree_SelectedItemChanged"
+                                              PreviewMouseLeftButtonDown="ExplorerTree_PreviewMouseLeftButtonDown"
+                                              PreviewMouseMove="ExplorerTree_PreviewMouseMove"
+                                              MouseDoubleClick="ExplorerTree_MouseDoubleClick">
+                                        <TreeView.ItemContainerStyle>
+                                            <Style TargetType="TreeViewItem">
+                                                <Setter Property="Foreground" Value="{StaticResource Text2Brush}" />
+                                                <EventSetter Event="Expanded" Handler="ExplorerTreeItem_Expanded" />
+                                            </Style>
+                                        </TreeView.ItemContainerStyle>
+                                    </TreeView>
+                                </Border>
+
+                                <TextBlock x:Name="ExplorerHintText"
+                                           Grid.Row="3"
+                                           Text="文件拖拽进会话终端可识别为路径"
+                                           Foreground="{StaticResource Text3Brush}"
+                                           FontSize="10.5"
+                                           VerticalAlignment="Center"
+                                           Margin="2,10,0,0" />
+                            </Grid>
+
+                            <!-- Quick Commands -->
+                            <Grid x:Name="QuickCommandsPanel" Visibility="Collapsed"
+                                  PreviewMouseDown="QuickCommandsPanel_PreviewMouseDown">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <Grid Grid.Row="0" Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <ListBox x:Name="QuickCommandFolderListBox"
+                                             Grid.Column="0"
+                                             ItemsSource="{Binding QuickCommandFolders}"
+                                             SelectedItem="{Binding SelectedQuickCommandFolder, Mode=TwoWay}"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             Padding="0"
+                                             ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+                                             ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                             ScrollViewer.CanContentScroll="False"
+                                             PreviewMouseRightButtonDown="QuickCommandFolderListBox_PreviewMouseRightButtonDown"
+                                             PreviewMouseLeftButtonDown="QuickCommandFolderListBox_PreviewMouseLeftButtonDown"
+                                             PreviewMouseMove="QuickCommandFolderListBox_PreviewMouseMove"
+                                             PreviewMouseLeftButtonUp="QuickCommandFolderListBox_PreviewMouseLeftButtonUp"
+                                             MouseLeave="QuickCommandFolderListBox_MouseLeave">
+                                        <ListBox.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <StackPanel Orientation="Horizontal" />
+                                            </ItemsPanelTemplate>
+                                        </ListBox.ItemsPanel>
+                                        <ListBox.ItemContainerStyle>
+                                            <Style TargetType="ListBoxItem">
+                                                <Setter Property="Margin" Value="0,0,6,0" />
+                                                <Setter Property="Padding" Value="0" />
+                                                <Setter Property="Background" Value="Transparent" />
+                                                <Setter Property="BorderThickness" Value="0" />
+                                                <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                                                <Setter Property="Cursor" Value="Hand" />
+                                            </Style>
+                                        </ListBox.ItemContainerStyle>
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border x:Name="FolderChip"
+                                                        CornerRadius="6"
+                                                        Padding="8,4"
+                                                        BorderThickness="1">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Background" Value="{StaticResource Surface2Brush}" />
+                                                            <Setter Property="BorderBrush" Value="{StaticResource Border1Brush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                                                    <Setter Property="Background" Value="{StaticResource Surface4Brush}" />
+                                                                    <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <Grid>
+                                                        <StackPanel x:Name="QuickCommandFolderViewPanel"
+                                                                    Orientation="Horizontal"
+                                                                    Visibility="{Binding IsEditing, Converter={StaticResource InvertBoolConverter}}">
+                                                            <TextBlock Text="{Binding Name}"
+                                                                       Foreground="{StaticResource Text1Brush}"
+                                                                       FontSize="11"
+                                                                       FontWeight="SemiBold"
+                                                                       FontFamily="{StaticResource BodyFont}"
+                                                                       MouseLeftButtonUp="QuickCommandFolderName_MouseLeftButtonUp" />
+                                                        </StackPanel>
+                                                        <TextBox x:Name="QuickCommandFolderEditBox"
+                                                                 Visibility="{Binding IsEditing, Converter={StaticResource BoolToVisConverter}}"
+                                                                 Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
+                                                                 Style="{StaticResource DarkTextBox}"
+                                                                 FontSize="11"
+                                                                 MinWidth="90"
+                                                                 Padding="6,2"
+                                                                 LostKeyboardFocus="QuickCommandFolderEditBox_LostKeyboardFocus"
+                                                                 KeyDown="QuickCommandFolderEditBox_KeyDown" />
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+
+                                    <Button x:Name="QuickCommandFolderAddButton"
+                                            Grid.Column="1"
+                                            Content="&#x2795;"
+                                            Style="{StaticResource SubtleButton}"
+                                            FontSize="12"
+                                            Padding="6,2"
+                                            Margin="6,0,0,0"
+                                            ToolTip="新增文件夹"
+                                            Click="QuickCommandFolderAddButton_Click" />
+                                </Grid>
+
+                                <ListBox x:Name="QuickCommandsListBox"
+                                         Grid.Row="1"
+                                         ItemsSource="{Binding QuickCommandsView}"
+                                         SelectedItem="{Binding SelectedQuickCommand, Mode=TwoWay}"
+                                         PreviewMouseRightButtonDown="QuickCommandsListBox_PreviewMouseRightButtonDown"
+                                         Style="{StaticResource RightListBox}">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource RightListBoxItem}">
+                                            <EventSetter Event="PreviewMouseLeftButtonUp"
+                                                         Handler="QuickCommandItem_PreviewMouseLeftButtonUp" />
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <Grid Grid.Column="0">
+                                                    <StackPanel x:Name="QuickCommandViewPanel"
+                                                                Visibility="{Binding IsEditing, Converter={StaticResource InvertBoolConverter}}">
+                                                        <TextBlock Text="{Binding Name}"
+                                                                   Foreground="{StaticResource Text1Brush}"
+                                                                   FontSize="11.5"
+                                                                   FontWeight="SemiBold"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{Binding CommandText}"
+                                                                   Foreground="{StaticResource Text2Brush}"
+                                                                   FontFamily="{StaticResource MonoFont}"
+                                                                   FontSize="10.5"
+                                                                   Margin="0,2,0,0"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                    </StackPanel>
+                                                    <StackPanel x:Name="QuickCommandEditPanel"
+                                                                Visibility="{Binding IsEditing, Converter={StaticResource BoolToVisConverter}}"
+                                                                LostKeyboardFocus="QuickCommandEditPanel_LostKeyboardFocus">
+                                                        <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
+                                                                 Style="{StaticResource DarkTextBox}"
+                                                                 FontSize="11.5"
+                                                                 Margin="0,0,0,6"
+                                                                 ToolTip="名称" />
+                                                        <TextBox Text="{Binding CommandText, UpdateSourceTrigger=PropertyChanged}"
+                                                                 Style="{StaticResource DarkTextBox}"
+                                                                 FontSize="11.5"
+                                                                 ToolTip="指令" />
+                                                    </StackPanel>
+                                                </Grid>
+                                                <Button Grid.Column="1"
+                                                        Content="&#x270E;"
+                                                        ToolTip="编辑 / Edit"
+                                                        Width="26" Height="26"
+                                                        Style="{StaticResource SubtleButton}"
+                                                        Padding="0"
+                                                        Margin="8,0,0,0"
+                                                        HorizontalAlignment="Right"
+                                                        VerticalAlignment="Center"
+                                                        Click="QuickCommandEditButton_Click" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+
+                                <Grid Grid.Row="2" Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock x:Name="QuickCommandHintText"
+                                               Grid.Column="0"
+                                               Text="点击条目直接插入到当前会话"
+                                               Foreground="{StaticResource Text3Brush}"
+                                               FontSize="10.5"
+                                               VerticalAlignment="Center"
+                                               Margin="2,0,0,0" />
+
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <Button x:Name="QuickCommandNewButton"
+                                                Content="新增"
+                                                Style="{StaticResource GhostButton}"
+                                                Padding="12,4"
+                                                Click="QuickCommandNewButton_Click" />
+                                    </StackPanel>
+                                </Grid>
+                            </Grid>
+
+                            <!-- Recent Commands -->
+                            <Grid x:Name="RecentInputsPanel" Visibility="Collapsed">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <TextBlock x:Name="RecentInputsHintText"
+                                           Grid.Row="0"
+                                           Text="保存最近18条输入，点击条目直接插入到当前会话"
+                                           Foreground="{StaticResource Text3Brush}"
+                                           FontSize="10.5"
+                                           Margin="2,0,0,8" />
+
+                                <ListBox x:Name="RecentInputsListBox"
+                                         Grid.Row="1"
+                                         ItemsSource="{Binding RecentInputs}"
+                                         Style="{StaticResource RightListBox}"
+                                         Foreground="{StaticResource Text2Brush}"
+                                         FontFamily="{StaticResource MonoFont}"
+                                         FontSize="11">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource RightListBoxItem}">
+                                            <EventSetter Event="PreviewMouseLeftButtonUp"
+                                                         Handler="RecentInputItem_PreviewMouseLeftButtonUp" />
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                </ListBox>
+
+                                <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+                                    <Button x:Name="RecentInputClearButton"
+                                            Content="清空"
+                                            Style="{StaticResource DangerButton}"
+                                            Padding="12,4"
+                                            Click="RecentInputClearButton_Click" />
+                                </StackPanel>
+                            </Grid>
+                        </Grid>
+                    </DockPanel>
+                </Grid>
+            </Border>
 
                 <!-- GRID SPLITTER -->
                 <GridSplitter x:Name="SidebarSplitter" Grid.Column="1" Width="3" HorizontalAlignment="Center"
@@ -814,18 +1196,41 @@
                               Background="{StaticResource Border1Brush}"
                               Cursor="SizeWE" />
 
-                <!-- Sidebar collapse toggle -->
+                <!-- Sidebar + panel toggles -->
                 <Grid Grid.Column="0" Grid.ColumnSpan="2"
                       HorizontalAlignment="Right" VerticalAlignment="Center"
-                      Width="22" Height="48" Margin="0,0,-11,0"
+                      Width="26" Height="138" Margin="0,0,-11,0"
                       Panel.ZIndex="5">
-                    <Button x:Name="SidebarToggleButton"
-                            Style="{StaticResource GhostButton}"
-                            Width="20" Height="44" Padding="0"
-                            FontSize="11"
-                            Content="&#x276E;"
-                            Click="SidebarToggleButton_Click"
-                            ToolTip="Collapse sidebar" />
+                    <StackPanel Orientation="Vertical" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Button x:Name="RightSidebarToggleButton"
+                                Style="{StaticResource GhostButton}"
+                                Width="22" Height="42" Padding="0"
+                                FontSize="14"
+                                FontFamily="Segoe UI Symbol"
+                                Content="&#x2692;"
+                                Foreground="{StaticResource AccentBrush}"
+                                Margin="0,0,0,6"
+                                Click="RightSidebarToggleButton_Click"
+                                ToolTip="Open tools" />
+                        <Button x:Name="SettingsSidebarToggleButton"
+                                Style="{StaticResource GhostButton}"
+                                Width="22" Height="42" Padding="0"
+                                FontSize="14"
+                                FontFamily="Segoe UI Symbol"
+                                Content="&#x1F527;"
+                                Foreground="{StaticResource AccentBrush}"
+                                Margin="0,0,0,6"
+                                Click="SettingsSidebarToggleButton_Click"
+                                ToolTip="Open settings" />
+                        <Button x:Name="SidebarToggleButton"
+                                Style="{StaticResource GhostButton}"
+                                Width="22" Height="42" Padding="0"
+                                FontSize="11"
+                                Content="&#x276E;"
+                                Foreground="{StaticResource AccentBrush}"
+                                Click="SidebarToggleButton_Click"
+                                ToolTip="Collapse sidebar" />
+                    </StackPanel>
                 </Grid>
 
                 <!-- RIGHT PANEL: Terminal -->
@@ -905,7 +1310,11 @@
 
                             <Grid>
                                 <!-- Terminal WebView -->
-                                <wv2:WebView2 x:Name="TerminalWebView" />
+                                <wv2:WebView2 x:Name="TerminalWebView"
+                                              AllowDrop="True"
+                                              AllowExternalDrop="False"
+                                              PreviewDragOver="SessionDropHost_PreviewDragOver"
+                                              Drop="SessionDropHost_Drop" />
 
                                 <!-- Welcome Screen -->
                                 <StackPanel x:Name="WelcomePanel" VerticalAlignment="Center"
@@ -1011,269 +1420,6 @@
                     </Grid>
                 </Border>
 
-                <!-- RIGHT TOOLS SPLITTER -->
-                <GridSplitter x:Name="RightSidebarSplitter" Grid.Column="3" Width="3"
-                              HorizontalAlignment="Center" VerticalAlignment="Stretch"
-                              Background="{StaticResource Border1Brush}"
-                              Cursor="SizeWE" />
-
-                <!-- RIGHT SIDEBAR -->
-                <Border Grid.Column="4" Background="{StaticResource Surface1Brush}"
-                        BorderThickness="1,0,0,0" BorderBrush="{StaticResource Border1Brush}">
-                    <DockPanel x:Name="RightSidebarContent">
-                        <Border DockPanel.Dock="Top" Padding="8,8,8,6"
-                                BorderThickness="0,0,0,1"
-                                BorderBrush="{StaticResource Border1Brush}"
-                                Background="{StaticResource Surface2Brush}">
-                            <StackPanel Orientation="Horizontal">
-                                <Button x:Name="RightExplorerButton"
-                                        Content="资源管理器"
-                                        Style="{StaticResource GhostButton}"
-                                        Margin="0,0,6,0"
-                                        Padding="10,4"
-                                        Click="RightExplorerButton_Click" />
-                                <Button x:Name="RightQuickCommandsButton"
-                                        Content="快捷指令"
-                                        Style="{StaticResource GhostButton}"
-                                        Margin="0,0,6,0"
-                                        Padding="10,4"
-                                        Click="RightQuickCommandsButton_Click" />
-                                <Button x:Name="RightRecentInputsButton"
-                                        Content="历史指令"
-                                        Style="{StaticResource GhostButton}"
-                                        Padding="10,4"
-                                        Click="RightRecentInputsButton_Click" />
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Explorer -->
-                        <Grid x:Name="ExplorerPanel" Margin="8" Visibility="Visible">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
-
-                            <Grid Grid.Row="0" Margin="0,0,0,6">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBox x:Name="ExplorerRootPathBox"
-                                         Grid.Column="0"
-                                         Text="{Binding ExplorerRootPath, UpdateSourceTrigger=PropertyChanged}"
-                                         Style="{StaticResource DarkTextBox}"
-                                         FontSize="11.5" />
-                                <Button x:Name="ExplorerReloadButton"
-                                        Grid.Column="1"
-                                        Content="加载"
-                                        Style="{StaticResource GhostButton}"
-                                        Margin="6,0,0,0"
-                                        Padding="10,4"
-                                        Click="ExplorerReloadButton_Click" />
-                            </Grid>
-
-                            <TextBlock x:Name="ExplorerStatusText"
-                                       Grid.Row="1"
-                                       Text="{Binding ExplorerStatus}"
-                                       Foreground="{StaticResource Text3Brush}"
-                                       FontSize="10"
-                                       Margin="2,0,0,6"
-                                       TextWrapping="Wrap" />
-
-                            <TreeView x:Name="ExplorerTree"
-                                      Grid.Row="2"
-                                      ItemsSource="{Binding ExplorerRootNodes}"
-                                      Background="{StaticResource Surface0Brush}"
-                                      BorderBrush="{StaticResource Border1Brush}"
-                                      BorderThickness="1"
-                                      Foreground="{StaticResource Text2Brush}"
-                                      Padding="4"
-                                      PreviewMouseLeftButtonDown="ExplorerTree_PreviewMouseLeftButtonDown"
-                                      PreviewMouseMove="ExplorerTree_PreviewMouseMove"
-                                      MouseDoubleClick="ExplorerTree_MouseDoubleClick">
-                                <TreeView.ItemContainerStyle>
-                                    <Style TargetType="TreeViewItem">
-                                        <Setter Property="Foreground" Value="{StaticResource Text2Brush}" />
-                                        <EventSetter Event="Expanded" Handler="ExplorerTreeItem_Expanded" />
-                                    </Style>
-                                </TreeView.ItemContainerStyle>
-                            </TreeView>
-                        </Grid>
-
-                        <!-- Quick Commands -->
-                        <Grid x:Name="QuickCommandsPanel" Margin="8" Visibility="Collapsed">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-
-                            <ListBox x:Name="QuickCommandsListBox"
-                                     Grid.Row="0"
-                                     ItemsSource="{Binding QuickCommands}"
-                                     SelectedItem="{Binding SelectedQuickCommand, Mode=TwoWay}"
-                                     Background="{StaticResource Surface0Brush}"
-                                     BorderBrush="{StaticResource Border1Brush}"
-                                     BorderThickness="1"
-                                     Foreground="{StaticResource Text2Brush}"
-                                     Padding="6,4"
-                                     MouseDoubleClick="QuickCommandsListBox_MouseDoubleClick">
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Background="{StaticResource Surface2Brush}"
-                                                BorderBrush="{StaticResource Border1Brush}"
-                                                BorderThickness="1"
-                                                CornerRadius="6"
-                                                Margin="0,0,0,6"
-                                                Padding="8,6">
-                                            <StackPanel>
-                                                <TextBlock Text="{Binding Name}"
-                                                           Foreground="{StaticResource Text1Brush}"
-                                                           FontSize="12"
-                                                           FontWeight="SemiBold" />
-                                                <TextBlock Text="{Binding Description}"
-                                                           Foreground="{StaticResource Text3Brush}"
-                                                           FontSize="10.5"
-                                                           Margin="0,2,0,4"
-                                                           TextWrapping="Wrap" />
-                                                <TextBlock Text="{Binding CommandText}"
-                                                           Foreground="{StaticResource Text2Brush}"
-                                                           FontFamily="{StaticResource MonoFont}"
-                                                           FontSize="10.5"
-                                                           TextWrapping="Wrap" />
-                                            </StackPanel>
-                                        </Border>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
-
-                            <Border Grid.Row="1"
-                                    Margin="0,8,0,0"
-                                    Background="{StaticResource Surface2Brush}"
-                                    BorderBrush="{StaticResource Border1Brush}"
-                                    BorderThickness="1"
-                                    CornerRadius="8"
-                                    Padding="8">
-                                <StackPanel>
-                                    <TextBlock Text="{Binding QuickCommandEditorTitle}"
-                                               Foreground="{StaticResource Text2Brush}"
-                                               FontSize="11"
-                                               Margin="0,0,0,6" />
-                                    <TextBox Text="{Binding QuickCommandEditName, UpdateSourceTrigger=PropertyChanged}"
-                                             Style="{StaticResource DarkTextBox}"
-                                             FontSize="11.5"
-                                             Margin="0,0,0,6" />
-                                    <TextBox Text="{Binding QuickCommandEditCommand, UpdateSourceTrigger=PropertyChanged}"
-                                             Style="{StaticResource DarkTextBox}"
-                                             FontSize="11.5"
-                                             Margin="0,0,0,6" />
-                                    <TextBox Text="{Binding QuickCommandEditDescription, UpdateSourceTrigger=PropertyChanged}"
-                                             Style="{StaticResource DarkTextBox}"
-                                             FontSize="11"
-                                             Margin="0,0,0,8" />
-                                    <WrapPanel>
-                                        <Button x:Name="QuickCommandInsertButton"
-                                                Content="插入"
-                                                Style="{StaticResource GhostButton}"
-                                                Padding="10,4"
-                                                Margin="0,0,6,6"
-                                                IsEnabled="{Binding HasActiveSessionInputTarget}"
-                                                Click="QuickCommandInsertButton_Click" />
-                                        <Button x:Name="QuickCommandRunButton"
-                                                Content="运行"
-                                                Style="{StaticResource AccentButton}"
-                                                Padding="10,4"
-                                                Margin="0,0,6,6"
-                                                IsEnabled="{Binding HasActiveSessionInputTarget}"
-                                                Click="QuickCommandRunButton_Click" />
-                                        <Button x:Name="QuickCommandSaveButton"
-                                                Content="保存"
-                                                Style="{StaticResource GhostButton}"
-                                                Padding="10,4"
-                                                Margin="0,0,6,6"
-                                                Click="QuickCommandSaveButton_Click" />
-                                        <Button x:Name="QuickCommandNewButton"
-                                                Content="新建"
-                                                Style="{StaticResource GhostButton}"
-                                                Padding="10,4"
-                                                Margin="0,0,6,6"
-                                                Click="QuickCommandNewButton_Click" />
-                                        <Button x:Name="QuickCommandDeleteButton"
-                                                Content="删除"
-                                                Style="{StaticResource DangerButton}"
-                                                Padding="10,4"
-                                                Margin="0,0,0,6"
-                                                Click="QuickCommandDeleteButton_Click" />
-                                    </WrapPanel>
-                                </StackPanel>
-                            </Border>
-                        </Grid>
-
-                        <!-- Recent Commands -->
-                        <Grid x:Name="RecentInputsPanel" Margin="8" Visibility="Collapsed">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-
-                            <TextBlock x:Name="RecentInputsHintText"
-                                       Grid.Row="0"
-                                       Text="保存当前PC用户最近20条输入"
-                                       Foreground="{StaticResource Text3Brush}"
-                                       FontSize="10.5"
-                                       Margin="2,0,0,6" />
-
-                            <ListBox x:Name="RecentInputsListBox"
-                                     Grid.Row="1"
-                                     ItemsSource="{Binding RecentInputs}"
-                                     Background="{StaticResource Surface0Brush}"
-                                     BorderBrush="{StaticResource Border1Brush}"
-                                     BorderThickness="1"
-                                     Foreground="{StaticResource Text2Brush}"
-                                     FontFamily="{StaticResource MonoFont}"
-                                     FontSize="11"
-                                     Padding="6,4"
-                                     MouseDoubleClick="RecentInputsListBox_MouseDoubleClick" />
-
-                            <WrapPanel Grid.Row="2" Margin="0,8,0,0">
-                                <Button x:Name="RecentInputInsertButton"
-                                        Content="插入"
-                                        Style="{StaticResource GhostButton}"
-                                        Padding="10,4"
-                                        Margin="0,0,6,0"
-                                        IsEnabled="{Binding HasActiveSessionInputTarget}"
-                                        Click="RecentInputInsertButton_Click" />
-                                <Button x:Name="RecentInputRunButton"
-                                        Content="运行"
-                                        Style="{StaticResource AccentButton}"
-                                        Padding="10,4"
-                                        Margin="0,0,6,0"
-                                        IsEnabled="{Binding HasActiveSessionInputTarget}"
-                                        Click="RecentInputRunButton_Click" />
-                                <Button x:Name="RecentInputClearButton"
-                                        Content="清空"
-                                        Style="{StaticResource DangerButton}"
-                                        Padding="10,4"
-                                        Click="RecentInputClearButton_Click" />
-                            </WrapPanel>
-                        </Grid>
-                    </DockPanel>
-                </Border>
-
-                <!-- Right sidebar collapse toggle -->
-                <Grid Grid.Column="3" Grid.ColumnSpan="2"
-                      HorizontalAlignment="Left" VerticalAlignment="Center"
-                      Width="22" Height="48" Margin="-11,0,0,0"
-                      Panel.ZIndex="5">
-                    <Button x:Name="RightSidebarToggleButton"
-                            Style="{StaticResource GhostButton}"
-                            Width="20" Height="44" Padding="0"
-                            FontSize="11"
-                            Content="&#x276F;"
-                            Click="RightSidebarToggleButton_Click"
-                            ToolTip="Collapse sidebar" />
-                </Grid>
             </Grid>
 
             <!-- ============================================ -->
