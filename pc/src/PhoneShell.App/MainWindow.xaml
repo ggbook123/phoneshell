@@ -344,8 +344,6 @@
                         <TextBlock Text="PhoneShell" FontSize="13" FontWeight="SemiBold"
                                    Foreground="{StaticResource Text1Brush}" VerticalAlignment="Center"
                                    FontFamily="{StaticResource DisplayFont}" />
-                        <TextBlock Text="v0.0.8" FontSize="10" Foreground="{StaticResource Text3Brush}"
-                                   VerticalAlignment="Center" Margin="8,1,0,0" />
                     </StackPanel>
                 </DockPanel>
             </Border>
@@ -1199,8 +1197,8 @@
                 <!-- Sidebar + panel toggles -->
                 <Grid Grid.Column="0" Grid.ColumnSpan="2"
                       HorizontalAlignment="Right" VerticalAlignment="Center"
-                      Width="26" Height="138" Margin="0,0,-11,0"
-                      Panel.ZIndex="5">
+                      Width="26" Height="138" Margin="0,0,0,0"
+                      Panel.ZIndex="999">
                     <StackPanel Orientation="Vertical" HorizontalAlignment="Center" VerticalAlignment="Center">
                         <Button x:Name="RightSidebarToggleButton"
                                 Style="{StaticResource GhostButton}"
