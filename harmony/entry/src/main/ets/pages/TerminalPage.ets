@@ -131,8 +131,10 @@ struct TerminalPage {
   private historySessionId: string = '';
   private historyDeviceId: string = '';
   private flushTimer: number = -1;
-  private quickPanelSubmitTimers: Array<number> = [];
+  private quickPanelPendingTimers: Array<number> = [];
   private quickPanelSubmitDelayMs: number = 50;
+  private quickPanelSlashCharDelayMs: number = 12;
+  private quickPanelSlashSubmitDelayMs: number = 120;
   private lastReportedCols: number = 0;
   private lastReportedRows: number = 0;
   private viewedSessionId: string = '';
@@ -375,11 +377,47 @@ struct TerminalPage {
     this.keyboardHeight = 0;
   }
 
-  private clearQuickPanelSubmitTimers(): void {
-    for (let i: number = 0; i < this.quickPanelSubmitTimers.length; i++) {
-      clearTimeout(this.quickPanelSubmitTimers[i]);
+  private removeQuickPanelPendingTimer(timerId: number): void {
+    let nextTimers: Array<number> = [];
+    for (let i: number = 0; i < this.quickPanelPendingTimers.length; i++) {
+      if (this.quickPanelPendingTimers[i] !== timerId) {
+        nextTimers.push(this.quickPanelPendingTimers[i]);
+      }
     }
-    this.quickPanelSubmitTimers = [];
+    this.quickPanelPendingTimers = nextTimers;
+  }
+
+  private scheduleQuickPanelPendingTimer(delayMs: number, action: () => void): void {
+    const timerId: number = setTimeout(() => {
+      this.removeQuickPanelPendingTimer(timerId);
+      action();
+    }, delayMs) as number;
+    this.quickPanelPendingTimers.push(timerId);
+  }
+
+  private clearQuickPanelPendingTimers(): void {
+    for (let i: number = 0; i < this.quickPanelPendingTimers.length; i++) {
+      clearTimeout(this.quickPanelPendingTimers[i]);
+    }
+    this.quickPanelPendingTimers = [];
+  }
+
+  private startsWithSlashCommand(text: string): boolean {
+    for (let i: number = 0; i < text.length; i++) {
+      const ch: string = text.substring(i, i + 1);
+      if (ch === ' ' || ch === '\t') {
+        continue;
+      }
+      return ch === '/';
+    }
+    return false;
+  }
+
+  private scheduleQuickPanelSubmitEnter(targetSessionId: string, delayMs: number): void {
+    this.scheduleQuickPanelPendingTimer(delayMs, () => {
+      ConnectionManager.sendTerminalInput('\r', targetSessionId);
+      this.runTerminalScript('window.phoneShell && window.phoneShell.focus();');
+    });
   }
 
   private getShortcutBarOffset(): number {
@@ -535,7 +573,7 @@ struct TerminalPage {
       clearTimeout(this.flushTimer);
       this.flushTimer = -1;
     }
-    this.clearQuickPanelSubmitTimers();
+    this.clearQuickPanelPendingTimers();
 
     if (this.stateListenerId !== -1) {
       ConnectionManager.removeOnStateChange(this.stateListenerId);
@@ -1133,21 +1171,25 @@ struct TerminalPage {
       return;
     }
 
-    // Run behavior: send text first, then submit Enter after a short delay.
+    // Run behavior:
+    // - Normal input: send raw text, then Enter.
+    // - Slash command (/xxx): send char by char, then Enter. This avoids
+    //   occasional "text + newline" behavior in TUI/CLI slash-command inputs.
     const targetSessionId: string = this.normalizeString(ConnectionManager.getActiveSessionId());
-    ConnectionManager.sendTerminalInput(raw, targetSessionId);
-    const submitTimer: number = setTimeout(() => {
-      let nextTimers: Array<number> = [];
-      for (let i: number = 0; i < this.quickPanelSubmitTimers.length; i++) {
-        if (this.quickPanelSubmitTimers[i] !== submitTimer) {
-          nextTimers.push(this.quickPanelSubmitTimers[i]);
-        }
+    if (this.startsWithSlashCommand(raw)) {
+      for (let i: number = 0; i < raw.length; i++) {
+        const currentChar: string = raw.substring(i, i + 1);
+        const charDelayMs: number = i * this.quickPanelSlashCharDelayMs;
+        this.scheduleQuickPanelPendingTimer(charDelayMs, () => {
+          ConnectionManager.sendTerminalInput(currentChar, targetSessionId);
+        });
       }
-      this.quickPanelSubmitTimers = nextTimers;
-      ConnectionManager.sendTerminalInput('\r', targetSessionId);
-      this.runTerminalScript('window.phoneShell && window.phoneShell.focus();');
-    }, this.quickPanelSubmitDelayMs) as number;
-    this.quickPanelSubmitTimers.push(submitTimer);
+      const submitDelayMs: number = (raw.length * this.quickPanelSlashCharDelayMs) + this.quickPanelSlashSubmitDelayMs;
+      this.scheduleQuickPanelSubmitEnter(targetSessionId, submitDelayMs);
+    } else {
+      ConnectionManager.sendTerminalInput(raw, targetSessionId);
+      this.scheduleQuickPanelSubmitEnter(targetSessionId, this.quickPanelSubmitDelayMs);
+    }
 
     const deviceId: string = this.getQuickPanelTargetDeviceId();
     if (deviceId.length > 0) {
