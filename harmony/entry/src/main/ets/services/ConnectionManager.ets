@@ -43,6 +43,18 @@ class SessionRenameMsg {
   title: string = '';
 }
 
+class QuickPanelSyncRequestMsg {
+  type: string = 'quickpanel.sync.request';
+  deviceId: string = '';
+  explorerPath: string = '';
+}
+
+class QuickPanelRecentAppendMsg {
+  type: string = 'quickpanel.recent.append';
+  deviceId: string = '';
+  input: string = '';
+}
+
 class TerminalOpenMsg {
   type: string = 'terminal.open';
   deviceId: string = '';
@@ -626,6 +638,27 @@ class ConnectionManagerClass {
     msg.deviceId = deviceId;
     msg.sessionId = sessionId;
     msg.title = trimmed;
+    conn.send(JSON.stringify(msg));
+  }
+
+  requestQuickPanelSync(deviceId: string, explorerPath: string = ''): void {
+    if (deviceId.length === 0) return;
+    const conn: DeviceConnection | null = this.getConnectionForDevice(deviceId);
+    if (conn === null) return;
+    let msg: QuickPanelSyncRequestMsg = new QuickPanelSyncRequestMsg();
+    msg.deviceId = deviceId;
+    msg.explorerPath = explorerPath;
+    conn.send(JSON.stringify(msg));
+  }
+
+  appendQuickPanelRecentInput(deviceId: string, input: string): void {
+    const trimmed: string = input.trim();
+    if (deviceId.length === 0 || trimmed.length === 0) return;
+    const conn: DeviceConnection | null = this.getConnectionForDevice(deviceId);
+    if (conn === null) return;
+    let msg: QuickPanelRecentAppendMsg = new QuickPanelRecentAppendMsg();
+    msg.deviceId = deviceId;
+    msg.input = trimmed;
     conn.send(JSON.stringify(msg));
   }
 

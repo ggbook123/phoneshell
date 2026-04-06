@@ -2134,6 +2134,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _relayServer.LocalTerminalSnapshotProvider = CaptureTabTerminalViewAsync;
                 _relayServer.LocalTerminalSizeProvider = GetTabTerminalSize;
                 _relayServer.LocalSessionListProvider = GetLocalSessionList;
+                _relayServer.LocalQuickPanelSyncProvider = BuildQuickPanelSyncSnapshot;
+                _relayServer.LocalRecentInputAppendRequested += AppendRecentInputFromMobile;
                 _relayServer.GroupMemberListChanged += OnGroupMemberListChanged;
                 _relayServer.RemoteSessionListReceived += OnRemoteSessionListReceived;
                 _relayServer.RemoteTerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
@@ -2209,7 +2211,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     Os = "Windows",
                     AvailableShells = AvailableShells.Select(s => s.Id).ToList(),
                     GroupSecret = GroupSecret,
-                    LocalSessionListProvider = GetLocalSessionList
+                    LocalSessionListProvider = GetLocalSessionList,
+                    LocalQuickPanelSyncProvider = BuildQuickPanelSyncSnapshot,
+                    LocalRecentInputAppendRequested = AppendRecentInputFromMobile
                 };
                 _relayClient.Log += OnNetworkLog;
                 _relayClient.ConnectionStateChanged += OnClientConnectionStateChanged;
@@ -2264,6 +2268,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _relayServer.LocalTerminalSnapshotProvider = CaptureTabTerminalViewAsync;
                 _relayServer.LocalTerminalSizeProvider = GetTabTerminalSize;
                 _relayServer.LocalSessionListProvider = GetLocalSessionList;
+                _relayServer.LocalQuickPanelSyncProvider = BuildQuickPanelSyncSnapshot;
+                _relayServer.LocalRecentInputAppendRequested += AppendRecentInputFromMobile;
                 _relayServer.GroupMemberListChanged += OnGroupMemberListChanged;
                 _relayServer.RemoteSessionListReceived += OnRemoteSessionListReceived;
                 _relayServer.RemoteTerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
@@ -2385,6 +2391,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _relayServer.LocalTerminalSnapshotProvider = null;
             _relayServer.LocalTerminalSizeProvider = null;
             _relayServer.LocalSessionListProvider = null;
+            _relayServer.LocalQuickPanelSyncProvider = null;
+            _relayServer.LocalRecentInputAppendRequested -= AppendRecentInputFromMobile;
             _relayServer.GroupMemberListChanged -= OnGroupMemberListChanged;
             _relayServer.RemoteSessionListReceived -= OnRemoteSessionListReceived;
             _relayServer.RemoteTerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
@@ -2422,6 +2430,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _relayClient.DeviceKicked -= OnDeviceKicked;
             _relayClient.GroupDissolved -= OnGroupDissolved;
             _relayClient.PanelDisconnected -= OnPanelDisconnected;
+            _relayClient.LocalQuickPanelSyncProvider = null;
+            _relayClient.LocalRecentInputAppendRequested = null;
             _relayClient.Dispose();
             _relayClient = null;
         }
@@ -3850,6 +3860,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _relayServer.LocalTerminalSnapshotProvider = null;
                 _relayServer.LocalTerminalSizeProvider = null;
                 _relayServer.LocalSessionListProvider = null;
+                _relayServer.LocalQuickPanelSyncProvider = null;
+                _relayServer.LocalRecentInputAppendRequested -= AppendRecentInputFromMobile;
                 _relayServer.GroupMemberListChanged -= OnGroupMemberListChanged;
                 _relayServer.RemoteTerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
                 _relayServer.RemoteTerminalOutputReceived -= OnRemoteTerminalOutputReceived;
@@ -3872,7 +3884,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 Os = "Windows",
                 AvailableShells = AvailableShells.Select(s => s.Id).ToList(),
                 InviteCode = inviteCode,
-                LocalSessionListProvider = GetLocalSessionList
+                LocalSessionListProvider = GetLocalSessionList,
+                LocalQuickPanelSyncProvider = BuildQuickPanelSyncSnapshot,
+                LocalRecentInputAppendRequested = AppendRecentInputFromMobile
             };
             _relayClient.Log += OnNetworkLog;
             _relayClient.ConnectionStateChanged += OnClientConnectionStateChanged;

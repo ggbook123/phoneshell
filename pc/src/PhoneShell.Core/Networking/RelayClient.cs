@@ -113,6 +113,15 @@ public sealed class RelayClient : IDisposable
     /// <summary>Provides local session list when a remote client requests it.</summary>
     public Func<List<SessionInfo>>? LocalSessionListProvider { get; set; }
 
+    /// <summary>Provides quick panel snapshot when a remote client requests it.</summary>
+    public Func<string, QuickPanelSyncMessage>? LocalQuickPanelSyncProvider { get; set; }
+
+    /// <summary>Raised when a quick panel sync payload is received.</summary>
+    public event Action<QuickPanelSyncMessage>? QuickPanelSyncReceived;
+
+    /// <summary>Raised when a remote client appends one recent-input item on this device.</summary>
+    public Action<string>? LocalRecentInputAppendRequested;
+
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
     /// <summary>
@@ -260,6 +269,31 @@ public sealed class RelayClient : IDisposable
             DeviceId = deviceId,
             SessionId = sessionId,
             Title = trimmedTitle
+        });
+        await SendAsync(msg);
+    }
+
+    /// <summary>Push a quick panel snapshot to the relay server.</summary>
+    public async Task SendQuickPanelSyncAsync(QuickPanelSyncMessage snapshot)
+    {
+        if (_ws?.State != WebSocketState.Open) return;
+        if (snapshot is null || string.IsNullOrWhiteSpace(snapshot.DeviceId))
+            return;
+
+        await SendAsync(MessageSerializer.Serialize(snapshot));
+    }
+
+    /// <summary>Append one recent-input item to a target device via relay.</summary>
+    public async Task SendQuickPanelRecentAppendAsync(string deviceId, string input)
+    {
+        if (_ws?.State != WebSocketState.Open) return;
+        if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(input))
+            return;
+
+        var msg = MessageSerializer.Serialize(new QuickPanelRecentAppendMessage
+        {
+            DeviceId = deviceId,
+            Input = input
         });
         await SendAsync(msg);
     }
@@ -507,6 +541,40 @@ public sealed class RelayClient : IDisposable
                 {
                     var sessions = LocalSessionListProvider?.Invoke() ?? new List<SessionInfo>();
                     _ = SendSessionListAsync(DeviceId, sessions);
+                }
+                break;
+
+            case QuickPanelSyncRequestMessage syncReq:
+                if (string.Equals(syncReq.DeviceId, DeviceId, StringComparison.Ordinal))
+                {
+                    var snapshot = LocalQuickPanelSyncProvider?.Invoke(syncReq.ExplorerPath ?? string.Empty);
+                    if (snapshot is not null)
+                    {
+                        var response = new QuickPanelSyncMessage
+                        {
+                            DeviceId = DeviceId,
+                            ExplorerPath = snapshot.ExplorerPath,
+                            ExplorerVirtualRoot = snapshot.ExplorerVirtualRoot,
+                            ExplorerEntries = snapshot.ExplorerEntries ?? new List<QuickPanelExplorerEntry>(),
+                            QuickCommandFolders = snapshot.QuickCommandFolders ?? new List<QuickPanelFolderInfo>(),
+                            QuickCommands = snapshot.QuickCommands ?? new List<QuickPanelCommandInfo>(),
+                            RecentInputs = snapshot.RecentInputs ?? new List<string>(),
+                            UpdatedAtUnixMs = snapshot.UpdatedAtUnixMs
+                        };
+                        _ = SendQuickPanelSyncAsync(response);
+                    }
+                }
+                break;
+
+            case QuickPanelSyncMessage sync:
+                QuickPanelSyncReceived?.Invoke(sync);
+                break;
+
+            case QuickPanelRecentAppendMessage appendRecent:
+                if (string.Equals(appendRecent.DeviceId, DeviceId, StringComparison.Ordinal) &&
+                    !string.IsNullOrWhiteSpace(appendRecent.Input))
+                {
+                    LocalRecentInputAppendRequested?.Invoke(appendRecent.Input);
                 }
                 break;
 

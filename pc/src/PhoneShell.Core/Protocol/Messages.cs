@@ -73,6 +73,58 @@ public sealed class SessionRenameMessage
     public string Title { get; init; } = string.Empty;
 }
 
+// --- Quick panel sync ---
+
+public sealed class QuickPanelSyncRequestMessage
+{
+    public string Type => "quickpanel.sync.request";
+    public string DeviceId { get; init; } = string.Empty;
+    public string ExplorerPath { get; init; } = string.Empty;
+}
+
+public sealed class QuickPanelSyncMessage
+{
+    public string Type => "quickpanel.sync";
+    public string DeviceId { get; init; } = string.Empty;
+    public string ExplorerPath { get; init; } = string.Empty;
+    public bool ExplorerVirtualRoot { get; init; }
+    public List<QuickPanelExplorerEntry> ExplorerEntries { get; init; } = new();
+    public List<QuickPanelFolderInfo> QuickCommandFolders { get; init; } = new();
+    public List<QuickPanelCommandInfo> QuickCommands { get; init; } = new();
+    public List<string> RecentInputs { get; init; } = new();
+    public long UpdatedAtUnixMs { get; init; }
+}
+
+public sealed class QuickPanelExplorerEntry
+{
+    public string Name { get; init; } = string.Empty;
+    public string FullPath { get; init; } = string.Empty;
+    public bool IsDirectory { get; init; }
+    public bool IsParent { get; init; }
+}
+
+public sealed class QuickPanelFolderInfo
+{
+    public string Id { get; init; } = string.Empty;
+    public string Name { get; init; } = string.Empty;
+}
+
+public sealed class QuickPanelCommandInfo
+{
+    public string Id { get; init; } = string.Empty;
+    public string FolderId { get; init; } = string.Empty;
+    public string Name { get; init; } = string.Empty;
+    public string CommandText { get; init; } = string.Empty;
+    public string Description { get; init; } = string.Empty;
+}
+
+public sealed class QuickPanelRecentAppendMessage
+{
+    public string Type => "quickpanel.recent.append";
+    public string DeviceId { get; init; } = string.Empty;
+    public string Input { get; init; } = string.Empty;
+}
+
 // --- Terminal session management ---
 
 public sealed class TerminalOpenMessage

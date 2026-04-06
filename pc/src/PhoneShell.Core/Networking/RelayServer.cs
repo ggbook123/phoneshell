@@ -356,6 +356,17 @@ public sealed class RelayServer : IDisposable
     public Func<List<Protocol.SessionInfo>>? LocalSessionListProvider { get; set; }
 
     /// <summary>
+    /// Provides quick panel data (explorer, quick commands, recent inputs) for local device.
+    /// Input argument is requested explorer path (empty means current/default path).
+    /// </summary>
+    public Func<string, QuickPanelSyncMessage>? LocalQuickPanelSyncProvider { get; set; }
+
+    /// <summary>
+    /// Raised when a remote client requests appending one recent input entry on local device.
+    /// </summary>
+    public Action<string>? LocalRecentInputAppendRequested;
+
+    /// <summary>
     /// Event raised when a remote device has opened a terminal in response to our request.
     /// Used by server-mode PC to create a remote tab.
     /// </summary>
@@ -776,6 +787,35 @@ public sealed class RelayServer : IDisposable
                 client.RegisteredDeviceId = reg.DeviceId;
                 NotifyDeviceListChanged();
                 Log?.Invoke($"Device registered: {reg.DisplayName} ({reg.DeviceId}) from {client.ClientId}");
+
+                // Push one quick-panel sync snapshot after device registers (best effort).
+                if (LocalQuickPanelSyncProvider is not null)
+                {
+                    try
+                    {
+                        var localDeviceId = _devices.Values.FirstOrDefault(d => d.IsLocal)?.DeviceId ?? string.Empty;
+                        if (!string.IsNullOrWhiteSpace(localDeviceId))
+                        {
+                            var snapshot = LocalQuickPanelSyncProvider(string.Empty);
+                            var response = new QuickPanelSyncMessage
+                            {
+                                DeviceId = localDeviceId,
+                                ExplorerPath = snapshot.ExplorerPath,
+                                ExplorerVirtualRoot = snapshot.ExplorerVirtualRoot,
+                                ExplorerEntries = snapshot.ExplorerEntries ?? new List<QuickPanelExplorerEntry>(),
+                                QuickCommandFolders = snapshot.QuickCommandFolders ?? new List<QuickPanelFolderInfo>(),
+                                QuickCommands = snapshot.QuickCommands ?? new List<QuickPanelCommandInfo>(),
+                                RecentInputs = snapshot.RecentInputs ?? new List<string>(),
+                                UpdatedAtUnixMs = snapshot.UpdatedAtUnixMs
+                            };
+                            await SendAsync(client, MessageSerializer.Serialize(response));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log?.Invoke($"Initial quick panel push failed: {ex.Message}");
+                    }
+                }
                 break;
 
             case DeviceListRequestMessage:
@@ -829,6 +869,26 @@ public sealed class RelayServer : IDisposable
                         await SendAsync(renameClient, json);
                     }
                 }
+                break;
+
+            case QuickPanelSyncRequestMessage syncReq:
+                await HandleQuickPanelSyncRequest(client, syncReq, json);
+                break;
+
+            case QuickPanelSyncMessage sync:
+                // Forward quick panel sync payload to clients currently subscribed to this device.
+                foreach (var c in _clients.Values)
+                {
+                    if (c.ClientId != client.ClientId &&
+                        string.Equals(c.SubscribedDeviceId, sync.DeviceId, StringComparison.Ordinal))
+                    {
+                        await SendAsync(c, json);
+                    }
+                }
+                break;
+
+            case QuickPanelRecentAppendMessage appendRecent:
+                await HandleQuickPanelRecentAppend(client, appendRecent, json);
                 break;
 
             case TerminalInputMessage input:
@@ -2754,6 +2814,102 @@ public sealed class RelayServer : IDisposable
             HasMore = page.HasMore
         };
         await SendAsync(client, MessageSerializer.Serialize(response));
+    }
+
+    private async Task HandleQuickPanelSyncRequest(ConnectedClient client, QuickPanelSyncRequestMessage req, string rawJson)
+    {
+        var deviceId = req.DeviceId?.Trim() ?? string.Empty;
+        if (deviceId.Length == 0)
+            return;
+
+        client.SubscribedDeviceId = deviceId;
+        client.SubscribedSessionId = null;
+
+        if (!_devices.TryGetValue(deviceId, out var targetDevice))
+            return;
+
+        if (targetDevice.IsLocal)
+        {
+            if (LocalQuickPanelSyncProvider is null)
+            {
+                await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+                {
+                    Code = "quickpanel.sync.unavailable",
+                    Message = "Quick panel sync provider unavailable."
+                }));
+                return;
+            }
+
+            try
+            {
+                var snapshot = LocalQuickPanelSyncProvider(req.ExplorerPath ?? string.Empty);
+                if (snapshot is null)
+                    return;
+
+                var response = new QuickPanelSyncMessage
+                {
+                    DeviceId = deviceId,
+                    ExplorerPath = snapshot.ExplorerPath,
+                    ExplorerVirtualRoot = snapshot.ExplorerVirtualRoot,
+                    ExplorerEntries = snapshot.ExplorerEntries ?? new List<QuickPanelExplorerEntry>(),
+                    QuickCommandFolders = snapshot.QuickCommandFolders ?? new List<QuickPanelFolderInfo>(),
+                    QuickCommands = snapshot.QuickCommands ?? new List<QuickPanelCommandInfo>(),
+                    RecentInputs = snapshot.RecentInputs ?? new List<string>(),
+                    UpdatedAtUnixMs = snapshot.UpdatedAtUnixMs
+                };
+
+                await SendAsync(client, MessageSerializer.Serialize(response));
+            }
+            catch (Exception ex)
+            {
+                Log?.Invoke($"Quick panel sync generation failed: {ex.Message}");
+                await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
+                {
+                    Code = "quickpanel.sync.failed",
+                    Message = ex.Message
+                }));
+            }
+            return;
+        }
+
+        if (targetDevice.ClientId is not null &&
+            _clients.TryGetValue(targetDevice.ClientId, out var targetClient))
+        {
+            await SendAsync(targetClient, rawJson);
+        }
+    }
+
+    private async Task HandleQuickPanelRecentAppend(
+        ConnectedClient client,
+        QuickPanelRecentAppendMessage appendRecent,
+        string rawJson)
+    {
+        var deviceId = appendRecent.DeviceId?.Trim() ?? string.Empty;
+        var input = appendRecent.Input ?? string.Empty;
+        if (deviceId.Length == 0 || string.IsNullOrWhiteSpace(input))
+            return;
+
+        if (!_devices.TryGetValue(deviceId, out var targetDevice))
+            return;
+
+        if (targetDevice.IsLocal)
+        {
+            try
+            {
+                LocalRecentInputAppendRequested?.Invoke(input);
+            }
+            catch (Exception ex)
+            {
+                Log?.Invoke($"Append recent input failed: {ex.Message}");
+            }
+            return;
+        }
+
+        if (targetDevice.ClientId is not null &&
+            _clients.TryGetValue(targetDevice.ClientId, out var targetClient))
+        {
+            await SendAsync(targetClient, rawJson);
+        }
     }
 
     private void RemoveHistoryForSession(string deviceId, string sessionId)

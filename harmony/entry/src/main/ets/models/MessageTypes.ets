@@ -64,6 +64,52 @@ export interface SessionRenameMessage extends BaseMessage {
   title: string;
 }
 
+// --- Quick panel sync ---
+
+export interface QuickPanelSyncRequestMessage extends BaseMessage {
+  type: 'quickpanel.sync.request';
+  deviceId: string;
+  explorerPath: string;
+}
+
+export interface QuickPanelExplorerEntry {
+  name: string;
+  fullPath: string;
+  isDirectory: boolean;
+  isParent: boolean;
+}
+
+export interface QuickPanelFolderInfo {
+  id: string;
+  name: string;
+}
+
+export interface QuickPanelCommandInfo {
+  id: string;
+  folderId: string;
+  name: string;
+  commandText: string;
+  description: string;
+}
+
+export interface QuickPanelSyncMessage extends BaseMessage {
+  type: 'quickpanel.sync';
+  deviceId: string;
+  explorerPath: string;
+  explorerVirtualRoot: boolean;
+  explorerEntries: Array<QuickPanelExplorerEntry>;
+  quickCommandFolders: Array<QuickPanelFolderInfo>;
+  quickCommands: Array<QuickPanelCommandInfo>;
+  recentInputs: Array<string>;
+  updatedAtUnixMs: number;
+}
+
+export interface QuickPanelRecentAppendMessage extends BaseMessage {
+  type: 'quickpanel.recent.append';
+  deviceId: string;
+  input: string;
+}
+
 // --- Terminal session management ---
 
 export interface TerminalOpenMessage extends BaseMessage {
@@ -355,6 +401,7 @@ export interface GroupSecretRotateDoneMessage extends BaseMessage {
 export type ServerMessage =
   DeviceListMessage |
   DeviceUnregisterMessage |
+  QuickPanelSyncMessage |
   TerminalOpenedMessage |
   TerminalOutputMessage |
   TerminalClosedMessage |

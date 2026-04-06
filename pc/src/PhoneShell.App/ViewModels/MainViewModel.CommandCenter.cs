@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows.Data;
+using PhoneShell.Core.Protocol;
 
 namespace PhoneShell.ViewModels;
 
@@ -808,6 +809,28 @@ public sealed partial class MainViewModel
             : TryInsertTextIntoActiveSession(input);
     }
 
+    public QuickPanelSyncMessage BuildQuickPanelSyncSnapshot(string requestedExplorerPath)
+    {
+        if (_dispatcher.CheckAccess())
+            return BuildQuickPanelSyncSnapshotCore(requestedExplorerPath);
+
+        return _dispatcher.Invoke(() => BuildQuickPanelSyncSnapshotCore(requestedExplorerPath));
+    }
+
+    public void AppendRecentInputFromMobile(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return;
+
+        if (_dispatcher.CheckAccess())
+        {
+            AddRecentInput(input);
+            return;
+        }
+
+        _dispatcher.Invoke(() => AddRecentInput(input));
+    }
+
     public void ClearRecentInputs()
     {
         RecentInputs.Clear();
@@ -904,6 +927,156 @@ public sealed partial class MainViewModel
             RecentInputs.RemoveAt(RecentInputs.Count - 1);
 
         SaveRecentInputs();
+    }
+
+    private QuickPanelSyncMessage BuildQuickPanelSyncSnapshotCore(string requestedExplorerPath)
+    {
+        var (resolvedPath, isVirtualRoot, entries) = BuildExplorerSnapshot(requestedExplorerPath);
+        var folders = QuickCommandFolders
+            .Select(folder => new QuickPanelFolderInfo
+            {
+                Id = folder.Id,
+                Name = folder.Name
+            })
+            .ToList();
+        var commands = QuickCommands
+            .Select(item => new QuickPanelCommandInfo
+            {
+                Id = item.Id,
+                FolderId = item.CategoryId,
+                Name = item.Name,
+                CommandText = item.CommandText,
+                Description = item.Description
+            })
+            .ToList();
+
+        return new QuickPanelSyncMessage
+        {
+            DeviceId = DeviceId,
+            ExplorerPath = resolvedPath,
+            ExplorerVirtualRoot = isVirtualRoot,
+            ExplorerEntries = entries,
+            QuickCommandFolders = folders,
+            QuickCommands = commands,
+            RecentInputs = RecentInputs.ToList(),
+            UpdatedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+    }
+
+    private (string ResolvedPath, bool IsVirtualRoot, List<QuickPanelExplorerEntry> Entries) BuildExplorerSnapshot(
+        string requestedExplorerPath)
+    {
+        var requested = requestedExplorerPath?.Trim() ?? string.Empty;
+        var candidate = requested.Length > 0
+            ? requested
+            : (ExplorerCurrentPath?.Trim() ?? string.Empty);
+
+        if (string.IsNullOrWhiteSpace(candidate))
+            candidate = ResolveDefaultExplorerRootPath();
+
+        if (IsExplorerVirtualRoot(candidate))
+        {
+            var driveEntries = new List<QuickPanelExplorerEntry>();
+            try
+            {
+                foreach (var drive in DriveInfo.GetDrives().OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase))
+                {
+                    var rootPath = drive.RootDirectory.FullName;
+                    var label = drive.IsReady ? drive.VolumeLabel : string.Empty;
+                    var driveName = drive.Name.TrimEnd('\\');
+                    var display = string.IsNullOrWhiteSpace(label)
+                        ? driveName
+                        : $"{label} ({driveName})";
+
+                    driveEntries.Add(new QuickPanelExplorerEntry
+                    {
+                        Name = display,
+                        FullPath = rootPath,
+                        IsDirectory = true,
+                        IsParent = false
+                    });
+                }
+            }
+            catch
+            {
+                // Best effort.
+            }
+
+            return (ResolveDefaultExplorerRootPath(), true, driveEntries);
+        }
+
+        string resolvedPath;
+        try
+        {
+            resolvedPath = Path.GetFullPath(candidate);
+        }
+        catch
+        {
+            resolvedPath = ResolveDefaultExplorerRootPath();
+            return BuildExplorerSnapshot(resolvedPath);
+        }
+
+        if (!Directory.Exists(resolvedPath))
+        {
+            var fallback = ExplorerCurrentPath?.Trim();
+            if (!string.IsNullOrWhiteSpace(fallback) && !string.Equals(fallback, resolvedPath, StringComparison.OrdinalIgnoreCase))
+                return BuildExplorerSnapshot(fallback);
+
+            return BuildExplorerSnapshot(ResolveDefaultExplorerRootPath());
+        }
+
+        var entries = new List<QuickPanelExplorerEntry>();
+        var parent = Directory.GetParent(resolvedPath)?.FullName;
+        if (!string.IsNullOrWhiteSpace(parent))
+        {
+            entries.Add(new QuickPanelExplorerEntry
+            {
+                Name = "..",
+                FullPath = parent,
+                IsDirectory = true,
+                IsParent = true
+            });
+        }
+
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories(resolvedPath)
+                         .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase))
+            {
+                entries.Add(new QuickPanelExplorerEntry
+                {
+                    Name = Path.GetFileName(dir),
+                    FullPath = dir,
+                    IsDirectory = true,
+                    IsParent = false
+                });
+            }
+        }
+        catch
+        {
+            // Best effort.
+        }
+
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(resolvedPath)
+                         .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase))
+            {
+                entries.Add(new QuickPanelExplorerEntry
+                {
+                    Name = Path.GetFileName(file),
+                    FullPath = file,
+                    IsDirectory = false,
+                    IsParent = false
+                });
+            }
+        }
+        catch
+        {
+            // Best effort.
+        }
+
+        return (resolvedPath, false, entries);
     }
 
     private FileExplorerNode CreateDirectoryNode(string directoryPath)
