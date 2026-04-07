@@ -37,9 +37,11 @@ class ConnectionManager {
   final int _maxBufferedTerminalOutput = 200000;
 
   final Map<int, void Function(List<DeviceInfo>)> _deviceListCallbacks = {};
-  final Map<int, void Function(String, String, String, String, String)> _authRequestCallbacks = {};
+  final Map<int, void Function(String, String, String, String, String)>
+  _authRequestCallbacks = {};
   final Map<int, void Function(DeviceMode)> _modeChangeCallbacks = {};
-  final Map<int, void Function(String, Map<String, dynamic>)> _messageCallbacks = {};
+  final Map<int, void Function(String, Map<String, dynamic>)>
+  _messageCallbacks = {};
   final Map<int, void Function(ConnectionState, String)> _stateCallbacks = {};
   int _nextCallbackId = 1;
 
@@ -81,7 +83,9 @@ class ConnectionManager {
     _deviceListCallbacks.remove(id);
   }
 
-  int addOnAuthRequest(void Function(String, String, String, String, String) callback) {
+  int addOnAuthRequest(
+    void Function(String, String, String, String, String) callback,
+  ) {
     final id = _nextCallbackId++;
     _authRequestCallbacks[id] = callback;
     return id;
@@ -101,7 +105,12 @@ class ConnectionManager {
     _modeChangeCallbacks.remove(id);
   }
 
-  void connectSingle(String wsUrl, String deviceId, String displayName, String httpUrl) {
+  void connectSingle(
+    String wsUrl,
+    String deviceId,
+    String displayName,
+    String httpUrl,
+  ) {
     if (deviceId.isEmpty || wsUrl.isEmpty) return;
 
     if (_singleConnections.containsKey(deviceId)) {
@@ -109,8 +118,12 @@ class ConnectionManager {
     }
 
     final conn = DeviceConnection(deviceId, displayName);
-    final msgId = conn.addOnMessage((type, data) => _handleSingleMessage(deviceId, type, data));
-    final stateId = conn.addOnStateChange((state) => _handleSingleStateChange(deviceId, state));
+    final msgId = conn.addOnMessage(
+      (type, data) => _handleSingleMessage(deviceId, type, data),
+    );
+    final stateId = conn.addOnStateChange(
+      (state) => _handleSingleStateChange(deviceId, state),
+    );
 
     _singleMessageCallbackIds[deviceId] = msgId;
     _singleStateCallbackIds[deviceId] = stateId;
@@ -175,8 +188,12 @@ class ConnectionManager {
     _groupSecret = groupSecret;
 
     final conn = DeviceConnection('group', 'Group Connection');
-    _groupMessageCallbackId = conn.addOnMessage((type, data) => _handleGroupMessage(type, data));
-    _groupStateCallbackId = conn.addOnStateChange((state) => _handleGroupStateChange(state));
+    _groupMessageCallbackId = conn.addOnMessage(
+      (type, data) => _handleGroupMessage(type, data),
+    );
+    _groupStateCallbackId = conn.addOnStateChange(
+      (state) => _handleGroupStateChange(state),
+    );
     _groupConnection = conn;
     _currentMode = DeviceMode.group;
     _emitModeChange(DeviceMode.group);
@@ -214,7 +231,9 @@ class ConnectionManager {
     PreferencesUtil.setString(StorageKeys.groupSecret, '');
 
     if (_currentMode == DeviceMode.group) {
-      _currentMode = _singleConnections.isNotEmpty ? DeviceMode.single : DeviceMode.standalone;
+      _currentMode = _singleConnections.isNotEmpty
+          ? DeviceMode.single
+          : DeviceMode.standalone;
       _emitModeChange(_currentMode);
     }
 
@@ -223,18 +242,26 @@ class ConnectionManager {
 
   void designateRelay(String deviceId) {
     final conn = _singleConnections[deviceId];
-    if (conn == null || conn.connectionState != ConnectionState.connected) return;
+    if (conn == null || conn.connectionState != ConnectionState.connected) {
+      return;
+    }
     final msg = {'type': 'relay.designate'};
     conn.send(jsonEncode(msg));
   }
 
-  Future<void> inviteToGroup(String httpUrl, String inviteCode, String relayUrl,
-      void Function(bool success, String message)? onResult) async {
+  Future<void> inviteToGroup(
+    String httpUrl,
+    String inviteCode,
+    String relayUrl,
+    void Function(bool success, String message)? onResult,
+  ) async {
     if (httpUrl.isEmpty || inviteCode.isEmpty || relayUrl.isEmpty) {
       onResult?.call(false, 'Missing parameters');
       return;
     }
-    final inviteUrl = httpUrl.endsWith('/') ? '${httpUrl}api/invite' : '$httpUrl/api/invite';
+    final inviteUrl = httpUrl.endsWith('/')
+        ? '${httpUrl}api/invite'
+        : '$httpUrl/api/invite';
     final body = jsonEncode({
       'relayUrl': relayUrl,
       'inviteCode': inviteCode,
@@ -277,7 +304,11 @@ class ConnectionManager {
     _groupConnection!.send(jsonEncode(msg));
   }
 
-  void requestGroupServerChangeExternal(String newServerUrl, String groupId, String groupSecret) {
+  void requestGroupServerChangeExternal(
+    String newServerUrl,
+    String groupId,
+    String groupSecret,
+  ) {
     if (newServerUrl.isEmpty || groupId.isEmpty || groupSecret.isEmpty) return;
     if (_groupConnection == null) return;
     if (_groupConnection!.connectionState != ConnectionState.connected) return;
@@ -303,7 +334,11 @@ class ConnectionManager {
     if (deviceId.isEmpty || trimmed.isEmpty) return;
     final conn = _getConnectionForDevice(deviceId);
     if (conn == null) return;
-    final msg = {'type': 'device.settings.update', 'deviceId': deviceId, 'displayName': trimmed};
+    final msg = {
+      'type': 'device.settings.update',
+      'deviceId': deviceId,
+      'displayName': trimmed,
+    };
     conn.send(jsonEncode(msg));
   }
 
@@ -315,10 +350,15 @@ class ConnectionManager {
   }
 
   void sendAuthResponse(String requestId, bool approved) {
-    final msg = {'type': 'auth.response', 'requestId': requestId, 'approved': approved};
+    final msg = {
+      'type': 'auth.response',
+      'requestId': requestId,
+      'approved': approved,
+    };
     final json = jsonEncode(msg);
 
-    if (_groupConnection != null && _groupConnection!.connectionState == ConnectionState.connected) {
+    if (_groupConnection != null &&
+        _groupConnection!.connectionState == ConnectionState.connected) {
       _groupConnection!.send(json);
     } else {
       final conn = _singleConnections[_activeDeviceId];
@@ -336,7 +376,8 @@ class ConnectionManager {
     };
     final json = jsonEncode(msg);
 
-    if (_groupConnection != null && _groupConnection!.connectionState == ConnectionState.connected) {
+    if (_groupConnection != null &&
+        _groupConnection!.connectionState == ConnectionState.connected) {
       _groupConnection!.send(json);
     } else {
       for (final conn in _singleConnections.values) {
@@ -368,16 +409,47 @@ class ConnectionManager {
     conn.send(jsonEncode(msg));
   }
 
+  void requestQuickPanelSync(String deviceId, {String explorerPath = ''}) {
+    if (deviceId.isEmpty) return;
+    final conn = _getConnectionForDevice(deviceId);
+    if (conn == null) return;
+    final msg = {
+      'type': 'quickpanel.sync.request',
+      'deviceId': deviceId,
+      'explorerPath': explorerPath,
+    };
+    conn.send(jsonEncode(msg));
+  }
+
+  void appendQuickPanelRecentInput(String deviceId, String input) {
+    final trimmed = input.trim();
+    if (deviceId.isEmpty || trimmed.isEmpty) return;
+    final conn = _getConnectionForDevice(deviceId);
+    if (conn == null) return;
+    final msg = {
+      'type': 'quickpanel.recent.append',
+      'deviceId': deviceId,
+      'input': trimmed,
+    };
+    conn.send(jsonEncode(msg));
+  }
+
   void openTerminal(String deviceId, String shellId) {
     final conn = _getConnectionForDevice(deviceId);
     if (conn == null) return;
     _activeDeviceId = deviceId;
-    final msg = {'type': 'terminal.open', 'deviceId': deviceId, 'shellId': shellId};
+    final msg = {
+      'type': 'terminal.open',
+      'deviceId': deviceId,
+      'shellId': shellId,
+    };
     conn.send(jsonEncode(msg));
   }
 
   void sendTerminalInput(String data, {String targetSessionId = ''}) {
-    final sessionId = targetSessionId.isNotEmpty ? targetSessionId : _activeSessionId;
+    final sessionId = targetSessionId.isNotEmpty
+        ? targetSessionId
+        : _activeSessionId;
     if (sessionId.isEmpty || data.isEmpty) return;
     final session = _sessions[sessionId];
     final deviceId = session?.deviceId ?? _activeDeviceId;
@@ -392,7 +464,12 @@ class ConnectionManager {
     conn.send(jsonEncode(msg));
   }
 
-  void requestTerminalHistory(String deviceId, String sessionId, int beforeSeq, int maxChars) {
+  void requestTerminalHistory(
+    String deviceId,
+    String sessionId,
+    int beforeSeq,
+    int maxChars,
+  ) {
     if (deviceId.isEmpty || sessionId.isEmpty) return;
     final conn = _getConnectionForDevice(deviceId);
     if (conn == null) return;
@@ -407,7 +484,9 @@ class ConnectionManager {
   }
 
   void sendTerminalResize(int cols, int rows, {String targetSessionId = ''}) {
-    final sessionId = targetSessionId.isNotEmpty ? targetSessionId : _activeSessionId;
+    final sessionId = targetSessionId.isNotEmpty
+        ? targetSessionId
+        : _activeSessionId;
     if (sessionId.isEmpty) return;
     final session = _sessions[sessionId];
     final deviceId = session?.deviceId ?? _activeDeviceId;
@@ -429,7 +508,11 @@ class ConnectionManager {
     if (session == null) return;
     final conn = _getConnectionForDevice(session.deviceId);
     if (conn == null) return;
-    final msg = {'type': 'terminal.close', 'deviceId': session.deviceId, 'sessionId': sessionId};
+    final msg = {
+      'type': 'terminal.close',
+      'deviceId': session.deviceId,
+      'sessionId': sessionId,
+    };
     conn.send(jsonEncode(msg));
   }
 
@@ -479,7 +562,8 @@ class ConnectionManager {
 
   List<DeviceInfo> getGroupDevices() => List<DeviceInfo>.from(_groupDevices);
 
-  List<GroupMemberInfo> getGroupMembers() => List<GroupMemberInfo>.from(_groupMembers);
+  List<GroupMemberInfo> getGroupMembers() =>
+      List<GroupMemberInfo>.from(_groupMembers);
 
   String getGroupId() => _groupId;
 
@@ -529,7 +613,8 @@ class ConnectionManager {
   }
 
   void requestDeviceList() {
-    if (_groupConnection != null && _groupConnection!.connectionState == ConnectionState.connected) {
+    if (_groupConnection != null &&
+        _groupConnection!.connectionState == ConnectionState.connected) {
       final msg = {'type': 'device.list.request'};
       _groupConnection!.send(jsonEncode(msg));
     }
@@ -537,8 +622,12 @@ class ConnectionManager {
 
   Future<void> restoreSavedConnections() async {
     try {
-      final groupRelayUrl = await PreferencesUtil.getString(StorageKeys.groupRelayUrl);
-      final groupSecret = await PreferencesUtil.getString(StorageKeys.groupSecret);
+      final groupRelayUrl = await PreferencesUtil.getString(
+        StorageKeys.groupRelayUrl,
+      );
+      final groupSecret = await PreferencesUtil.getString(
+        StorageKeys.groupSecret,
+      );
       final groupId = await PreferencesUtil.getString(StorageKeys.groupId);
       if (groupRelayUrl.isNotEmpty && groupSecret.isNotEmpty) {
         connectGroup(groupRelayUrl, groupSecret, groupId);
@@ -556,7 +645,12 @@ class ConnectionManager {
           if (item is Map<String, dynamic>) {
             final record = SingleDeviceRecord.fromJson(item);
             if (record.deviceId.isNotEmpty && record.wsUrl.isNotEmpty) {
-              connectSingle(record.wsUrl, record.deviceId, record.displayName, record.httpUrl);
+              connectSingle(
+                record.wsUrl,
+                record.deviceId,
+                record.displayName,
+                record.httpUrl,
+              );
             }
           }
         }
@@ -573,7 +667,11 @@ class ConnectionManager {
     return null;
   }
 
-  void _handleSingleMessage(String deviceId, String type, Map<String, dynamic> data) {
+  void _handleSingleMessage(
+    String deviceId,
+    String type,
+    Map<String, dynamic> data,
+  ) {
     if (type == 'device.list') {
       final devices = _normalizeDeviceList(data['devices']);
       if (devices.isNotEmpty) {
@@ -600,7 +698,10 @@ class ConnectionManager {
       }
     } else if (type == 'auth.request') {
       _handleAuthRequest(data);
-    } else if (type == 'terminal.opened' || type == 'terminal.output' || type == 'terminal.closed' || type == 'session.list') {
+    } else if (type == 'terminal.opened' ||
+        type == 'terminal.output' ||
+        type == 'terminal.closed' ||
+        type == 'session.list') {
       _handleTerminalMessage(type, data);
     }
 
@@ -610,7 +711,9 @@ class ConnectionManager {
   void _handleSingleStateChange(String deviceId, ConnectionState state) {
     final info = _singleDeviceInfos[deviceId];
     if (info != null) {
-      _singleDeviceInfos[deviceId] = info.copyWith(isOnline: state == ConnectionState.connected);
+      _singleDeviceInfos[deviceId] = info.copyWith(
+        isOnline: state == ConnectionState.connected,
+      );
       _emitDeviceListChanged();
     }
 
@@ -673,7 +776,10 @@ class ConnectionManager {
       _updateDeviceNameInLists(targetId, newName);
     } else if (type == 'auth.request') {
       _handleAuthRequest(data);
-    } else if (type == 'terminal.opened' || type == 'terminal.output' || type == 'terminal.closed' || type == 'session.list') {
+    } else if (type == 'terminal.opened' ||
+        type == 'terminal.output' ||
+        type == 'terminal.closed' ||
+        type == 'session.list') {
       _handleTerminalMessage(type, data);
     }
 
@@ -755,7 +861,11 @@ class ConnectionManager {
     }
   }
 
-  void _promoteToGroupConnection(String deviceId, String relayUrl, String newGroupId) {
+  void _promoteToGroupConnection(
+    String deviceId,
+    String relayUrl,
+    String newGroupId,
+  ) {
     final conn = _singleConnections[deviceId];
     if (conn == null) return;
 
@@ -771,8 +881,12 @@ class ConnectionManager {
     _groupId = newGroupId;
     _currentMode = DeviceMode.group;
 
-    _groupMessageCallbackId = conn.addOnMessage((type, data) => _handleGroupMessage(type, data));
-    _groupStateCallbackId = conn.addOnStateChange((state) => _handleGroupStateChange(state));
+    _groupMessageCallbackId = conn.addOnMessage(
+      (type, data) => _handleGroupMessage(type, data),
+    );
+    _groupStateCallbackId = conn.addOnStateChange(
+      (state) => _handleGroupStateChange(state),
+    );
 
     PreferencesUtil.setString(StorageKeys.groupRelayUrl, relayUrl);
     PreferencesUtil.setString(StorageKeys.groupId, newGroupId);
@@ -865,7 +979,12 @@ class ConnectionManager {
     });
   }
 
-  void _saveSingleDevice(String deviceId, String displayName, String wsUrl, String httpUrl) {
+  void _saveSingleDevice(
+    String deviceId,
+    String displayName,
+    String wsUrl,
+    String httpUrl,
+  ) {
     PreferencesUtil.getString(StorageKeys.singleDevices).then((raw) {
       var records = <SingleDeviceRecord>[];
       if (raw.isNotEmpty) {
