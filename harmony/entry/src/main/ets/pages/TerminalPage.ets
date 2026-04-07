@@ -1,6 +1,6 @@
 import { webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AppColors, AppSizes, ConnectionState } from '../common/Constants';
+import { AppColors, AppSizes, AppStrings, ConnectionState } from '../common/Constants';
 import { I18n } from '../common/I18n';
 import { SafeAreaUtil } from '../common/SafeArea';
 import { ConnectionManager } from '../services/ConnectionManager';
@@ -1239,19 +1239,14 @@ struct TerminalPage {
       .backgroundColor(AppColors.ACCENT)
 
     Row() {
-      Text(this.t('‹ 返回', '‹ Back'))
-        .fontSize(AppSizes.FONT_SIZE_SMALL)
-        .fontColor(AppColors.ACCENT)
-        .onClick(() => {
-          this.goBack();
-        })
-        .padding({ right: 12 })
+      this.HeaderBrand()
 
       Column() {
         Text(this.t('终端', 'Terminal'))
           .fontSize(AppSizes.FONT_SIZE_BODY)
           .fontColor(AppColors.TEXT_PRIMARY)
           .fontWeight(FontWeight.Medium)
+          .textAlign(TextAlign.End)
 
         if (this.viewedSessionId.length > 0) {
           Text(this.viewedSessionId)
@@ -1260,28 +1255,12 @@ struct TerminalPage {
             .fontFamily('monospace')
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .textAlign(TextAlign.End)
         }
       }
       .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      Row() {
-        Circle()
-          .width(6)
-          .height(6)
-          .fill(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.OFFLINE_GRAY)
-          .margin({ right: 6 })
-
-        Text(this.sessionActive ? this.t('在线', 'ACTIVE') : this.t('离线', 'OFFLINE'))
-          .fontSize(11)
-          .fontColor(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.TEXT_MUTED)
-          .fontFamily('monospace')
-      }
-      .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-      .backgroundColor(AppColors.CHIP_BG)
-      .borderWidth(1)
-      .borderColor(this.sessionActive ? AppColors.ONLINE_GREEN : AppColors.CHIP_BORDER)
-      .borderRadius(AppSizes.BORDER_RADIUS_TAG)
+      .alignItems(HorizontalAlign.End)
+      .margin({ left: 10 })
     }
     .width('100%')
     .height(54)
@@ -1291,6 +1270,36 @@ struct TerminalPage {
     })
     .backgroundColor(AppColors.SURFACE_1)
     .alignItems(VerticalAlign.Center)
+  }
+
+  @Builder
+  HeaderBrand() {
+    Row() {
+      Image($r('app.media.phoneshell_header'))
+        .width(AppSizes.FONT_SIZE_SUBTITLE)
+        .height(AppSizes.FONT_SIZE_SUBTITLE)
+        .margin({ right: 8 })
+
+      Column() {
+        Text(AppStrings.APP_NAME)
+          .fontSize(20)
+          .lineHeight(21)
+          .fontColor(AppColors.TEXT_PRIMARY)
+          .fontWeight(FontWeight.Bold)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+        Text(this.t('无缝切换你的终端会话', 'Seamless terminal session switch'))
+          .fontSize(11)
+          .lineHeight(12)
+          .fontColor(AppColors.TEXT_MUTED)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .alignItems(HorizontalAlign.Start)
+    }
+    .alignItems(VerticalAlign.Center)
+    .margin({ top: -2 })
   }
 
   @Builder

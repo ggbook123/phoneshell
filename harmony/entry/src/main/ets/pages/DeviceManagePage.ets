@@ -780,14 +780,28 @@ struct DeviceManagePage {
                 .height(AppSizes.FONT_SIZE_SUBTITLE)
                 .margin({ right: 8 })
 
-              Text(AppStrings.APP_NAME)
-                .fontSize(AppSizes.FONT_SIZE_SUBTITLE)
-                .fontColor(AppColors.TEXT_PRIMARY)
-                .fontWeight(FontWeight.Bold)
+              Column() {
+                Text(AppStrings.APP_NAME)
+                  .fontSize(20)
+                  .lineHeight(21)
+                  .fontColor(AppColors.TEXT_PRIMARY)
+                  .fontWeight(FontWeight.Bold)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+                Text(this.t('无缝切换你的终端会话', 'Seamless terminal session switch'))
+                  .fontSize(11)
+                  .lineHeight(12)
+                  .fontColor(AppColors.TEXT_MUTED)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              .alignItems(HorizontalAlign.Start)
             }
             .alignItems(VerticalAlign.Center)
             .justifyContent(FlexAlign.Start)
             .layoutWeight(1)
+            .margin({ top: -2 })
 
             Row({ space: 8 }) {
               this.SettingsChip()
@@ -808,15 +822,15 @@ struct DeviceManagePage {
             }
           }
           .width('100%')
-          .margin({ bottom: 10 })
+          .margin({ bottom: 4 })
 
         }
         .width('100%')
         .padding({
           left: AppSizes.PADDING_PAGE + this.safeAreaLeft,
           right: AppSizes.PADDING_PAGE + this.safeAreaRight,
-          top: 16,
-          bottom: 12
+          top: 12,
+          bottom: 6
         })
         .backgroundColor(AppColors.SURFACE_1)
 
