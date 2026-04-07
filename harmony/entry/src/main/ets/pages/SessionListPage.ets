@@ -389,28 +389,15 @@ struct SessionListPage {
           .backgroundColor(AppColors.ACCENT)
 
         Row() {
-          this.HeaderBrand()
-
-          Column() {
-            Text(this.displayName)
-              .fontSize(AppSizes.FONT_SIZE_BODY)
-              .fontColor(AppColors.TEXT_PRIMARY)
-              .fontWeight(FontWeight.Medium)
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .textAlign(TextAlign.End)
-
-            Text(this.t('会话列表', 'Session List'))
-              .fontSize(12)
-              .fontColor(AppColors.TEXT_MUTED)
-              .fontFamily('monospace')
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .textAlign(TextAlign.End)
+          Row() {
+            this.HeaderBrand()
           }
-          .alignItems(HorizontalAlign.End)
           .layoutWeight(1)
-          .margin({ left: 10 })
+          .justifyContent(FlexAlign.Start)
+          .alignItems(VerticalAlign.Center)
+
+          Blank().width(10)
+          this.HeaderInfoChip(this.displayName)
         }
         .width('100%')
         .height(56)
@@ -582,6 +569,26 @@ struct SessionListPage {
     }
     .alignItems(VerticalAlign.Center)
     .margin({ top: -2 })
+  }
+
+  @Builder
+  HeaderInfoChip(deviceName: string) {
+    Row() {
+      Text(deviceName)
+        .fontSize(16)
+        .fontColor(AppColors.TEXT_PRIMARY)
+        .fontWeight(FontWeight.Medium)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.End)
+    }
+    .justifyContent(FlexAlign.End)
+    .alignItems(VerticalAlign.Center)
+    .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+    .backgroundColor(AppColors.HIGHLIGHT)
+    .borderWidth(1)
+    .borderColor(AppColors.CARD_BORDER)
+    .borderRadius(6)
   }
 
   @Builder

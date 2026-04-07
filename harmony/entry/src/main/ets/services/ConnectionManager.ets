@@ -161,6 +161,7 @@ export class SessionState {
   deviceId: string = '';
   bufferedOutput: string = '';
   shellId: string = '';
+  title: string = '';
 }
 
 class ConnectionManagerClass {
@@ -750,6 +751,13 @@ class ConnectionManagerClass {
     return '';
   }
 
+  getSessionTitle(sessionId: string): string {
+    if (sessionId.length === 0) return '';
+    const session: SessionState | undefined = this.sessions.get(sessionId);
+    if (session !== undefined) return session.title;
+    return '';
+  }
+
   getSessionCount(): number { return this.sessions.size; }
 
   getSessionList(): Array<SessionState> {
@@ -1070,6 +1078,8 @@ class ConnectionManagerClass {
         let session: SessionState = new SessionState();
         session.sessionId = sessionId;
         session.deviceId = deviceId;
+        session.shellId = (data['shellId'] ?? '') as string;
+        session.title = (data['title'] ?? '') as string;
         this.sessions.set(sessionId, session);
         this.activeSessionId = sessionId;
         this.activeDeviceId = deviceId;
@@ -1100,13 +1110,18 @@ class ConnectionManagerClass {
         for (let i: number = 0; i < sessionArray.length; i++) {
           const rawSession: Record<string, Object> = sessionArray[i] as Record<string, Object>;
           const sid: string = (rawSession['sessionId'] ?? '') as string;
-          if (sid.length > 0 && !this.sessions.has(sid)) {
-            let session: SessionState = new SessionState();
+          if (sid.length === 0) continue;
+
+          let session: SessionState | undefined = this.sessions.get(sid);
+          if (session === undefined) {
+            session = new SessionState();
             session.sessionId = sid;
-            session.deviceId = deviceId;
-            session.shellId = (rawSession['shellId'] ?? '') as string;
-            this.sessions.set(sid, session);
           }
+          session.deviceId = deviceId;
+          session.shellId = (rawSession['shellId'] ?? '') as string;
+          const titleRaw: string = (rawSession['title'] ?? '') as string;
+          session.title = titleRaw.length > 0 ? titleRaw : session.title;
+          this.sessions.set(sid, session);
         }
       }
     }

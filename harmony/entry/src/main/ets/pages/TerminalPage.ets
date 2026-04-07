@@ -165,6 +165,18 @@ struct TerminalPage {
     return I18n.t(I18n.getLanguage(), zhText, enText);
   }
 
+  private getActiveSessionWindowTitle(): string {
+    const sessionId: string = this.normalizeString(this.viewedSessionId, this.normalizeString(ConnectionManager.getActiveSessionId()));
+    if (sessionId.length > 0) {
+      const title: string = this.normalizeString(ConnectionManager.getSessionTitle(sessionId));
+      if (title.length > 0) {
+        return title;
+      }
+      return sessionId;
+    }
+    return this.t('终端会话', 'Terminal Session');
+  }
+
   private getMessageString(data: Record<string, Object>, key: string, fallback: string = ''): string {
     const value: Object | undefined = data[key];
     if (typeof value === 'string') {
@@ -1239,28 +1251,17 @@ struct TerminalPage {
       .backgroundColor(AppColors.ACCENT)
 
     Row() {
-      this.HeaderBrand()
-
-      Column() {
-        Text(this.t('终端', 'Terminal'))
-          .fontSize(AppSizes.FONT_SIZE_BODY)
-          .fontColor(AppColors.TEXT_PRIMARY)
-          .fontWeight(FontWeight.Medium)
-          .textAlign(TextAlign.End)
-
-        if (this.viewedSessionId.length > 0) {
-          Text(this.viewedSessionId)
-            .fontSize(11)
-            .fontColor(AppColors.TEXT_MUTED)
-            .fontFamily('monospace')
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .textAlign(TextAlign.End)
-        }
+      Row() {
+        this.HeaderBrand()
       }
       .layoutWeight(1)
-      .alignItems(HorizontalAlign.End)
-      .margin({ left: 10 })
+      .justifyContent(FlexAlign.Start)
+      .alignItems(VerticalAlign.Center)
+
+      Blank().width(10)
+      this.HeaderInfoChip(
+        this.getActiveSessionWindowTitle()
+      )
     }
     .width('100%')
     .height(54)
@@ -1300,6 +1301,26 @@ struct TerminalPage {
     }
     .alignItems(VerticalAlign.Center)
     .margin({ top: -2 })
+  }
+
+  @Builder
+  HeaderInfoChip(sessionTitle: string) {
+    Row() {
+      Text(sessionTitle)
+        .fontSize(14)
+        .fontColor(AppColors.TEXT_PRIMARY)
+        .fontWeight(FontWeight.Medium)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.End)
+    }
+    .justifyContent(FlexAlign.End)
+    .alignItems(VerticalAlign.Center)
+    .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+    .backgroundColor(AppColors.HIGHLIGHT)
+    .borderWidth(1)
+    .borderColor(AppColors.CARD_BORDER)
+    .borderRadius(6)
   }
 
   @Builder
