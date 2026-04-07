@@ -8,6 +8,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import '../core/constants.dart';
 import '../core/connection_manager.dart';
 import '../core/i18n.dart';
+import '../widgets/phoneshell_header.dart';
 
 class TerminalPage extends StatefulWidget {
   const TerminalPage({super.key});
@@ -1044,6 +1045,22 @@ class _TerminalPageState extends State<TerminalPage> {
     Navigator.of(context).pop();
   }
 
+  String _getActiveSessionWindowTitle() {
+    final sessionId = _viewedSessionId.isNotEmpty
+        ? _viewedSessionId
+        : ConnectionManager.instance.activeSessionId;
+    if (sessionId.isEmpty) {
+      return _t('终端会话', 'Terminal Session');
+    }
+    final sessionTitle = ConnectionManager.instance
+        .getSessionTitle(sessionId)
+        .trim();
+    if (sessionTitle.isNotEmpty) {
+      return sessionTitle;
+    }
+    return sessionId;
+  }
+
   @override
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
@@ -1077,102 +1094,19 @@ class _TerminalPageState extends State<TerminalPage> {
   }
 
   Widget _buildHeaderBar(EdgeInsets padding) {
-    return Column(
-      children: [
-        Container(height: 2, color: const Color(AppColors.accent)),
-        Container(
-          height: 54,
-          color: const Color(AppColors.surface1),
-          padding: EdgeInsets.symmetric(
-            horizontal: AppSizes.paddingPage + padding.left,
-          ),
-          child: Row(
-            children: [
-              GestureDetector(
-                onTap: _goBack,
-                child: Text(
-                  _t('‹ 返回', '‹ Back'),
-                  style: const TextStyle(
-                    fontSize: AppSizes.fontSizeSmall,
-                    color: Color(AppColors.accent),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      _t('终端', 'Terminal'),
-                      style: const TextStyle(
-                        fontSize: AppSizes.fontSizeBody,
-                        color: Color(AppColors.textPrimary),
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    if (_viewedSessionId.isNotEmpty)
-                      Text(
-                        _viewedSessionId,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: Color(AppColors.textMuted),
-                          fontFamily: 'monospace',
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(AppColors.chipBg),
-                  borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
-                  border: Border.all(
-                    color: Color(
-                      sessionActive
-                          ? AppColors.onlineGreen
-                          : AppColors.chipBorder,
-                    ),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 6,
-                      height: 6,
-                      margin: const EdgeInsets.only(right: 6),
-                      decoration: BoxDecoration(
-                        color: Color(
-                          sessionActive
-                              ? AppColors.onlineGreen
-                              : AppColors.offlineGray,
-                        ),
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    Text(
-                      sessionActive ? _t('在线', 'ACTIVE') : _t('离线', 'OFFLINE'),
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Color(
-                          sessionActive
-                              ? AppColors.onlineGreen
-                              : AppColors.textMuted,
-                        ),
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
+    return PhoneShellHeaderBar(
+      subtitle: _t('无缝切换你的终端会话', 'Seamless terminal session switch'),
+      height: 54,
+      padding: EdgeInsets.fromLTRB(
+        AppSizes.paddingPage + padding.left,
+        0,
+        AppSizes.paddingPage + padding.right,
+        0,
+      ),
+      trailing: PhoneShellInfoChip(
+        text: _getActiveSessionWindowTitle(),
+        fontSize: 14,
+      ),
     );
   }
 

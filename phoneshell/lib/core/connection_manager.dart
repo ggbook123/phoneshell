@@ -532,6 +532,12 @@ class ConnectionManager {
     return session?.bufferedOutput ?? '';
   }
 
+  String getSessionTitle(String sessionId) {
+    if (sessionId.isEmpty) return '';
+    final session = _sessions[sessionId];
+    return session?.title ?? '';
+  }
+
   String getSessionBufferedOutput(String sessionId) {
     final session = _sessions[sessionId];
     return session?.bufferedOutput ?? '';
@@ -803,6 +809,8 @@ class ConnectionManager {
         final session = SessionState();
         session.sessionId = sessionId;
         session.deviceId = deviceId;
+        session.shellId = (data['shellId'] ?? '') as String;
+        session.title = (data['title'] ?? '') as String;
         _sessions[sessionId] = session;
         _activeSessionId = sessionId;
         _activeDeviceId = deviceId;
@@ -832,13 +840,16 @@ class ConnectionManager {
         for (final item in rawSessions) {
           if (item is Map<String, dynamic>) {
             final sid = (item['sessionId'] ?? '') as String;
-            if (sid.isNotEmpty && !_sessions.containsKey(sid)) {
-              final session = SessionState();
-              session.sessionId = sid;
-              session.deviceId = deviceId;
-              session.shellId = (item['shellId'] ?? '') as String;
-              _sessions[sid] = session;
+            if (sid.isEmpty) continue;
+            final session = _sessions[sid] ?? SessionState();
+            session.sessionId = sid;
+            session.deviceId = deviceId;
+            session.shellId = (item['shellId'] ?? '') as String;
+            final rawTitle = (item['title'] ?? '') as String;
+            if (rawTitle.isNotEmpty) {
+              session.title = rawTitle;
             }
+            _sessions[sid] = session;
           }
         }
       }

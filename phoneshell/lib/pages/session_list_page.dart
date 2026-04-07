@@ -5,6 +5,7 @@ import '../core/constants.dart';
 import '../core/connection_manager.dart';
 import '../core/i18n.dart';
 import '../core/models.dart';
+import '../widgets/phoneshell_header.dart';
 
 class SessionListPage extends StatefulWidget {
   const SessionListPage({super.key});
@@ -69,10 +70,15 @@ class _SessionListPageState extends State<SessionListPage> {
   }
 
   void _activatePage() {
-    connectionState = ConnectionManager.instance.getConnectionStateForDevice(deviceId);
+    connectionState = ConnectionManager.instance.getConnectionStateForDevice(
+      deviceId,
+    );
 
     if (_stateListenerId == -1) {
-      _stateListenerId = ConnectionManager.instance.addOnStateChange((state, id) {
+      _stateListenerId = ConnectionManager.instance.addOnStateChange((
+        state,
+        id,
+      ) {
         if (id == deviceId || id == 'group') {
           setState(() {
             connectionState = state;
@@ -87,7 +93,10 @@ class _SessionListPageState extends State<SessionListPage> {
     }
 
     if (_messageListenerId == -1) {
-      _messageListenerId = ConnectionManager.instance.addOnMessage((type, data) {
+      _messageListenerId = ConnectionManager.instance.addOnMessage((
+        type,
+        data,
+      ) {
         if (type == 'session.list') {
           _handleSessionList(data);
         } else if (type == 'terminal.opened') {
@@ -97,7 +106,10 @@ class _SessionListPageState extends State<SessionListPage> {
             if (deviceIdValue == deviceId) {
               if (_isPendingOpen()) {
                 _clearPendingOpen();
-                ConnectionManager.instance.setActiveSession(deviceIdValue, sessionId);
+                ConnectionManager.instance.setActiveSession(
+                  deviceIdValue,
+                  sessionId,
+                );
                 Navigator.of(context).pushNamed('pages/TerminalPage');
               } else {
                 _refreshSessions();
@@ -143,7 +155,9 @@ class _SessionListPageState extends State<SessionListPage> {
     final pending = _pendingRenameTitles[sessionId];
     if (pending == null) return serverTitle;
     final requestedAt = _pendingRenameTimes[sessionId] ?? 0;
-    if (requestedAt > 0 && (DateTime.now().millisecondsSinceEpoch - requestedAt) > _pendingRenameTtlMs) {
+    if (requestedAt > 0 &&
+        (DateTime.now().millisecondsSinceEpoch - requestedAt) >
+            _pendingRenameTtlMs) {
       _pendingRenameTitles.remove(sessionId);
       _pendingRenameTimes.remove(sessionId);
       return serverTitle;
@@ -211,7 +225,8 @@ class _SessionListPageState extends State<SessionListPage> {
   }
 
   void _onNewSession() {
-    if (deviceId.isEmpty || connectionState != ConnectionState.connected) return;
+    if (deviceId.isEmpty || connectionState != ConnectionState.connected)
+      return;
     _markPendingOpen();
     ConnectionManager.instance.openTerminal(deviceId, selectedShell);
   }
@@ -308,8 +323,21 @@ class _SessionListPageState extends State<SessionListPage> {
     return true;
   }
 
-  void _goBack() {
-    Navigator.of(context).pop();
+  Widget _buildHeaderBar(EdgeInsets padding) {
+    final chipText = displayName.isNotEmpty
+        ? displayName
+        : _t('未知设备', 'Unknown Device');
+    return PhoneShellHeaderBar(
+      subtitle: _t('无缝切换你的终端会话', 'Seamless terminal session switch'),
+      height: 56,
+      padding: EdgeInsets.fromLTRB(
+        AppSizes.paddingPage + padding.left,
+        0,
+        AppSizes.paddingPage + padding.right,
+        0,
+      ),
+      trailing: PhoneShellInfoChip(text: chipText, fontSize: 16),
+    );
   }
 
   @override
@@ -322,92 +350,7 @@ class _SessionListPageState extends State<SessionListPage> {
             padding: EdgeInsets.only(top: padding.top, bottom: padding.bottom),
             child: Column(
               children: [
-                Container(
-                  color: const Color(AppColors.surface1),
-                  child: Column(
-                    children: [
-                      Container(height: 2, color: const Color(AppColors.accent)),
-                      SizedBox(
-                        height: 56,
-                        child: Padding(
-                          padding: EdgeInsets.symmetric(horizontal: AppSizes.paddingPage + padding.left),
-                          child: Row(
-                            children: [
-                              GestureDetector(
-                                onTap: _goBack,
-                                child: Text(
-                                  _t('‹ 返回', '‹ Back'),
-                                  style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.accent)),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Text(
-                                      displayName,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontSize: AppSizes.fontSizeBody,
-                                        color: Color(AppColors.textPrimary),
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                    Text(
-                                      _t('会话列表', 'Session List'),
-                                      style: const TextStyle(fontSize: 12, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: const Color(AppColors.chipBg),
-                                  borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
-                                  border: Border.all(
-                                    color: Color(connectionState == ConnectionState.connected
-                                        ? AppColors.onlineGreen
-                                        : AppColors.chipBorder),
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Container(
-                                      width: 6,
-                                      height: 6,
-                                      margin: const EdgeInsets.only(right: 6),
-                                      decoration: BoxDecoration(
-                                        color: Color(connectionState == ConnectionState.connected
-                                            ? AppColors.onlineGreen
-                                            : AppColors.offlineGray),
-                                        shape: BoxShape.circle,
-                                      ),
-                                    ),
-                                    Text(
-                                      connectionState == ConnectionState.connected
-                                          ? _t('在线', 'Online')
-                                          : _t('断开', 'Disconnected'),
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: Color(connectionState == ConnectionState.connected
-                                            ? AppColors.onlineGreen
-                                            : AppColors.textMuted),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                _buildHeaderBar(padding),
                 Divider(color: const Color(AppColors.divider), height: 1),
                 Expanded(
                   child: RefreshIndicator(
@@ -428,26 +371,41 @@ class _SessionListPageState extends State<SessionListPage> {
                               children: [
                                 Text(
                                   _t('暂无活动会话', 'NO ACTIVE SESSIONS'),
-                                  style: const TextStyle(fontSize: 14, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    color: Color(AppColors.textMuted),
+                                    fontFamily: 'monospace',
+                                  ),
                                 ),
                                 const SizedBox(height: 8),
                                 Text(
-                                  _t('当前没有活动会话', 'No active sessions at the moment'),
-                                  style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Color(AppColors.textSecondary)),
+                                  _t(
+                                    '当前没有活动会话',
+                                    'No active sessions at the moment',
+                                  ),
+                                  style: const TextStyle(
+                                    fontSize: AppSizes.fontSizeBody,
+                                    color: Color(AppColors.textSecondary),
+                                  ),
                                 ),
                                 const SizedBox(height: 6),
                                 Text(
                                   _t('下拉刷新列表', 'Pull down to refresh'),
-                                  style: const TextStyle(fontSize: 12, color: Color(AppColors.textMuted)),
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Color(AppColors.textMuted),
+                                  ),
                                 ),
                               ],
                             ),
                           )
                         else
-                          ...sessions.map((session) => Padding(
-                                padding: const EdgeInsets.only(bottom: 12),
-                                child: _sessionCard(session),
-                              )),
+                          ...sessions.map(
+                            (session) => Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: _sessionCard(session),
+                            ),
+                          ),
                       ],
                     ),
                   ),
@@ -464,10 +422,18 @@ class _SessionListPageState extends State<SessionListPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(height: 2, color: const Color(AppColors.accentBlue), margin: const EdgeInsets.only(bottom: 10)),
+                      Container(
+                        height: 2,
+                        color: const Color(AppColors.accentBlue),
+                        margin: const EdgeInsets.only(bottom: 10),
+                      ),
                       Text(
                         _t('新建会话', 'NEW SESSION'),
-                        style: const TextStyle(fontSize: 12, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(AppColors.textMuted),
+                          fontFamily: 'monospace',
+                        ),
                       ),
                       const SizedBox(height: 8),
                       if (availableShells.length > 1)
@@ -485,22 +451,38 @@ class _SessionListPageState extends State<SessionListPage> {
                                   });
                                 },
                                 style: OutlinedButton.styleFrom(
-                                  backgroundColor: selected ? const Color(AppColors.accent) : const Color(AppColors.highlight),
-                                  side: BorderSide(color: selected ? const Color(AppColors.accent) : const Color(AppColors.accentDim)),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
+                                  backgroundColor: selected
+                                      ? const Color(AppColors.accent)
+                                      : const Color(AppColors.highlight),
+                                  side: BorderSide(
+                                    color: selected
+                                        ? const Color(AppColors.accent)
+                                        : const Color(AppColors.accentDim),
                                   ),
-                                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(
+                                      AppSizes.borderRadiusTag,
+                                    ),
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                  ),
                                 ),
                                 child: Text(
                                   shell,
-                                  style: TextStyle(fontSize: 12, color: selected ? Colors.white : const Color(AppColors.accent)),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: selected
+                                        ? Colors.white
+                                        : const Color(AppColors.accent),
+                                  ),
                                 ),
                               ),
                             );
                           }).toList(),
                         ),
-                      if (availableShells.length > 1) const SizedBox(height: 12),
+                      if (availableShells.length > 1)
+                        const SizedBox(height: 12),
                       SizedBox(
                         width: double.infinity,
                         height: 44,
@@ -509,12 +491,17 @@ class _SessionListPageState extends State<SessionListPage> {
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(AppColors.accent),
                             shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                              borderRadius: BorderRadius.circular(
+                                AppSizes.borderRadiusButton,
+                              ),
                             ),
                           ),
                           child: Text(
                             _t('新建会话', 'New Session'),
-                            style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Colors.white),
+                            style: const TextStyle(
+                              fontSize: AppSizes.fontSizeBody,
+                              color: Colors.white,
+                            ),
                           ),
                         ),
                       ),
@@ -545,15 +532,30 @@ class _SessionListPageState extends State<SessionListPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(height: 2, color: const Color(AppColors.accent), margin: const EdgeInsets.only(bottom: 12)),
+            Container(
+              height: 2,
+              color: const Color(AppColors.accent),
+              margin: const EdgeInsets.only(bottom: 12),
+            ),
             Row(
               children: [
                 Container(
                   width: 32,
                   height: 32,
-                  decoration: const BoxDecoration(color: Color(AppColors.surface3), shape: BoxShape.circle),
+                  decoration: const BoxDecoration(
+                    color: Color(AppColors.surface3),
+                    shape: BoxShape.circle,
+                  ),
                   alignment: Alignment.center,
-                  child: const Text('>', style: TextStyle(fontSize: 16, color: Color(AppColors.accent), fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+                  child: const Text(
+                    '>',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Color(AppColors.accent),
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -573,14 +575,21 @@ class _SessionListPageState extends State<SessionListPage> {
                       const SizedBox(height: 4),
                       Text(
                         session.shellId,
-                        style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.textSecondary)),
+                        style: const TextStyle(
+                          fontSize: AppSizes.fontSizeSmall,
+                          color: Color(AppColors.textSecondary),
+                        ),
                       ),
                       const SizedBox(height: 4),
                       Text(
                         'ID ${session.sessionId}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 11, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(AppColors.textMuted),
+                          fontFamily: 'monospace',
+                        ),
                       ),
                     ],
                   ),
@@ -595,25 +604,56 @@ class _SessionListPageState extends State<SessionListPage> {
                         onPressed: () => _openCloseDialog(session),
                         style: OutlinedButton.styleFrom(
                           padding: EdgeInsets.zero,
-                          side: const BorderSide(color: Color(AppColors.errorRed)),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                          side: const BorderSide(
+                            color: Color(AppColors.errorRed),
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(6),
+                          ),
                         ),
-                        child: SvgPicture.asset('assets/images/ic_close.svg', width: 12, height: 12),
+                        child: SvgPicture.asset(
+                          'assets/images/ic_close.svg',
+                          width: 12,
+                          height: 12,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 8),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(AppColors.chipBg),
-                        borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
-                        border: Border.all(color: const Color(AppColors.onlineGreen)),
+                        borderRadius: BorderRadius.circular(
+                          AppSizes.borderRadiusTag,
+                        ),
+                        border: Border.all(
+                          color: const Color(AppColors.onlineGreen),
+                        ),
                       ),
                       child: Row(
                         children: const [
-                          SizedBox(width: 6, height: 6, child: DecoratedBox(decoration: BoxDecoration(color: Color(AppColors.onlineGreen), shape: BoxShape.circle))),
+                          SizedBox(
+                            width: 6,
+                            height: 6,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: Color(AppColors.onlineGreen),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ),
                           SizedBox(width: 6),
-                          Text('ACTIVE', style: TextStyle(fontSize: 10, color: Color(AppColors.onlineGreen), fontFamily: 'monospace')),
+                          Text(
+                            'ACTIVE',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Color(AppColors.onlineGreen),
+                              fontFamily: 'monospace',
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -631,7 +671,10 @@ class _SessionListPageState extends State<SessionListPage> {
     return Positioned.fill(
       child: Container(
         color: const Color(0xB0000000),
-        padding: EdgeInsets.symmetric(horizontal: 24 + padding.left, vertical: 24),
+        padding: EdgeInsets.symmetric(
+          horizontal: 24 + padding.left,
+          vertical: 24,
+        ),
         child: Center(
           child: Container(
             padding: const EdgeInsets.all(24),
@@ -645,33 +688,55 @@ class _SessionListPageState extends State<SessionListPage> {
               children: [
                 Text(
                   _t('重命名会话', 'Rename Session'),
-                  style: const TextStyle(fontSize: 18, color: Color(AppColors.textPrimary), fontWeight: FontWeight.w500),
+                  style: const TextStyle(
+                    fontSize: 18,
+                    color: Color(AppColors.textPrimary),
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 if (renameSessionTitle.isNotEmpty)
                   Text(
                     renameSessionTitle,
-                    style: const TextStyle(fontSize: 12, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(AppColors.textMuted),
+                      fontFamily: 'monospace',
+                    ),
                   ),
                 const SizedBox(height: 16),
                 Row(
                   children: [
                     const SizedBox(
                       width: 48,
-                      child: Text('名称:', style: TextStyle(fontSize: 12, color: Color(AppColors.textSecondary))),
+                      child: Text(
+                        '名称:',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Color(AppColors.textSecondary),
+                        ),
+                      ),
                     ),
                     Expanded(
                       child: TextField(
                         controller: _renameController,
-                        style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Color(AppColors.textPrimary)),
+                        style: const TextStyle(
+                          fontSize: AppSizes.fontSizeBody,
+                          color: Color(AppColors.textPrimary),
+                        ),
                         decoration: InputDecoration(
                           filled: true,
                           fillColor: const Color(AppColors.inputBg),
                           border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(AppSizes.borderRadiusInput),
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusInput,
+                            ),
                             borderSide: BorderSide.none,
                           ),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
                         ),
                       ),
                     ),
@@ -687,12 +752,21 @@ class _SessionListPageState extends State<SessionListPage> {
                       child: OutlinedButton(
                         onPressed: _closeRenameDialog,
                         style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Color(AppColors.textMuted)),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton)),
+                          side: const BorderSide(
+                            color: Color(AppColors.textMuted),
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusButton,
+                            ),
+                          ),
                         ),
                         child: Text(
                           _t('取消', 'Cancel'),
-                          style: const TextStyle(color: Color(AppColors.textPrimary), fontSize: AppSizes.fontSizeSmall),
+                          style: const TextStyle(
+                            color: Color(AppColors.textPrimary),
+                            fontSize: AppSizes.fontSizeSmall,
+                          ),
                         ),
                       ),
                     ),
@@ -704,11 +778,18 @@ class _SessionListPageState extends State<SessionListPage> {
                         onPressed: _confirmRename,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(AppColors.accent),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusButton,
+                            ),
+                          ),
                         ),
                         child: Text(
                           _t('确认', 'Confirm'),
-                          style: const TextStyle(color: Colors.white, fontSize: AppSizes.fontSizeSmall),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: AppSizes.fontSizeSmall,
+                          ),
                         ),
                       ),
                     ),
@@ -726,7 +807,10 @@ class _SessionListPageState extends State<SessionListPage> {
     return Positioned.fill(
       child: Container(
         color: const Color(0xB0000000),
-        padding: EdgeInsets.symmetric(horizontal: 24 + padding.left, vertical: 24),
+        padding: EdgeInsets.symmetric(
+          horizontal: 24 + padding.left,
+          vertical: 24,
+        ),
         child: Center(
           child: Container(
             padding: const EdgeInsets.all(24),
@@ -740,15 +824,25 @@ class _SessionListPageState extends State<SessionListPage> {
               children: [
                 Text(
                   _t('关闭会话', 'Close Session'),
-                  style: const TextStyle(fontSize: 18, color: Color(AppColors.textPrimary), fontWeight: FontWeight.w500),
+                  style: const TextStyle(
+                    fontSize: 18,
+                    color: Color(AppColors.textPrimary),
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
                 const SizedBox(height: 10),
                 Text(
                   closeSessionTitle.isNotEmpty
-                      ? _t('确认关闭 $closeSessionTitle？', 'Close $closeSessionTitle?')
+                      ? _t(
+                          '确认关闭 $closeSessionTitle？',
+                          'Close $closeSessionTitle?',
+                        )
                       : _t('确认关闭当前会话？', 'Close current session?'),
                   textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 13, color: Color(AppColors.textSecondary)),
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(AppColors.textSecondary),
+                  ),
                 ),
                 const SizedBox(height: 18),
                 Row(
@@ -760,12 +854,21 @@ class _SessionListPageState extends State<SessionListPage> {
                       child: OutlinedButton(
                         onPressed: _closeCloseDialog,
                         style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Color(AppColors.textMuted)),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton)),
+                          side: const BorderSide(
+                            color: Color(AppColors.textMuted),
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusButton,
+                            ),
+                          ),
                         ),
                         child: Text(
                           _t('取消', 'Cancel'),
-                          style: const TextStyle(color: Color(AppColors.textPrimary), fontSize: AppSizes.fontSizeSmall),
+                          style: const TextStyle(
+                            color: Color(AppColors.textPrimary),
+                            fontSize: AppSizes.fontSizeSmall,
+                          ),
                         ),
                       ),
                     ),
@@ -777,11 +880,18 @@ class _SessionListPageState extends State<SessionListPage> {
                         onPressed: _confirmClose,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(AppColors.errorRed),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusButton,
+                            ),
+                          ),
                         ),
                         child: Text(
                           _t('确认关闭', 'Close'),
-                          style: const TextStyle(color: Colors.white, fontSize: AppSizes.fontSizeSmall),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: AppSizes.fontSizeSmall,
+                          ),
                         ),
                       ),
                     ),

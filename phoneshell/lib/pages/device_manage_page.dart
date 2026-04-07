@@ -8,6 +8,7 @@ import '../core/connection_manager.dart';
 import '../core/i18n.dart';
 import '../core/models.dart';
 import '../core/preferences_util.dart';
+import '../widgets/phoneshell_header.dart';
 import 'scan_page.dart';
 
 class DeviceItemModel {
@@ -109,7 +110,9 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     pendingAuthCount = AuthManager.instance.getPendingCount();
 
     if (deviceListCallbackId == -1) {
-      deviceListCallbackId = ConnectionManager.instance.addOnDeviceListChanged((_) {
+      deviceListCallbackId = ConnectionManager.instance.addOnDeviceListChanged((
+        _,
+      ) {
         setState(() {
           _syncDeviceLists();
           isRefreshing = false;
@@ -131,11 +134,17 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
         if (type == 'invite.create.response') {
           final inviteCode = (data['inviteCode'] ?? '') as String;
           final relayUrl = (data['relayUrl'] ?? '') as String;
-          if (pendingInviteDeviceId.isNotEmpty && pendingInviteHttpUrl.isNotEmpty) {
+          if (pendingInviteDeviceId.isNotEmpty &&
+              pendingInviteHttpUrl.isNotEmpty) {
             final httpUrl = pendingInviteHttpUrl;
             pendingInviteDeviceId = '';
             pendingInviteHttpUrl = '';
-            ConnectionManager.instance.inviteToGroup(httpUrl, inviteCode, relayUrl, null);
+            ConnectionManager.instance.inviteToGroup(
+              httpUrl,
+              inviteCode,
+              relayUrl,
+              null,
+            );
           }
         } else if (type == 'group.join.accepted') {
           setState(_syncDeviceLists);
@@ -172,7 +181,9 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
 
   void _deactivatePage() {
     if (deviceListCallbackId != -1) {
-      ConnectionManager.instance.removeOnDeviceListChanged(deviceListCallbackId);
+      ConnectionManager.instance.removeOnDeviceListChanged(
+        deviceListCallbackId,
+      );
       deviceListCallbackId = -1;
     }
     if (modeChangeCallbackId != -1) {
@@ -202,9 +213,18 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
   }
 
   void _syncDeviceLists() {
-    groupDevices = _buildDeviceModels(ConnectionManager.instance.getGroupDevices(), groupDevices);
-    singleDevices = _buildDeviceModels(ConnectionManager.instance.getSingleDevices(), singleDevices);
-    groupMembers = _buildGroupMemberModels(ConnectionManager.instance.getGroupMembers(), groupMembers);
+    groupDevices = _buildDeviceModels(
+      ConnectionManager.instance.getGroupDevices(),
+      groupDevices,
+    );
+    singleDevices = _buildDeviceModels(
+      ConnectionManager.instance.getSingleDevices(),
+      singleDevices,
+    );
+    groupMembers = _buildGroupMemberModels(
+      ConnectionManager.instance.getGroupMembers(),
+      groupMembers,
+    );
     isInGroup = ConnectionManager.instance.isInGroup();
     groupId = ConnectionManager.instance.getGroupId();
   }
@@ -212,8 +232,11 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
   void _tryRequestServerChange([String? joinedDeviceId]) {
     if (pendingServerChangeDeviceId.isEmpty) return;
     final targetId = pendingServerChangeDeviceId;
-    final alreadyJoined = joinedDeviceId == targetId ||
-        ConnectionManager.instance.getGroupMembers().any((m) => m.deviceId == targetId);
+    final alreadyJoined =
+        joinedDeviceId == targetId ||
+        ConnectionManager.instance.getGroupMembers().any(
+          (m) => m.deviceId == targetId,
+        );
     if (!alreadyJoined) return;
 
     pendingServerChangeDeviceId = '';
@@ -223,7 +246,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     });
   }
 
-  List<DeviceItemModel> _buildDeviceModels(List<DeviceInfo> raw, List<DeviceItemModel> current) {
+  List<DeviceItemModel> _buildDeviceModels(
+    List<DeviceInfo> raw,
+    List<DeviceItemModel> current,
+  ) {
     final existing = <String, DeviceItemModel>{};
     for (final item in current) {
       if (item.deviceId.isNotEmpty) existing[item.deviceId] = item;
@@ -237,13 +263,18 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
       model.displayName = info.displayName;
       model.os = info.os;
       model.isOnline = info.isOnline;
-      model.availableShells = info.availableShells.isNotEmpty ? List<String>.from(info.availableShells) : [];
+      model.availableShells = info.availableShells.isNotEmpty
+          ? List<String>.from(info.availableShells)
+          : [];
       result.add(model);
     }
     return result;
   }
 
-  List<GroupMemberModel> _buildGroupMemberModels(List<GroupMemberInfo> raw, List<GroupMemberModel> current) {
+  List<GroupMemberModel> _buildGroupMemberModels(
+    List<GroupMemberInfo> raw,
+    List<GroupMemberModel> current,
+  ) {
     final existing = <String, GroupMemberModel>{};
     for (final item in current) {
       if (item.deviceId.isNotEmpty) existing[item.deviceId] = item;
@@ -258,7 +289,9 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
       model.os = info.os;
       model.role = info.role;
       model.isOnline = info.isOnline;
-      model.availableShells = info.availableShells.isNotEmpty ? List<String>.from(info.availableShells) : [];
+      model.availableShells = info.availableShells.isNotEmpty
+          ? List<String>.from(info.availableShells)
+          : [];
       result.add(model);
     }
     return result;
@@ -266,11 +299,14 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
 
   void _onDeviceClick(DeviceItemModel device) {
     if (!device.isOnline || device.deviceId.isEmpty) return;
-    Navigator.of(context).pushNamed('pages/SessionListPage', arguments: {
-      'deviceId': device.deviceId,
-      'displayName': device.displayName,
-      'availableShells': device.availableShells,
-    });
+    Navigator.of(context).pushNamed(
+      'pages/SessionListPage',
+      arguments: {
+        'deviceId': device.deviceId,
+        'displayName': device.displayName,
+        'availableShells': device.availableShells,
+      },
+    );
   }
 
   void _openDeviceSettings(DeviceItemModel device, bool isPendingSingle) {
@@ -326,7 +362,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
       return;
     }
     if (trimmed != settingsDisplayName) {
-      ConnectionManager.instance.updateDeviceDisplayName(renameDeviceId, trimmed);
+      ConnectionManager.instance.updateDeviceDisplayName(
+        renameDeviceId,
+        trimmed,
+      );
       _updateDeviceNameLocal(renameDeviceId, trimmed);
       settingsDisplayName = trimmed;
       _settingsNameController.text = trimmed;
@@ -395,9 +434,9 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
       scanResult = '';
     });
 
-    final result = await Navigator.of(context).push<String>(
-      MaterialPageRoute(builder: (_) => const ScanPage()),
-    );
+    final result = await Navigator.of(
+      context,
+    ).push<String>(MaterialPageRoute(builder: (_) => const ScanPage()));
 
     if (!mounted) return;
 
@@ -448,7 +487,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
 
     if (wsUrl.isEmpty || deviceId.isEmpty) {
       setState(() {
-        parseError = _t('二维码缺少必要参数 (ws/deviceId)', 'QR code missing required params (ws/deviceId)');
+        parseError = _t(
+          '二维码缺少必要参数 (ws/deviceId)',
+          'QR code missing required params (ws/deviceId)',
+        );
       });
       return;
     }
@@ -456,8 +498,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     if (ConnectionManager.instance.isInGroup()) {
       if (httpUrl.isEmpty) {
         setState(() {
-          parseError = _t('该设备不支持邀请加入群组（缺少HTTP地址）',
-              'This device cannot be invited (missing HTTP address)');
+          parseError = _t(
+            '该设备不支持邀请加入群组（缺少HTTP地址）',
+            'This device cannot be invited (missing HTTP address)',
+          );
         });
         return;
       }
@@ -474,7 +518,12 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
       scanStatus = _t('正在连接 $displayName...', 'Connecting to $displayName...');
     });
 
-    ConnectionManager.instance.connectSingle(wsUrl, deviceId, displayName, httpUrl);
+    ConnectionManager.instance.connectSingle(
+      wsUrl,
+      deviceId,
+      displayName,
+      httpUrl,
+    );
 
     setState(() {
       scanStatus = _t('已添加设备 $displayName', 'Added device $displayName');
@@ -492,40 +541,60 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     if (httpUrl.isEmpty) return;
 
     setState(() {
-      scanStatus = _t('正在邀请 $deviceName 加入群组...', 'Inviting $deviceName to join the group...');
+      scanStatus = _t(
+        '正在邀请 $deviceName 加入群组...',
+        'Inviting $deviceName to join the group...',
+      );
     });
 
     _cleanupScanListeners();
-    scanMessageListenerId = ConnectionManager.instance.addOnMessage((type, data) {
+    scanMessageListenerId = ConnectionManager.instance.addOnMessage((
+      type,
+      data,
+    ) {
       if (type == 'invite.create.response') {
         final inviteCode = (data['inviteCode'] ?? '') as String;
         final relayUrl = (data['relayUrl'] ?? '') as String;
         if (inviteCode.isNotEmpty && relayUrl.isNotEmpty) {
           setState(() {
-            scanStatus = _t('正在发送邀请给 $deviceName...', 'Sending invite to $deviceName...');
+            scanStatus = _t(
+              '正在发送邀请给 $deviceName...',
+              'Sending invite to $deviceName...',
+            );
           });
-          ConnectionManager.instance.inviteToGroup(httpUrl, inviteCode, relayUrl, (success, message) {
-            if (!mounted) return;
-            if (success) {
-              setState(() {
-                scanStatus = _t('已邀请 $deviceName 加入群组', 'Invited $deviceName to join the group');
-              });
-              if (scanInviteDeviceId.isNotEmpty) {
-                pendingServerChangeDeviceId = scanInviteDeviceId;
+          ConnectionManager.instance.inviteToGroup(
+            httpUrl,
+            inviteCode,
+            relayUrl,
+            (success, message) {
+              if (!mounted) return;
+              if (success) {
+                setState(() {
+                  scanStatus = _t(
+                    '已邀请 $deviceName 加入群组',
+                    'Invited $deviceName to join the group',
+                  );
+                });
+                if (scanInviteDeviceId.isNotEmpty) {
+                  pendingServerChangeDeviceId = scanInviteDeviceId;
+                  scanInviteDeviceId = '';
+                  _tryRequestServerChange();
+                }
+                _cleanupScanListeners();
+                _refreshDeviceView();
+              } else {
+                setState(() {
+                  parseError = _t(
+                    '邀请发送失败: $message',
+                    'Invite failed: $message',
+                  );
+                  scanStatus = _t('邀请失败', 'Invite failed');
+                });
                 scanInviteDeviceId = '';
-                _tryRequestServerChange();
+                _cleanupScanListeners();
               }
-              _cleanupScanListeners();
-              _refreshDeviceView();
-            } else {
-              setState(() {
-                parseError = _t('邀请发送失败: $message', 'Invite failed: $message');
-                scanStatus = _t('邀请失败', 'Invite failed');
-              });
-              scanInviteDeviceId = '';
-              _cleanupScanListeners();
-            }
-          });
+            },
+          );
         }
       } else if (type == 'error') {
         final message = (data['message'] ?? '') as String;
@@ -548,8 +617,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
 
     if (server.isEmpty || groupSecret.isEmpty) {
       setState(() {
-        parseError = _t('二维码缺少必要参数 (server/groupSecret)',
-            'QR code missing required params (server/groupSecret)');
+        parseError = _t(
+          '二维码缺少必要参数 (server/groupSecret)',
+          'QR code missing required params (server/groupSecret)',
+        );
       });
       return;
     }
@@ -566,7 +637,11 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
         scanStatus = _t('正在切换到新服务器...', 'Switching to new server...');
         parseError = '';
       });
-      ConnectionManager.instance.requestGroupServerChangeExternal(server, groupId, groupSecret);
+      ConnectionManager.instance.requestGroupServerChangeExternal(
+        server,
+        groupId,
+        groupSecret,
+      );
       return;
     }
 
@@ -593,13 +668,23 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     return url;
   }
 
-  Future<void> _executeBindQr(String server, String groupId, String groupSecret) async {
+  Future<void> _executeBindQr(
+    String server,
+    String groupId,
+    String groupSecret,
+  ) async {
     await PreferencesUtil.setLastServerUrl(server);
     await PreferencesUtil.setString(StorageKeys.groupSecret, groupSecret);
 
     setState(() {
-      final shortServer = server.substring(0, server.length > 40 ? 40 : server.length);
-      scanStatus = _t('正在连接群组 $shortServer...', 'Connecting to group $shortServer...');
+      final shortServer = server.substring(
+        0,
+        server.length > 40 ? 40 : server.length,
+      );
+      scanStatus = _t(
+        '正在连接群组 $shortServer...',
+        'Connecting to group $shortServer...',
+      );
     });
 
     final connectUrl = _buildConnectUrlWithToken(server, groupSecret);
@@ -616,7 +701,9 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
           _syncDeviceLists();
           isInGroup = true;
           currentMode = DeviceMode.group;
-          this.groupId = groupId.isNotEmpty ? groupId : ConnectionManager.instance.getGroupId();
+          this.groupId = groupId.isNotEmpty
+              ? groupId
+              : ConnectionManager.instance.getGroupId();
         });
         ConnectionManager.instance.sendMobileBindRequest(groupId);
         ConnectionManager.instance.requestDeviceList();
@@ -629,13 +716,17 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
       }
     });
 
-    scanStateListenerId = ConnectionManager.instance.addOnStateChange((state, _) {
+    scanStateListenerId = ConnectionManager.instance.addOnStateChange((
+      state,
+      _,
+    ) {
       if (state == ConnectionState.connected) {
         ConnectionManager.instance.sendGroupJoinRequest(groupSecret);
       }
     });
 
-    if (ConnectionManager.instance.getConnectionStateForDevice('group') == ConnectionState.connected) {
+    if (ConnectionManager.instance.getConnectionStateForDevice('group') ==
+        ConnectionState.connected) {
       ConnectionManager.instance.sendGroupJoinRequest(groupSecret);
     }
   }
@@ -657,25 +748,38 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     });
 
     _cleanupScanListeners();
-    scanMessageListenerId = ConnectionManager.instance.addOnMessage((type, data) {
+    scanMessageListenerId = ConnectionManager.instance.addOnMessage((
+      type,
+      data,
+    ) {
       if (type == 'error') {
         final code = (data['code'] ?? '') as String;
         final message = (data['message'] ?? '') as String;
         if (code == 'not_bound_mobile') {
           setState(() {
-            scanStatus = _t('登录失败：需要重新连接群组', 'Login failed: reconnect to the group');
-            parseError = _t('手机未在群组中注册，请返回设备管理页等待自动重连',
-                'This phone is not registered in the group. Return to Device Center and wait for auto-reconnect.');
+            scanStatus = _t(
+              '登录失败：需要重新连接群组',
+              'Login failed: reconnect to the group',
+            );
+            parseError = _t(
+              '手机未在群组中注册，请返回设备管理页等待自动重连',
+              'This phone is not registered in the group. Return to Device Center and wait for auto-reconnect.',
+            );
           });
         } else if (code == 'login_session_not_found') {
           setState(() {
             scanStatus = _t('登录失败：登录会话已过期', 'Login failed: session expired');
-            parseError = _t('请刷新网页重新获取二维码', 'Please refresh the web page to get a new QR code');
+            parseError = _t(
+              '请刷新网页重新获取二维码',
+              'Please refresh the web page to get a new QR code',
+            );
           });
         } else {
           setState(() {
             scanStatus = _t('登录失败', 'Login failed');
-            parseError = message.isNotEmpty ? message : _t('未知错误', 'Unknown error');
+            parseError = message.isNotEmpty
+                ? message
+                : _t('未知错误', 'Unknown error');
           });
         }
         _cleanupScanListeners();
@@ -691,7 +795,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
       setState(() {
         scanStatus = _t('正在重新连接群组...', 'Reconnecting to group...');
       });
-      scanStateListenerId = ConnectionManager.instance.addOnStateChange((state, _) {
+      scanStateListenerId = ConnectionManager.instance.addOnStateChange((
+        state,
+        _,
+      ) {
         if (state == ConnectionState.connected) {
           // Wait for join accepted
         }
@@ -701,7 +808,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
         if (type == 'group.join.accepted') {
           ConnectionManager.instance.removeOnMessage(joinListenerId!);
           setState(() {
-            scanStatus = _t('已重新连接，正在发送登录确认...', 'Reconnected. Sending login confirmation...');
+            scanStatus = _t(
+              '已重新连接，正在发送登录确认...',
+              'Reconnected. Sending login confirmation...',
+            );
           });
           ConnectionManager.instance.sendPanelLoginScan(requestId);
         }
@@ -746,7 +856,9 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     groupId = '';
     groupDevices = [];
     groupMembers = [];
-    currentMode = singleDevices.isNotEmpty ? DeviceMode.single : DeviceMode.standalone;
+    currentMode = singleDevices.isNotEmpty
+        ? DeviceMode.single
+        : DeviceMode.standalone;
     pendingServerChangeDeviceId = '';
   }
 
@@ -760,7 +872,9 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     if (!ConnectionManager.instance.isInGroup()) {
       ConnectionManager.instance.designateRelay(device.deviceId);
     } else {
-      final record = ConnectionManager.instance.getSingleDeviceRecord(device.deviceId);
+      final record = ConnectionManager.instance.getSingleDeviceRecord(
+        device.deviceId,
+      );
       final httpUrl = record?.httpUrl ?? '';
       if (httpUrl.isEmpty) return;
       pendingInviteDeviceId = device.deviceId;
@@ -794,7 +908,8 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
 
   String _getAuthActionLabel(String action) {
     if (action == 'panel.login') return _t('面板登录', 'Panel Login');
-    if (action == 'terminal.open.remote') return _t('打开远程终端', 'Open Remote Terminal');
+    if (action == 'terminal.open.remote')
+      return _t('打开远程终端', 'Open Remote Terminal');
     return action;
   }
 
@@ -806,7 +921,8 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
 
   Color _getModeColor() {
     if (currentMode == DeviceMode.group) return const Color(AppColors.accent);
-    if (currentMode == DeviceMode.single) return const Color(AppColors.accentBlue);
+    if (currentMode == DeviceMode.single)
+      return const Color(AppColors.accentBlue);
     return const Color(AppColors.textMuted);
   }
 
@@ -841,31 +957,22 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                   color: const Color(AppColors.surface1),
                   padding: EdgeInsets.fromLTRB(
                     AppSizes.paddingPage + padding.left,
-                    16,
-                    AppSizes.paddingPage + padding.right,
                     12,
+                    AppSizes.paddingPage + padding.right,
+                    6,
                   ),
                   child: Column(
                     children: [
                       Row(
                         children: [
-                          Row(
-                            children: [
-                              Image.asset(
-                                'assets/images/phoneshell_header.png',
-                                width: AppSizes.fontSizeSubtitle,
-                                height: AppSizes.fontSizeSubtitle,
+                          Transform.translate(
+                            offset: const Offset(0, -2),
+                            child: PhoneShellBrandBlock(
+                              subtitle: _t(
+                                '无缝切换你的终端会话',
+                                'Seamless terminal session switch',
                               ),
-                              const SizedBox(width: 8),
-                              Text(
-                                AppStrings.appName,
-                                style: const TextStyle(
-                                  fontSize: AppSizes.fontSizeSubtitle,
-                                  color: Color(AppColors.textPrimary),
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
+                            ),
                           ),
                           const Spacer(),
                           Row(
@@ -880,11 +987,19 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                                       AuthManager.instance.showPending();
                                     },
                                     style: OutlinedButton.styleFrom(
-                                      side: const BorderSide(color: Color(AppColors.accentPink)),
-                                      backgroundColor: const Color(AppColors.highlight),
-                                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                                      side: const BorderSide(
+                                        color: Color(AppColors.accentPink),
+                                      ),
+                                      backgroundColor: const Color(
+                                        AppColors.highlight,
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                      ),
                                       shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
+                                        borderRadius: BorderRadius.circular(
+                                          AppSizes.borderRadiusTag,
+                                        ),
                                       ),
                                     ),
                                     child: Text(
@@ -901,7 +1016,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 10),
+                      const SizedBox(height: 4),
                     ],
                   ),
                 ),
@@ -915,13 +1030,19 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                       AppSizes.paddingPage + padding.right,
                       16,
                     ),
-                    margin: EdgeInsets.only(bottom: _getBottomScanMargin(safeBottom)),
+                    margin: EdgeInsets.only(
+                      bottom: _getBottomScanMargin(safeBottom),
+                    ),
                     child: Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         color: const Color(AppColors.surface1),
-                        borderRadius: BorderRadius.circular(AppSizes.borderRadiusCard),
-                        border: Border.all(color: const Color(AppColors.cardBorder)),
+                        borderRadius: BorderRadius.circular(
+                          AppSizes.borderRadiusCard,
+                        ),
+                        border: Border.all(
+                          color: const Color(AppColors.cardBorder),
+                        ),
                       ),
                       child: Row(
                         children: [
@@ -954,13 +1075,20 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(AppColors.accent),
                                 shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                                  borderRadius: BorderRadius.circular(
+                                    AppSizes.borderRadiusButton,
+                                  ),
                                 ),
-                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                ),
                               ),
                               child: Text(
                                 _t('扫  码', 'Scan'),
-                                style: const TextStyle(color: Colors.white, fontSize: 14),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                ),
                               ),
                             ),
                           ),
@@ -1029,24 +1157,35 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
               Row(
                 children: [
                   _statusChip(
-                    _t('${groupMembers.length} 成员', '${groupMembers.length} MEMBERS'),
+                    _t(
+                      '${groupMembers.length} 成员',
+                      '${groupMembers.length} MEMBERS',
+                    ),
                     const Color(AppColors.accent),
                   ),
                   const SizedBox(width: 8),
                   SizedBox(
                     height: 30,
                     child: OutlinedButton(
-                      onPressed: () => ConnectionManager.instance.dissolveGroup(),
+                      onPressed: () =>
+                          ConnectionManager.instance.dissolveGroup(),
                       style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Color(AppColors.errorRed)),
+                        side: const BorderSide(
+                          color: Color(AppColors.errorRed),
+                        ),
                         padding: const EdgeInsets.symmetric(horizontal: 10),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
+                          borderRadius: BorderRadius.circular(
+                            AppSizes.borderRadiusTag,
+                          ),
                         ),
                       ),
                       child: Text(
                         _t('解散', 'Dissolve'),
-                        style: const TextStyle(fontSize: 12, color: Color(AppColors.errorRed)),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(AppColors.errorRed),
+                        ),
                       ),
                     ),
                   ),
@@ -1058,15 +1197,24 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
           if (groupDevices.isEmpty)
             Text(
               _t('群组暂无设备', 'No devices in the group'),
-              style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.textSecondary)),
+              style: const TextStyle(
+                fontSize: AppSizes.fontSizeSmall,
+                color: Color(AppColors.textSecondary),
+              ),
             )
           else
             Column(
               children: groupDevices
-                  .map((device) => Container(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        child: _deviceCard(device, allowMoveToGroup: false, isPendingSingle: false),
-                      ))
+                  .map(
+                    (device) => Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      child: _deviceCard(
+                        device,
+                        allowMoveToGroup: false,
+                        isPendingSingle: false,
+                      ),
+                    ),
+                  )
                   .toList(),
             ),
           _scanStatusPanel(),
@@ -1103,8 +1251,14 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      _t('对准 PC 端命令中心生成的二维码', 'Aim at the QR code generated by the PC command center'),
-                      style: const TextStyle(fontSize: 12, color: Color(AppColors.textSecondary)),
+                      _t(
+                        '对准 PC 端命令中心生成的二维码',
+                        'Aim at the QR code generated by the PC command center',
+                      ),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(AppColors.textSecondary),
+                      ),
                     ),
                   ],
                 ),
@@ -1114,8 +1268,14 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
           ),
           const SizedBox(height: 12),
           Text(
-            _t('将手机加入群组并绑定控制权限。', 'Join the group and bind control permissions.'),
-            style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.textSecondary)),
+            _t(
+              '将手机加入群组并绑定控制权限。',
+              'Join the group and bind control permissions.',
+            ),
+            style: const TextStyle(
+              fontSize: AppSizes.fontSizeSmall,
+              color: Color(AppColors.textSecondary),
+            ),
           ),
           const SizedBox(height: 20),
           SizedBox(
@@ -1127,12 +1287,19 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                 backgroundColor: const Color(AppColors.accent),
                 disabledBackgroundColor: const Color(AppColors.accent),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                  borderRadius: BorderRadius.circular(
+                    AppSizes.borderRadiusButton,
+                  ),
                 ),
               ),
               child: Text(
-                isScanning ? _t('扫码中...', 'Scanning...') : _t('开始扫码', 'Start Scan'),
-                style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Colors.white),
+                isScanning
+                    ? _t('扫码中...', 'Scanning...')
+                    : _t('开始扫码', 'Start Scan'),
+                style: const TextStyle(
+                  fontSize: AppSizes.fontSizeBody,
+                  color: Colors.white,
+                ),
               ),
             ),
           ),
@@ -1164,7 +1331,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(
                 scanStatus,
-                style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.textSecondary)),
+                style: const TextStyle(
+                  fontSize: AppSizes.fontSizeSmall,
+                  color: Color(AppColors.textSecondary),
+                ),
               ),
             ),
           if (parseError.isNotEmpty)
@@ -1172,7 +1342,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(
                 parseError,
-                style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.errorRed)),
+                style: const TextStyle(
+                  fontSize: AppSizes.fontSizeSmall,
+                  color: Color(AppColors.errorRed),
+                ),
               ),
             ),
         ],
@@ -1208,17 +1381,26 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
               const Spacer(),
               Text(
                 _t('长按移入群组', 'Long press to move into group'),
-                style: const TextStyle(fontSize: 12, color: Color(AppColors.textMuted)),
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Color(AppColors.textMuted),
+                ),
               ),
             ],
           ),
           const SizedBox(height: 12),
           Column(
             children: singleDevices
-                .map((device) => Container(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      child: _deviceCard(device, allowMoveToGroup: true, isPendingSingle: true),
-                    ))
+                .map(
+                  (device) => Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    child: _deviceCard(
+                      device,
+                      allowMoveToGroup: true,
+                      isPendingSingle: true,
+                    ),
+                  ),
+                )
                 .toList(),
           ),
         ],
@@ -1226,7 +1408,11 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     );
   }
 
-  Widget _deviceCard(DeviceItemModel device, {required bool allowMoveToGroup, required bool isPendingSingle}) {
+  Widget _deviceCard(
+    DeviceItemModel device, {
+    required bool allowMoveToGroup,
+    required bool isPendingSingle,
+  }) {
     return GestureDetector(
       onTap: () => _onDeviceClick(device),
       onLongPress: () {
@@ -1249,7 +1435,9 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
               height: 2,
               width: double.infinity,
               margin: const EdgeInsets.only(bottom: 12),
-              color: device.isOnline ? const Color(AppColors.accent) : const Color(AppColors.cardBorder),
+              color: device.isOnline
+                  ? const Color(AppColors.accent)
+                  : const Color(AppColors.cardBorder),
             ),
             Row(
               children: [
@@ -1261,7 +1449,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                     shape: BoxShape.circle,
                   ),
                   alignment: Alignment.center,
-                  child: Text(_getOsIcon(device.os), style: const TextStyle(fontSize: 18)),
+                  child: Text(
+                    _getOsIcon(device.os),
+                    style: const TextStyle(fontSize: 18),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -1281,7 +1472,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                       const SizedBox(height: 4),
                       Text(
                         device.os,
-                        style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.textSecondary)),
+                        style: const TextStyle(
+                          fontSize: AppSizes.fontSizeSmall,
+                          color: Color(AppColors.textSecondary),
+                        ),
                       ),
                       const SizedBox(height: 4),
                       Text(
@@ -1304,16 +1498,31 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                       onTap: () => _openDeviceSettings(device, isPendingSingle),
                       child: const Padding(
                         padding: EdgeInsets.all(6),
-                        child: Text('⚙', style: TextStyle(fontSize: 18, color: Color(AppColors.textSecondary))),
+                        child: Text(
+                          '⚙',
+                          style: TextStyle(
+                            fontSize: 18,
+                            color: Color(AppColors.textSecondary),
+                          ),
+                        ),
                       ),
                     ),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(AppColors.chipBg),
-                        borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
+                        borderRadius: BorderRadius.circular(
+                          AppSizes.borderRadiusTag,
+                        ),
                         border: Border.all(
-                          color: Color(device.isOnline ? AppColors.onlineGreen : AppColors.chipBorder),
+                          color: Color(
+                            device.isOnline
+                                ? AppColors.onlineGreen
+                                : AppColors.chipBorder,
+                          ),
                         ),
                       ),
                       child: Row(
@@ -1323,15 +1532,25 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                             height: 6,
                             margin: const EdgeInsets.only(right: 6),
                             decoration: BoxDecoration(
-                              color: Color(device.isOnline ? AppColors.onlineGreen : AppColors.offlineGray),
+                              color: Color(
+                                device.isOnline
+                                    ? AppColors.onlineGreen
+                                    : AppColors.offlineGray,
+                              ),
                               shape: BoxShape.circle,
                             ),
                           ),
                           Text(
-                            device.isOnline ? _t('在线', 'Online') : _t('离线', 'Offline'),
+                            device.isOnline
+                                ? _t('在线', 'Online')
+                                : _t('离线', 'Offline'),
                             style: TextStyle(
                               fontSize: 11,
-                              color: Color(device.isOnline ? AppColors.onlineGreen : AppColors.textMuted),
+                              color: Color(
+                                device.isOnline
+                                    ? AppColors.onlineGreen
+                                    : AppColors.textMuted,
+                              ),
                             ),
                           ),
                         ],
@@ -1347,18 +1566,30 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                 spacing: 8,
                 runSpacing: 8,
                 children: device.availableShells
-                    .map((shell) => Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: const Color(AppColors.highlight),
-                            borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
-                            border: Border.all(color: const Color(AppColors.accentDim)),
+                    .map(
+                      (shell) => Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(AppColors.highlight),
+                          borderRadius: BorderRadius.circular(
+                            AppSizes.borderRadiusTag,
                           ),
-                          child: Text(
-                            shell,
-                            style: const TextStyle(fontSize: 12, color: Color(AppColors.accent)),
+                          border: Border.all(
+                            color: const Color(AppColors.accentDim),
                           ),
-                        ))
+                        ),
+                        child: Text(
+                          shell,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(AppColors.accent),
+                          ),
+                        ),
+                      ),
+                    )
                     .toList(),
               ),
             ],
@@ -1408,7 +1639,11 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
           ),
           Text(
             label,
-            style: TextStyle(fontSize: 11, color: color, fontFamily: 'monospace'),
+            style: TextStyle(
+              fontSize: 11,
+              color: color,
+              fontFamily: 'monospace',
+            ),
           ),
         ],
       ),
@@ -1422,9 +1657,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: _closeSettingsSheet,
-            child: Container(
-              color: const Color(0xB0000000),
-            ),
+            child: Container(color: const Color(0xB0000000)),
           ),
           Align(
             alignment: Alignment.bottomCenter,
@@ -1471,22 +1704,33 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                         width: 48,
                         child: Text(
                           _t('名称:', 'Name:'),
-                          style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.textSecondary)),
+                          style: const TextStyle(
+                            fontSize: AppSizes.fontSizeSmall,
+                            color: Color(AppColors.textSecondary),
+                          ),
                         ),
                       ),
                       Expanded(
                         child: TextField(
                           controller: _settingsNameController,
                           onChanged: (value) => settingsEditName = value,
-                          style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Color(AppColors.textPrimary)),
+                          style: const TextStyle(
+                            fontSize: AppSizes.fontSizeBody,
+                            color: Color(AppColors.textPrimary),
+                          ),
                           decoration: InputDecoration(
                             filled: true,
                             fillColor: const Color(AppColors.inputBg),
                             border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(AppSizes.borderRadiusInput),
+                              borderRadius: BorderRadius.circular(
+                                AppSizes.borderRadiusInput,
+                              ),
                               borderSide: BorderSide.none,
                             ),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
                           ),
                         ),
                       ),
@@ -1499,12 +1743,18 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                         width: 48,
                         child: Text(
                           _t('系统:', 'OS:'),
-                          style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.textSecondary)),
+                          style: const TextStyle(
+                            fontSize: AppSizes.fontSizeSmall,
+                            color: Color(AppColors.textSecondary),
+                          ),
                         ),
                       ),
                       Text(
                         settingsOs,
-                        style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Color(AppColors.textPrimary)),
+                        style: const TextStyle(
+                          fontSize: AppSizes.fontSizeBody,
+                          color: Color(AppColors.textPrimary),
+                        ),
                       ),
                     ],
                   ),
@@ -1515,7 +1765,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                         width: 48,
                         child: Text(
                           _t('角色:', 'Role:'),
-                          style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.textSecondary)),
+                          style: const TextStyle(
+                            fontSize: AppSizes.fontSizeSmall,
+                            color: Color(AppColors.textSecondary),
+                          ),
                         ),
                       ),
                       Text(
@@ -1538,12 +1791,17 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(AppColors.accent),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                          borderRadius: BorderRadius.circular(
+                            AppSizes.borderRadiusButton,
+                          ),
                         ),
                       ),
                       child: Text(
                         _t('重命名', 'Rename'),
-                        style: const TextStyle(color: Colors.white, fontSize: AppSizes.fontSizeBody),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: AppSizes.fontSizeBody,
+                        ),
                       ),
                     ),
                   ),
@@ -1557,12 +1815,17 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(AppColors.errorRed),
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusButton,
+                            ),
                           ),
                         ),
                         child: Text(
                           _t('踢出群组', 'Remove from Group'),
-                          style: const TextStyle(color: Colors.white, fontSize: AppSizes.fontSizeBody),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: AppSizes.fontSizeBody,
+                          ),
                         ),
                       ),
                     ),
@@ -1573,18 +1836,25 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                         height: 44,
                         child: ElevatedButton(
                           onPressed: () {
-                            ConnectionManager.instance.requestGroupServerChange(settingsDeviceId);
+                            ConnectionManager.instance.requestGroupServerChange(
+                              settingsDeviceId,
+                            );
                             _closeSettingsSheet();
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(AppColors.accentBlue),
                             shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                              borderRadius: BorderRadius.circular(
+                                AppSizes.borderRadiusButton,
+                              ),
                             ),
                           ),
                           child: Text(
                             _t('指定为服务器', 'Set as Server'),
-                            style: const TextStyle(color: Colors.white, fontSize: AppSizes.fontSizeBody),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: AppSizes.fontSizeBody,
+                            ),
                           ),
                         ),
                       ),
@@ -1597,14 +1867,21 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                       child: OutlinedButton(
                         onPressed: _disconnectSingleDevice,
                         style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Color(AppColors.errorRed)),
+                          side: const BorderSide(
+                            color: Color(AppColors.errorRed),
+                          ),
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusButton,
+                            ),
                           ),
                         ),
                         child: Text(
                           _t('断开连接', 'Disconnect'),
-                          style: const TextStyle(color: Color(AppColors.errorRed), fontSize: AppSizes.fontSizeBody),
+                          style: const TextStyle(
+                            color: Color(AppColors.errorRed),
+                            fontSize: AppSizes.fontSizeBody,
+                          ),
                         ),
                       ),
                     ),
@@ -1636,7 +1913,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     return Positioned.fill(
       child: Container(
         color: const Color(0xB0000000),
-        padding: EdgeInsets.symmetric(horizontal: 24 + padding.left, vertical: 24),
+        padding: EdgeInsets.symmetric(
+          horizontal: 24 + padding.left,
+          vertical: 24,
+        ),
         child: Center(
           child: Container(
             padding: const EdgeInsets.all(24),
@@ -1659,22 +1939,36 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                 const SizedBox(height: 16),
                 Text(
                   authRequesterName.isNotEmpty
-                      ? _t('$authRequesterName 请求', '$authRequesterName request')
+                      ? _t(
+                          '$authRequesterName 请求',
+                          '$authRequesterName request',
+                        )
                       : _t('收到授权请求', 'Authorization request received'),
-                  style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Color(AppColors.textPrimary)),
+                  style: const TextStyle(
+                    fontSize: AppSizes.fontSizeBody,
+                    color: Color(AppColors.textPrimary),
+                  ),
                 ),
                 const SizedBox(height: 8),
                 if (authDescription.isNotEmpty)
                   Text(
                     authDescription,
                     textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.textSecondary)),
+                    style: const TextStyle(
+                      fontSize: AppSizes.fontSizeSmall,
+                      color: Color(AppColors.textSecondary),
+                    ),
                   ),
                 const SizedBox(height: 8),
                 Text(
-                  _t('操作: ${_getAuthActionLabel(authAction)}',
-                      'Action: ${_getAuthActionLabel(authAction)}'),
-                  style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.textSecondary)),
+                  _t(
+                    '操作: ${_getAuthActionLabel(authAction)}',
+                    'Action: ${_getAuthActionLabel(authAction)}',
+                  ),
+                  style: const TextStyle(
+                    fontSize: AppSizes.fontSizeSmall,
+                    color: Color(AppColors.textSecondary),
+                  ),
                 ),
                 const SizedBox(height: 20),
                 Row(
@@ -1686,14 +1980,21 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                       child: OutlinedButton(
                         onPressed: _rejectAuth,
                         style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Color(AppColors.textMuted)),
+                          side: const BorderSide(
+                            color: Color(AppColors.textMuted),
+                          ),
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusButton,
+                            ),
                           ),
                         ),
                         child: Text(
                           _t('拒绝', 'Reject'),
-                          style: const TextStyle(color: Color(AppColors.textPrimary), fontSize: AppSizes.fontSizeBody),
+                          style: const TextStyle(
+                            color: Color(AppColors.textPrimary),
+                            fontSize: AppSizes.fontSizeBody,
+                          ),
                         ),
                       ),
                     ),
@@ -1706,12 +2007,17 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(AppColors.accent),
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusButton,
+                            ),
                           ),
                         ),
                         child: Text(
                           _t('批准', 'Approve'),
-                          style: const TextStyle(color: Colors.white, fontSize: AppSizes.fontSizeBody),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: AppSizes.fontSizeBody,
+                          ),
                         ),
                       ),
                     ),
@@ -1729,7 +2035,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     return Positioned.fill(
       child: Container(
         color: const Color(0xB0000000),
-        padding: EdgeInsets.symmetric(horizontal: 24 + padding.left, vertical: 24),
+        padding: EdgeInsets.symmetric(
+          horizontal: 24 + padding.left,
+          vertical: 24,
+        ),
         child: Center(
           child: Container(
             padding: const EdgeInsets.all(24),
@@ -1766,21 +2075,32 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                       width: 48,
                       child: Text(
                         _t('名称:', 'Name:'),
-                        style: const TextStyle(fontSize: 12, color: Color(AppColors.textSecondary)),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(AppColors.textSecondary),
+                        ),
                       ),
                     ),
                     Expanded(
                       child: TextField(
                         controller: _renameDeviceController,
-                        style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Color(AppColors.textPrimary)),
+                        style: const TextStyle(
+                          fontSize: AppSizes.fontSizeBody,
+                          color: Color(AppColors.textPrimary),
+                        ),
                         decoration: InputDecoration(
                           filled: true,
                           fillColor: const Color(AppColors.inputBg),
                           border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(AppSizes.borderRadiusInput),
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusInput,
+                            ),
                             borderSide: BorderSide.none,
                           ),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
                         ),
                       ),
                     ),
@@ -1796,12 +2116,21 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                       child: OutlinedButton(
                         onPressed: _closeDeviceRenameDialog,
                         style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Color(AppColors.textMuted)),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton)),
+                          side: const BorderSide(
+                            color: Color(AppColors.textMuted),
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusButton,
+                            ),
+                          ),
                         ),
                         child: Text(
                           _t('取消', 'Cancel'),
-                          style: const TextStyle(color: Color(AppColors.textPrimary), fontSize: AppSizes.fontSizeSmall),
+                          style: const TextStyle(
+                            color: Color(AppColors.textPrimary),
+                            fontSize: AppSizes.fontSizeSmall,
+                          ),
                         ),
                       ),
                     ),
@@ -1813,11 +2142,18 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                         onPressed: _confirmDeviceRename,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(AppColors.accent),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusButton,
+                            ),
+                          ),
                         ),
                         child: Text(
                           _t('确认', 'Confirm'),
-                          style: const TextStyle(color: Colors.white, fontSize: AppSizes.fontSizeSmall),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: AppSizes.fontSizeSmall,
+                          ),
                         ),
                       ),
                     ),
@@ -1835,7 +2171,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     return Positioned.fill(
       child: Container(
         color: const Color(0xB0000000),
-        padding: EdgeInsets.symmetric(horizontal: 24 + padding.left, vertical: 24),
+        padding: EdgeInsets.symmetric(
+          horizontal: 24 + padding.left,
+          vertical: 24,
+        ),
         child: Center(
           child: Container(
             padding: const EdgeInsets.all(24),
@@ -1857,9 +2196,15 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  _t('是否将 $inviteDeviceName 邀请加入当前群组？', 'Invite $inviteDeviceName to join this group?'),
+                  _t(
+                    '是否将 $inviteDeviceName 邀请加入当前群组？',
+                    'Invite $inviteDeviceName to join this group?',
+                  ),
                   textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 13, color: Color(AppColors.textSecondary)),
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(AppColors.textSecondary),
+                  ),
                 ),
                 const SizedBox(height: 18),
                 Row(
@@ -1876,14 +2221,21 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                           });
                         },
                         style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Color(AppColors.textMuted)),
+                          side: const BorderSide(
+                            color: Color(AppColors.textMuted),
+                          ),
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusButton,
+                            ),
                           ),
                         ),
                         child: Text(
                           _t('取消', 'Cancel'),
-                          style: const TextStyle(color: Color(AppColors.textPrimary), fontSize: AppSizes.fontSizeSmall),
+                          style: const TextStyle(
+                            color: Color(AppColors.textPrimary),
+                            fontSize: AppSizes.fontSizeSmall,
+                          ),
                         ),
                       ),
                     ),
@@ -1896,12 +2248,17 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(AppColors.accent),
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(AppSizes.borderRadiusButton),
+                            borderRadius: BorderRadius.circular(
+                              AppSizes.borderRadiusButton,
+                            ),
                           ),
                         ),
                         child: Text(
                           _t('邀请加入', 'Invite'),
-                          style: const TextStyle(color: Colors.white, fontSize: AppSizes.fontSizeSmall),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: AppSizes.fontSizeSmall,
+                          ),
                         ),
                       ),
                     ),

@@ -101,6 +101,7 @@ class SessionState {
   String deviceId = '';
   String bufferedOutput = '';
   String shellId = '';
+  String title = '';
 }
 
 class SessionItem {
