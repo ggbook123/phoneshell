@@ -28,7 +28,7 @@ import type {
 } from '../protocol/messages.js';
 
 const TerminalOlderBufferPageChars = 20000;
-const TerminalSnapshotPageChars = 120000;
+const TerminalSnapshotPageChars = 240000;
 
 interface ConnectedDevice {
   deviceId: string;

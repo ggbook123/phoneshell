@@ -24,7 +24,7 @@ let fitAddon: FitAddon | null = null;
 let resizeObserver: ResizeObserver | null = null;
 const compactCols = computed(() => props.compactCols);
 const compactRows = computed(() => props.compactRows);
-const latestBufferPageChars = 120000;
+const latestBufferPageChars = 240000;
 const maxRenderedChars = 5000000;
 let latestBufferLoading = false;
 let latestBufferLoaded = false;

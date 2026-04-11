@@ -1,6 +1,7 @@
 import { AppColors, AppSizes } from '../common/Constants';
 import { I18n } from '../common/I18n';
 import { SafeAreaUtil } from '../common/SafeArea';
+import { ConnectionManager } from '../services/ConnectionManager';
 
 @Entry
 @Component
@@ -9,6 +10,7 @@ struct SettingsPage {
   @State safeAreaBottom: number = 0;
   @State safeAreaLeft: number = 0;
   @State safeAreaRight: number = 0;
+  @State showInitializeConfirmDialog: boolean = false;
 
   aboutToAppear(): void {
     this.syncSafeArea();
@@ -46,6 +48,21 @@ struct SettingsPage {
     }
   }
 
+  private openInitializeConfirmDialog(): void {
+    this.showInitializeConfirmDialog = true;
+  }
+
+  private closeInitializeConfirmDialog(): void {
+    this.showInitializeConfirmDialog = false;
+  }
+
+  private confirmInitialize(): void {
+    ConnectionManager.dissolveGroup();
+    ConnectionManager.markPendingGroupDissolveUiReset();
+    this.closeInitializeConfirmDialog();
+    this.goBack();
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       Column() {
@@ -81,7 +98,7 @@ struct SettingsPage {
                 .fontColor(AppColors.TEXT_PRIMARY)
                 .fontWeight(FontWeight.Medium)
 
-              Text(this.t('操作说明与软件介绍', 'Usage Guide + About'))
+              Text(this.t('操作入口与系统初始化', 'App actions + initialization'))
                 .fontSize(11)
                 .fontColor(AppColors.TEXT_MUTED)
                 .fontFamily('monospace')
@@ -121,6 +138,15 @@ struct SettingsPage {
               () => { this.openAboutPage(); }
             )
           }
+          ListItem() {
+            this.SettingsItem(
+              '03',
+              this.t('初始化', 'Initialize'),
+              this.t('解散当前群组并恢复初始状态', 'Dissolve the current group and reset state'),
+              AppColors.ERROR_RED,
+              () => { this.openInitializeConfirmDialog(); }
+            )
+          }
         }
         .padding({
           left: AppSizes.PADDING_PAGE + this.safeAreaLeft,
@@ -134,6 +160,10 @@ struct SettingsPage {
       .width('100%')
       .height('100%')
       .padding({ top: this.safeAreaTop, bottom: this.safeAreaBottom })
+
+      if (this.showInitializeConfirmDialog) {
+        this.InitializeConfirmDialog()
+      }
     }
     .width('100%')
     .height('100%')
@@ -201,5 +231,66 @@ struct SettingsPage {
     .onClick(() => {
       onOpen();
     })
+  }
+
+  @Builder
+  InitializeConfirmDialog() {
+    Column() {
+      Column() {
+        Text(this.t('确认初始化', 'Confirm Initialization'))
+          .fontSize(18)
+          .fontColor(AppColors.TEXT_PRIMARY)
+          .fontWeight(FontWeight.Medium)
+          .margin({ bottom: 10 })
+
+        Text(this.t(
+          '是否确认初始化？当前群组将被解散。',
+          'Are you sure you want to initialize? The current group will be dissolved.'
+        ))
+          .fontSize(13)
+          .fontColor(AppColors.TEXT_SECONDARY)
+          .textAlign(TextAlign.Center)
+          .margin({ bottom: 18 })
+
+        Row({ space: 12 }) {
+          Button(this.t('否', 'No'))
+            .width(120)
+            .height(40)
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor(AppColors.TEXT_PRIMARY)
+            .backgroundColor(Color.Transparent)
+            .borderWidth(1)
+            .borderColor(AppColors.TEXT_MUTED)
+            .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+            .onClick(() => {
+              this.closeInitializeConfirmDialog();
+            })
+
+          Button(this.t('是', 'Yes'))
+            .width(140)
+            .height(40)
+            .fontSize(AppSizes.FONT_SIZE_SMALL)
+            .fontColor('#FFFFFF')
+            .backgroundColor(AppColors.ERROR_RED)
+            .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
+            .onClick(() => {
+              this.confirmInitialize();
+            })
+        }
+        .justifyContent(FlexAlign.Center)
+      }
+      .width('100%')
+      .padding(24)
+      .backgroundColor(AppColors.SURFACE_2)
+      .borderWidth(1)
+      .borderColor(AppColors.CARD_BORDER)
+      .borderRadius(16)
+      .alignItems(HorizontalAlign.Center)
+    }
+    .width('100%')
+    .height('100%')
+    .padding({ left: 24 + this.safeAreaLeft, right: 24 + this.safeAreaRight })
+    .backgroundColor('#B0000000')
+    .justifyContent(FlexAlign.Center)
   }
 }

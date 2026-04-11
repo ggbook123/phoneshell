@@ -545,10 +545,7 @@ public partial class MainWindow : Window
 
     private void TitleBarCloseButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_viewModel.ActiveTab is not null)
-        {
-            _viewModel.CloseTabCommand.Execute(_viewModel.ActiveTab.TabId);
-        }
+        _viewModel.CloseAllTabs();
     }
 
     private void ApiKeyBox_PasswordChanged(object sender, RoutedEventArgs e)

@@ -189,7 +189,7 @@ public sealed class TerminalSnapshotRequestMessage
     public string DeviceId { get; init; } = string.Empty;
     public string SessionId { get; init; } = string.Empty;
     public string RequestId { get; init; } = string.Empty;
-    public int MaxChars { get; init; } = 120_000;
+    public int MaxChars { get; init; } = 240_000;
 }
 
 public sealed class TerminalSnapshotResponseMessage

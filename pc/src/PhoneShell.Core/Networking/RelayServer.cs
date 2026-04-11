@@ -35,7 +35,7 @@ public sealed class RelayServer : IDisposable
     private readonly ConcurrentDictionary<string, long> _sessionOutputSeq = new(StringComparer.Ordinal);
 
     private const int TerminalHistoryPageChars = 80_000;
-    private const int TerminalSnapshotPageChars = 120_000;
+    private const int TerminalSnapshotPageChars = 240_000;
 
     public event Action<string>? Log;
     public event Action<List<DeviceInfo>>? DeviceListChanged;

@@ -18,7 +18,7 @@ class DeviceInfo {
       deviceId: (map['deviceId'] ?? '') as String,
       displayName: (map['displayName'] ?? map['deviceId'] ?? '') as String,
       os: (map['os'] ?? 'Unknown') as String,
-      isOnline: (map['isOnline'] ?? true) as bool,
+      isOnline: (map['isOnline'] ?? false) as bool,
       availableShells: (map['availableShells'] is List)
           ? (map['availableShells'] as List).map((e) => e.toString()).toList()
           : <String>[],
@@ -63,10 +63,26 @@ class GroupMemberInfo {
       displayName: (map['displayName'] ?? '') as String,
       os: (map['os'] ?? '') as String,
       role: (map['role'] ?? 'Member') as String,
-      isOnline: (map['isOnline'] ?? true) as bool,
+      isOnline: (map['isOnline'] ?? false) as bool,
       availableShells: (map['availableShells'] is List)
           ? (map['availableShells'] as List).map((e) => e.toString()).toList()
           : <String>[],
+    );
+  }
+
+  GroupMemberInfo copyWith({
+    String? displayName,
+    String? role,
+    bool? isOnline,
+    List<String>? availableShells,
+  }) {
+    return GroupMemberInfo(
+      deviceId: deviceId,
+      displayName: displayName ?? this.displayName,
+      os: os,
+      role: role ?? this.role,
+      isOnline: isOnline ?? this.isOnline,
+      availableShells: availableShells ?? this.availableShells,
     );
   }
 }

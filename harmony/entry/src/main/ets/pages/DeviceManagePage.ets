@@ -45,7 +45,6 @@ struct DeviceManagePage {
   @State singleDevices: Array<DeviceItemModel> = [];
   @State currentMode: DeviceMode = DeviceMode.STANDALONE;
   @State isInGroup: boolean = false;
-  @State isRefreshing: boolean = false;
   @State groupMembers: Array<GroupMemberModel> = [];
   @State groupId: string = '';
   @State scanResult: string = '';
@@ -128,12 +127,14 @@ struct DeviceManagePage {
   private activatePage(): void {
     this.currentMode = ConnectionManager.currentMode;
     this.syncDeviceLists();
+    if (ConnectionManager.consumePendingGroupDissolveUiReset()) {
+      this.applyGroupExitLocal();
+    }
     this.pendingAuthCount = AuthManager.getPendingCount();
 
     if (this.deviceListCallbackId === -1) {
       this.deviceListCallbackId = ConnectionManager.addOnDeviceListChanged((_devices: Array<DeviceInfo>) => {
         this.syncDeviceLists();
-        this.isRefreshing = false;
       });
     }
 
@@ -157,6 +158,8 @@ struct DeviceManagePage {
             this.pendingInviteHttpUrl = '';
             ConnectionManager.inviteToGroup(httpUrl, inviteCode, relayUrl);
           }
+        } else if (type === 'device.list') {
+          this.syncDeviceLists();
         } else if (type === 'group.join.accepted') {
           this.syncDeviceLists();
         } else if (type === 'group.dissolved' || type === 'device.kicked') {
@@ -322,9 +325,15 @@ struct DeviceManagePage {
   }
 
   private syncDeviceLists(): void {
-    this.groupDevices = this.buildDeviceModels(ConnectionManager.getGroupDevices(), this.groupDevices);
-    this.singleDevices = this.buildDeviceModels(ConnectionManager.getSingleDevices(), this.singleDevices);
-    this.groupMembers = this.buildGroupMemberModels(ConnectionManager.getGroupMembers(), this.groupMembers);
+    const nextGroupDevices: Array<DeviceItemModel> =
+      this.buildDeviceModels(ConnectionManager.getGroupDevices(), this.groupDevices);
+    const nextSingleDevices: Array<DeviceItemModel> =
+      this.buildDeviceModels(ConnectionManager.getSingleDevices(), this.singleDevices);
+    const nextGroupMembers: Array<GroupMemberModel> =
+      this.buildGroupMemberModels(ConnectionManager.getGroupMembers(), this.groupMembers);
+    this.groupDevices = nextGroupDevices.slice();
+    this.singleDevices = nextSingleDevices.slice();
+    this.groupMembers = nextGroupMembers.slice();
     this.isInGroup = ConnectionManager.isInGroup();
     this.groupId = ConnectionManager.getGroupId();
   }
@@ -393,9 +402,6 @@ struct DeviceManagePage {
   private refreshDeviceView(): void {
     this.currentMode = ConnectionManager.currentMode;
     this.syncDeviceLists();
-    if (this.isInGroup) {
-      ConnectionManager.requestDeviceList();
-    }
   }
 
   private startScan(): void {
@@ -922,8 +928,8 @@ struct DeviceManagePage {
         bottom: 16
       })
     }
-    .align(Alignment.TopStart)
     .width('100%')
+    .align(Alignment.TopStart)
     .layoutWeight(1)
   }
 
@@ -940,6 +946,7 @@ struct DeviceManagePage {
               .fontColor(AppColors.TEXT_PRIMARY)
               .fontWeight(FontWeight.Medium)
           }
+          .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
 
           Row({ space: 8 }) {
@@ -947,16 +954,6 @@ struct DeviceManagePage {
               this.t(`${this.groupMembers.length} 成员`, `${this.groupMembers.length} MEMBERS`),
               AppColors.ACCENT
             )
-            Button(this.t('解散', 'Dissolve'))
-              .height(30)
-              .fontSize(12)
-              .fontColor(AppColors.ERROR_RED)
-              .backgroundColor(Color.Transparent)
-              .borderWidth(1)
-              .borderColor(AppColors.ERROR_RED)
-              .borderRadius(AppSizes.BORDER_RADIUS_TAG)
-              .padding({ left: 10, right: 10 })
-              .onClick(() => { this.dissolveGroup(); })
           }
         }
         .width('100%')
@@ -974,7 +971,7 @@ struct DeviceManagePage {
                 this.DeviceCard(device, false, false)
               }
               .margin({ bottom: 12 })
-            }, (device: DeviceItemModel) => `group_${device.deviceId}`)
+            }, (device: DeviceItemModel) => `group_${device.deviceId}_${device.isOnline ? '1' : '0'}`)
           }
           .width('100%')
         }
@@ -1102,7 +1099,7 @@ struct DeviceManagePage {
               this.DeviceCard(device, true, true)
             }
             .margin({ bottom: 12 })
-          }, (device: DeviceItemModel) => `pending_${device.deviceId}`)
+          }, (device: DeviceItemModel) => `pending_${device.deviceId}_${device.isOnline ? '1' : '0'}`)
         }
         .width('100%')
       }
@@ -1594,11 +1591,6 @@ struct DeviceManagePage {
       ConnectionManager.designateRelay(this.settingsDeviceId);
     }
     this.closeSettingsSheet();
-  }
-
-  private dissolveGroup(): void {
-    ConnectionManager.dissolveGroup();
-    this.applyGroupExitLocal();
   }
 
   private applyGroupExitLocal(): void {

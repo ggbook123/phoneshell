@@ -315,7 +315,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private static readonly bool EnableDebugLog = true;
     private static readonly string NetLogFile =
         System.IO.Path.Combine(AppContext.BaseDirectory, "data", "net-debug.log");
-    private const int RemoteLatestBufferPageChars = 120000;
+    private const int RemoteLatestBufferPageChars = 240000;
     private const int RemoteOlderBufferPageChars = 20000;
     private string _autoExecStatus = string.Empty;
 
@@ -1112,6 +1112,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var tab = Tabs.FirstOrDefault(t => t.TabId == tabId);
         if (tab is null) return;
         RemoveTab(tab, requestRemoteClose: true);
+    }
+
+    public void CloseAllTabs()
+    {
+        var tabsToClose = Tabs.ToList();
+        if (tabsToClose.Count == 0)
+            return;
+
+        foreach (var tab in tabsToClose)
+        {
+            RemoveTab(tab, requestRemoteClose: true);
+        }
     }
 
     public string GetEditableSessionTitle(TerminalTab tab)

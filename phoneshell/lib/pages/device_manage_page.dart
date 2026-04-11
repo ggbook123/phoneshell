@@ -10,6 +10,7 @@ import '../core/models.dart';
 import '../core/preferences_util.dart';
 import '../widgets/phoneshell_header.dart';
 import 'scan_page.dart';
+import 'settings_page.dart';
 
 class DeviceItemModel {
   String deviceId = '';
@@ -41,7 +42,6 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
   List<GroupMemberModel> groupMembers = [];
   DeviceMode currentMode = DeviceMode.standalone;
   bool isInGroup = false;
-  bool isRefreshing = false;
   String groupId = '';
 
   String scanResult = '';
@@ -100,8 +100,19 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
 
   String _t(String zh, String en) => I18n.tCurrent(zh, en);
 
-  void _openSettingsPage() {
-    Navigator.of(context).pushNamed('pages/SettingsPage');
+  Future<void> _openSettingsPage() async {
+    final navigator = Navigator.of(context);
+    bool? shouldInitialize;
+    try {
+      shouldInitialize = await navigator.pushNamed<bool>('pages/SettingsPage');
+    } catch (_) {
+      if (!mounted) return;
+      shouldInitialize = await navigator.push<bool>(
+        MaterialPageRoute(builder: (_) => const SettingsPage()),
+      );
+    }
+    if (!mounted || shouldInitialize != true) return;
+    setState(_applyGroupExitLocal);
   }
 
   void _activatePage() {
@@ -115,7 +126,6 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
       ) {
         setState(() {
           _syncDeviceLists();
-          isRefreshing = false;
         });
       });
     }
@@ -418,9 +428,6 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     setState(() {
       currentMode = ConnectionManager.instance.currentMode;
       _syncDeviceLists();
-      if (isInGroup) {
-        ConnectionManager.instance.requestDeviceList();
-      }
     });
   }
 
@@ -1145,12 +1152,15 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
           Row(
             children: [
               Expanded(
-                child: Text(
-                  _t('群组设备', 'Group Devices'),
-                  style: const TextStyle(
-                    fontSize: AppSizes.fontSizeBody,
-                    color: Color(AppColors.textPrimary),
-                    fontWeight: FontWeight.w500,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    _t('群组设备', 'Group Devices'),
+                    style: const TextStyle(
+                      fontSize: AppSizes.fontSizeBody,
+                      color: Color(AppColors.textPrimary),
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                 ),
               ),
@@ -1162,32 +1172,6 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                       '${groupMembers.length} MEMBERS',
                     ),
                     const Color(AppColors.accent),
-                  ),
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    height: 30,
-                    child: OutlinedButton(
-                      onPressed: () =>
-                          ConnectionManager.instance.dissolveGroup(),
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(
-                          color: Color(AppColors.errorRed),
-                        ),
-                        padding: const EdgeInsets.symmetric(horizontal: 10),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(
-                            AppSizes.borderRadiusTag,
-                          ),
-                        ),
-                      ),
-                      child: Text(
-                        _t('解散', 'Dissolve'),
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Color(AppColors.errorRed),
-                        ),
-                      ),
-                    ),
                   ),
                 ],
               ),
@@ -1601,7 +1585,10 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
 
   Widget _settingsChip() {
     return GestureDetector(
-      onTap: _openSettingsPage,
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        _openSettingsPage();
+      },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(

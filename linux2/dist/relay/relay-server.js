@@ -6,7 +6,7 @@ import { TokenManager } from '../auth/token-manager.js';
 import { InviteManager } from '../auth/invite-manager.js';
 import { buildGroupBindPayload, buildPanelLoginPayload } from '../auth/qr-service.js';
 const TerminalOlderBufferPageChars = 20000;
-const TerminalSnapshotPageChars = 120000;
+const TerminalSnapshotPageChars = 240000;
 export class RelayServer {
     devices = new Map();
     clients = new Map();

@@ -73,7 +73,7 @@ class TerminalSnapshotRequestMsg {
   deviceId: string = '';
   sessionId: string = '';
   requestId: string = '';
-  maxChars: number = 120000;
+  maxChars: number = 240000;
 }
 
 class TerminalResizeMsg {
@@ -187,6 +187,12 @@ class ConnectionManagerClass {
   private groupId: string = '';
   private groupSecret: string = '';
   private isGroupJoined: boolean = false;
+  private pendingGroupDissolveUiReset: boolean = false;
+  private groupProbeTimer: number = -1;
+  private groupLastProbeResponseAt: number = 0;
+  private groupPendingProbeCount: number = 0;
+  private readonly groupProbeIntervalMs: number = 3000;
+  private readonly groupProbeTimeoutMs: number = 8000;
 
   // Current mode
   private _currentMode: DeviceMode = DeviceMode.STANDALONE;
@@ -216,6 +222,16 @@ class ConnectionManagerClass {
   getActiveDeviceId(): string { return this.activeDeviceId; }
 
   setMobileDeviceId(id: string): void { this.mobileDeviceId = id; }
+
+  markPendingGroupDissolveUiReset(): void {
+    this.pendingGroupDissolveUiReset = true;
+  }
+
+  consumePendingGroupDissolveUiReset(): boolean {
+    const pending: boolean = this.pendingGroupDissolveUiReset;
+    this.pendingGroupDissolveUiReset = false;
+    return pending;
+  }
 
   // --- Unified message/state callback registration (for pages) ---
 
@@ -442,6 +458,7 @@ class ConnectionManagerClass {
   }
 
   disconnectGroup(): void {
+    this.stopGroupProbeMonitor();
     if (this.groupConnection === null) return;
 
     hilog.info(DOMAIN, TAG, 'disconnectGroup');
@@ -888,6 +905,19 @@ class ConnectionManagerClass {
     // For single connections, the device info comes from the connection itself
   }
 
+  forceReconnectGroup(): void {
+    if (this.groupConnection === null) return;
+    const reconnectUrl: string = this.groupConnection.serverUrl;
+    if (reconnectUrl.length === 0) return;
+
+    this.groupPendingProbeCount = 0;
+    this.markAllGroupDevicesOffline();
+    this.clearSessionsForGroupDevices();
+    this.emitDeviceListChanged();
+
+    this.groupConnection.connect(reconnectUrl);
+  }
+
   // --- Restore saved connections ---
 
   async restoreSavedConnections(): Promise<void> {
@@ -1015,9 +1045,12 @@ class ConnectionManagerClass {
     }
 
     if (type === 'device.list') {
+      this.groupPendingProbeCount = 0;
+      this.groupLastProbeResponseAt = Date.now();
       this.groupDevices = this.normalizeDeviceList(data['devices']);
       this.emitDeviceListChanged();
     } else if (type === 'group.join.accepted') {
+      this.groupLastProbeResponseAt = Date.now();
       this.isGroupJoined = true;
       this.groupId = ((data['groupId'] ?? '') as string);
       this.groupMembers = this.normalizeGroupMembers(data['members']);
@@ -1027,19 +1060,23 @@ class ConnectionManagerClass {
         this.groupSecret = secret;
         PreferencesUtil.setString(StorageKeys.GROUP_SECRET, secret);
       }
+      this.emitDeviceListChanged();
       // Refresh device list after successful join
       this.requestDeviceList();
     } else if (type === 'group.member.list') {
       this.groupMembers = this.normalizeGroupMembers(data['members']);
-      this.requestDeviceList();
+      this.emitDeviceListChanged();
     } else if (type === 'group.member.joined') {
       const member: GroupMemberInfo | null = this.normalizeGroupMember(data['member']);
-      if (member !== null) this.groupMembers.push(member);
-      this.requestDeviceList();
+      if (member !== null) {
+        this.upsertGroupMemberLocal(member);
+        this.emitDeviceListChanged();
+      }
     } else if (type === 'group.member.left') {
       const leftDeviceId: string = (data['deviceId'] ?? '') as string;
-      this.groupMembers = this.groupMembers.filter((m: GroupMemberInfo) => m.deviceId !== leftDeviceId);
-      this.requestDeviceList();
+      this.updateGroupMemberOnlineLocal(leftDeviceId, false);
+      this.updateGroupDeviceOnlineLocal(leftDeviceId, false);
+      this.emitDeviceListChanged();
     } else if (type === 'group.server.change.commit') {
       const newUrl: string = (data['newServerUrl'] ?? '') as string;
       const newGroupId: string = (data['groupId'] ?? this.groupId) as string;
@@ -1087,11 +1124,19 @@ class ConnectionManagerClass {
     hilog.info(DOMAIN, TAG, 'groupStateChange state=%{public}d', state);
 
     if (state === ConnectionState.CONNECTED && this.groupConnection !== null) {
+      this.startGroupProbeMonitor();
       // Auto re-join group on reconnect using stored secret
       if (this.groupSecret.length > 0) {
         hilog.info(DOMAIN, TAG, 'Auto re-joining group after reconnect');
         this.sendGroupJoinRequest(this.groupSecret);
+      } else {
+        this.requestDeviceList();
       }
+    } else if (state === ConnectionState.DISCONNECTED) {
+      this.stopGroupProbeMonitor();
+      this.markAllGroupDevicesOffline();
+      this.clearSessionsForGroupDevices();
+      this.emitDeviceListChanged();
     }
 
     this.emitStateChange(state, 'group');
@@ -1217,6 +1262,10 @@ class ConnectionManagerClass {
       this.handleGroupStateChange(state);
     });
 
+    if (conn.connectionState === ConnectionState.CONNECTED) {
+      this.startGroupProbeMonitor();
+    }
+
     PreferencesUtil.setString(StorageKeys.GROUP_RELAY_URL, relayUrl);
     PreferencesUtil.setString(StorageKeys.GROUP_ID, newGroupId);
     this.emitModeChange(DeviceMode.GROUP);
@@ -1334,7 +1383,7 @@ class ConnectionManagerClass {
         deviceId: deviceId,
         displayName: ((rec['displayName'] ?? deviceId) as string),
         os: ((rec['os'] ?? 'Unknown') as string),
-        isOnline: ((rec['isOnline'] ?? true) as boolean),
+        isOnline: ((rec['isOnline'] ?? false) as boolean),
         availableShells: this.normalizeStringArray(rec['availableShells'])
       } as DeviceInfo;
       normalized.push(info);
@@ -1361,10 +1410,143 @@ class ConnectionManagerClass {
       displayName: ((rec['displayName'] ?? '') as string),
       os: ((rec['os'] ?? '') as string),
       role: ((rec['role'] ?? 'Member') as string),
-      isOnline: ((rec['isOnline'] ?? true) as boolean),
+      isOnline: ((rec['isOnline'] ?? false) as boolean),
       availableShells: this.normalizeStringArray(rec['availableShells'])
     } as GroupMemberInfo;
     return memberInfo;
+  }
+
+  private upsertGroupMemberLocal(member: GroupMemberInfo): void {
+    for (let i: number = 0; i < this.groupMembers.length; i++) {
+      if (this.groupMembers[i].deviceId === member.deviceId) {
+        this.groupMembers[i] = member;
+        return;
+      }
+    }
+    this.groupMembers.push(member);
+  }
+
+  private updateGroupMemberOnlineLocal(deviceId: string, isOnline: boolean): void {
+    if (deviceId.length === 0) return;
+    for (let i: number = 0; i < this.groupMembers.length; i++) {
+      if (this.groupMembers[i].deviceId === deviceId) {
+        const member: GroupMemberInfo = this.groupMembers[i];
+        this.groupMembers[i] = {
+          deviceId: member.deviceId,
+          displayName: member.displayName,
+          os: member.os,
+          role: member.role,
+          isOnline: isOnline,
+          availableShells: member.availableShells
+        } as GroupMemberInfo;
+        return;
+      }
+    }
+  }
+
+  private clearSessionsForGroupDevices(): void {
+    const groupDeviceIds: Set<string> = new Set();
+    for (let i: number = 0; i < this.groupDevices.length; i++) {
+      if (this.groupDevices[i].deviceId.length > 0) {
+        groupDeviceIds.add(this.groupDevices[i].deviceId);
+      }
+    }
+    for (let i: number = 0; i < this.groupMembers.length; i++) {
+      if (this.groupMembers[i].deviceId.length > 0) {
+        groupDeviceIds.add(this.groupMembers[i].deviceId);
+      }
+    }
+
+    groupDeviceIds.forEach((deviceId: string) => {
+      this.removeSessionsForDevice(deviceId);
+    });
+  }
+
+  private updateGroupDeviceOnlineLocal(deviceId: string, isOnline: boolean): void {
+    if (deviceId.length === 0) return;
+    for (let i: number = 0; i < this.groupDevices.length; i++) {
+      if (this.groupDevices[i].deviceId === deviceId) {
+        const device: DeviceInfo = this.groupDevices[i];
+        this.groupDevices[i] = {
+          deviceId: device.deviceId,
+          displayName: device.displayName,
+          os: device.os,
+          isOnline: isOnline,
+          availableShells: device.availableShells
+        } as DeviceInfo;
+        return;
+      }
+    }
+  }
+
+  private markAllGroupDevicesOffline(): void {
+    for (let i: number = 0; i < this.groupDevices.length; i++) {
+      const device: DeviceInfo = this.groupDevices[i];
+      if (!device.isOnline) {
+        continue;
+      }
+      this.groupDevices[i] = {
+        deviceId: device.deviceId,
+        displayName: device.displayName,
+        os: device.os,
+        isOnline: false,
+        availableShells: device.availableShells
+      } as DeviceInfo;
+    }
+
+    for (let i: number = 0; i < this.groupMembers.length; i++) {
+      const member: GroupMemberInfo = this.groupMembers[i];
+      if (!member.isOnline) {
+        continue;
+      }
+      this.groupMembers[i] = {
+        deviceId: member.deviceId,
+        displayName: member.displayName,
+        os: member.os,
+        role: member.role,
+        isOnline: false,
+        availableShells: member.availableShells
+      } as GroupMemberInfo;
+    }
+  }
+
+  private startGroupProbeMonitor(): void {
+    this.stopGroupProbeMonitor();
+    this.groupLastProbeResponseAt = Date.now();
+    this.groupProbeTimer = setInterval(() => {
+      this.runGroupProbeTick();
+    }, this.groupProbeIntervalMs) as number;
+  }
+
+  private stopGroupProbeMonitor(): void {
+    if (this.groupProbeTimer !== -1) {
+      clearInterval(this.groupProbeTimer);
+      this.groupProbeTimer = -1;
+    }
+    this.groupPendingProbeCount = 0;
+    this.groupLastProbeResponseAt = 0;
+  }
+
+  private runGroupProbeTick(): void {
+    const conn: DeviceConnection | null = this.groupConnection;
+    if (conn === null) {
+      this.stopGroupProbeMonitor();
+      return;
+    }
+    if (conn.connectionState !== ConnectionState.CONNECTED) {
+      return;
+    }
+
+    this.requestDeviceList();
+    this.groupPendingProbeCount++;
+
+    const now: number = Date.now();
+    const isStale: boolean = this.groupLastProbeResponseAt > 0 &&
+      now - this.groupLastProbeResponseAt >= this.groupProbeTimeoutMs;
+    if (this.groupPendingProbeCount >= 2 || isStale) {
+      this.groupPendingProbeCount = 0;
+      this.forceReconnectGroup();
+    }
   }
 
   private normalizeStringArray(value: Object | undefined): Array<string> {

@@ -1257,11 +1257,11 @@
                                                 Click="CompactModeButton_Click"
                                                 ToolTip="Toggle compact (mobile) size" />
 
-                                        <!-- Close session -->
-                                        <Button Content="Close" Style="{StaticResource DangerButton}"
+                                        <!-- Close all sessions -->
+                                        <Button Content="Close All" Style="{StaticResource DangerButton}"
                                                 FontSize="11" Padding="10,4" Margin="4,0,0,0"
                                                 Click="TitleBarCloseButton_Click"
-                                                ToolTip="Close this session" />
+                                                ToolTip="Close all sessions" />
                                     </StackPanel>
 
                                     <!-- Tab items + new tab -->

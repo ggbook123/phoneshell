@@ -32,7 +32,7 @@ class _TerminalPageState extends State<TerminalPage> {
 
   final int _maxOutputLength = 200000;
   final int _maxRenderedLength = 5000000;
-  final int _snapshotPageChars = 120000;
+  final int _snapshotPageChars = 240000;
   String _pendingTerminalOutput = '';
   String _renderedTerminalBuffer = '';
   bool _snapshotLoading = false;

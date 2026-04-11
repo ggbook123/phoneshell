@@ -26,6 +26,11 @@ class ConnectionManager {
   String _groupId = '';
   String _groupSecret = '';
   bool _isGroupJoined = false;
+  Timer? _groupProbeTimer;
+  DateTime? _groupLastProbeResponseAt;
+  int _groupPendingProbeCount = 0;
+  final Duration _groupProbeInterval = const Duration(seconds: 3);
+  final Duration _groupProbeTimeout = const Duration(seconds: 8);
 
   DeviceMode _currentMode = DeviceMode.standalone;
 
@@ -206,6 +211,7 @@ class ConnectionManager {
   }
 
   void disconnectGroup() {
+    _stopGroupProbeMonitor();
     final conn = _groupConnection;
     if (conn == null) return;
 
@@ -640,6 +646,20 @@ class ConnectionManager {
     }
   }
 
+  void forceReconnectGroup() {
+    final conn = _groupConnection;
+    if (conn == null) return;
+    final reconnectUrl = conn.serverUrl;
+    if (reconnectUrl.isEmpty) return;
+
+    _groupPendingProbeCount = 0;
+    _markAllGroupDevicesOffline();
+    _clearSessionsForGroupDevices();
+    _emitDeviceListChanged();
+
+    conn.connect(reconnectUrl);
+  }
+
   Future<void> restoreSavedConnections() async {
     try {
       final groupRelayUrl = await PreferencesUtil.getString(
@@ -750,9 +770,12 @@ class ConnectionManager {
 
   void _handleGroupMessage(String type, Map<String, dynamic> data) {
     if (type == 'device.list') {
+      _groupPendingProbeCount = 0;
+      _groupLastProbeResponseAt = DateTime.now();
       _groupDevices = _normalizeDeviceList(data['devices']);
       _emitDeviceListChanged();
     } else if (type == 'group.join.accepted') {
+      _groupLastProbeResponseAt = DateTime.now();
       _isGroupJoined = true;
       _groupId = (data['groupId'] ?? '') as String;
       _groupMembers = _normalizeGroupMembers(data['members']);
@@ -762,18 +785,22 @@ class ConnectionManager {
         _groupSecret = secret;
         PreferencesUtil.setString(StorageKeys.groupSecret, secret);
       }
+      _emitDeviceListChanged();
       requestDeviceList();
     } else if (type == 'group.member.list') {
       _groupMembers = _normalizeGroupMembers(data['members']);
-      requestDeviceList();
+      _emitDeviceListChanged();
     } else if (type == 'group.member.joined') {
       final member = _normalizeGroupMember(data['member']);
-      if (member != null) _groupMembers.add(member);
-      requestDeviceList();
+      if (member != null) {
+        _upsertGroupMemberLocal(member);
+        _emitDeviceListChanged();
+      }
     } else if (type == 'group.member.left') {
       final leftId = (data['deviceId'] ?? '') as String;
-      _groupMembers = _groupMembers.where((m) => m.deviceId != leftId).toList();
-      requestDeviceList();
+      _updateGroupMemberOnlineLocal(leftId, false);
+      _updateGroupDeviceOnlineLocal(leftId, false);
+      _emitDeviceListChanged();
     } else if (type == 'group.server.change.commit') {
       final newUrl = (data['newServerUrl'] ?? '') as String;
       final newGroupId = (data['groupId'] ?? _groupId) as String;
@@ -810,9 +837,17 @@ class ConnectionManager {
 
   void _handleGroupStateChange(ConnectionState state) {
     if (state == ConnectionState.connected && _groupConnection != null) {
+      _startGroupProbeMonitor();
       if (_groupSecret.isNotEmpty) {
         sendGroupJoinRequest(_groupSecret);
+      } else {
+        requestDeviceList();
       }
+    } else if (state == ConnectionState.disconnected) {
+      _stopGroupProbeMonitor();
+      _markAllGroupDevicesOffline();
+      _clearSessionsForGroupDevices();
+      _emitDeviceListChanged();
     }
     _emitStateChange(state, 'group');
   }
@@ -933,6 +968,10 @@ class ConnectionManager {
       (state) => _handleGroupStateChange(state),
     );
 
+    if (conn.connectionState == ConnectionState.connected) {
+      _startGroupProbeMonitor();
+    }
+
     PreferencesUtil.setString(StorageKeys.groupRelayUrl, relayUrl);
     PreferencesUtil.setString(StorageKeys.groupId, newGroupId);
     _emitModeChange(DeviceMode.group);
@@ -951,6 +990,23 @@ class ConnectionManager {
         _activeSessionId = '';
         _activeDeviceId = '';
       }
+    }
+  }
+
+  void _clearSessionsForGroupDevices() {
+    final groupDeviceIds = <String>{};
+    for (final device in _groupDevices) {
+      if (device.deviceId.isNotEmpty) {
+        groupDeviceIds.add(device.deviceId);
+      }
+    }
+    for (final member in _groupMembers) {
+      if (member.deviceId.isNotEmpty) {
+        groupDeviceIds.add(member.deviceId);
+      }
+    }
+    for (final deviceId in groupDeviceIds) {
+      _removeSessionsForDevice(deviceId);
     }
   }
 
@@ -1099,6 +1155,85 @@ class ConnectionManager {
   GroupMemberInfo? _normalizeGroupMember(dynamic value) {
     if (value is! Map<String, dynamic>) return null;
     return GroupMemberInfo.fromMap(value);
+  }
+
+  void _upsertGroupMemberLocal(GroupMemberInfo member) {
+    final index = _groupMembers.indexWhere(
+      (m) => m.deviceId == member.deviceId,
+    );
+    if (index == -1) {
+      _groupMembers.add(member);
+      return;
+    }
+    _groupMembers[index] = member;
+  }
+
+  void _updateGroupMemberOnlineLocal(String deviceId, bool isOnline) {
+    if (deviceId.isEmpty) return;
+    final index = _groupMembers.indexWhere((m) => m.deviceId == deviceId);
+    if (index == -1) return;
+    _groupMembers[index] = _groupMembers[index].copyWith(isOnline: isOnline);
+  }
+
+  void _updateGroupDeviceOnlineLocal(String deviceId, bool isOnline) {
+    if (deviceId.isEmpty) return;
+    final index = _groupDevices.indexWhere((d) => d.deviceId == deviceId);
+    if (index == -1) return;
+    _groupDevices[index] = _groupDevices[index].copyWith(isOnline: isOnline);
+  }
+
+  void _markAllGroupDevicesOffline() {
+    _groupDevices = _groupDevices
+        .map(
+          (device) =>
+              device.isOnline ? device.copyWith(isOnline: false) : device,
+        )
+        .toList();
+    _groupMembers = _groupMembers
+        .map(
+          (member) =>
+              member.isOnline ? member.copyWith(isOnline: false) : member,
+        )
+        .toList();
+  }
+
+  void _startGroupProbeMonitor() {
+    _stopGroupProbeMonitor();
+    _groupLastProbeResponseAt = DateTime.now();
+    _groupProbeTimer = Timer.periodic(_groupProbeInterval, (_) {
+      _runGroupProbeTick();
+    });
+  }
+
+  void _stopGroupProbeMonitor() {
+    _groupProbeTimer?.cancel();
+    _groupProbeTimer = null;
+    _groupPendingProbeCount = 0;
+    _groupLastProbeResponseAt = null;
+  }
+
+  void _runGroupProbeTick() {
+    final conn = _groupConnection;
+    if (conn == null) {
+      _stopGroupProbeMonitor();
+      return;
+    }
+    if (conn.connectionState != ConnectionState.connected) {
+      return;
+    }
+
+    requestDeviceList();
+    _groupPendingProbeCount++;
+
+    final now = DateTime.now();
+    final lastResponseAt = _groupLastProbeResponseAt;
+    final isStale =
+        lastResponseAt != null &&
+        now.difference(lastResponseAt) >= _groupProbeTimeout;
+    if (_groupPendingProbeCount >= 2 || isStale) {
+      _groupPendingProbeCount = 0;
+      forceReconnectGroup();
+    }
   }
 
   void _emitMessage(String type, Map<String, dynamic> data) {

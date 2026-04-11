@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/constants.dart';
+import '../core/connection_manager.dart';
 import '../core/i18n.dart';
 
 class SettingsPage extends StatelessWidget {
@@ -25,6 +26,46 @@ class SettingsPage extends StatelessWidget {
     final uri = Uri.tryParse(AppStrings.privacyPolicyUrl);
     if (uri == null) return;
     await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _openInitializeConfirmDialog(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(AppColors.surface2),
+          title: Text(
+            _t('确认初始化', 'Confirm Initialization'),
+            style: const TextStyle(color: Color(AppColors.textPrimary)),
+          ),
+          content: Text(
+            _t(
+              '是否确认初始化？当前群组将被解散。',
+              'Are you sure you want to initialize? The current group will be dissolved.',
+            ),
+            style: const TextStyle(color: Color(AppColors.textSecondary)),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: Text(_t('否', 'No')),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: Text(
+                _t('是', 'Yes'),
+                style: const TextStyle(color: Color(AppColors.errorRed)),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+    if (!context.mounted) return;
+    ConnectionManager.instance.dissolveGroup();
+    Navigator.of(context).pop(true);
   }
 
   @override
@@ -51,18 +92,26 @@ class SettingsPage extends StatelessWidget {
                   color: const Color(AppColors.surface1),
                   child: Column(
                     children: [
-                      Container(height: 2, color: const Color(AppColors.accent)),
+                      Container(
+                        height: 2,
+                        color: const Color(AppColors.accent),
+                      ),
                       SizedBox(
                         height: 56,
                         child: Padding(
-                          padding: EdgeInsets.symmetric(horizontal: AppSizes.paddingPage + padding.left),
+                          padding: EdgeInsets.symmetric(
+                            horizontal: AppSizes.paddingPage + padding.left,
+                          ),
                           child: Row(
                             children: [
                               GestureDetector(
                                 onTap: () => _goBack(context),
                                 child: Text(
                                   _t('‹ 返回', '‹ Back'),
-                                  style: const TextStyle(fontSize: AppSizes.fontSizeSmall, color: Color(AppColors.accent)),
+                                  style: const TextStyle(
+                                    fontSize: AppSizes.fontSizeSmall,
+                                    color: Color(AppColors.accent),
+                                  ),
                                 ),
                               ),
                               const SizedBox(width: 12),
@@ -80,7 +129,10 @@ class SettingsPage extends StatelessWidget {
                                       ),
                                     ),
                                     Text(
-                                      _t('操作说明与软件介绍', 'Usage Guide + About'),
+                                      _t(
+                                        '操作入口与系统初始化',
+                                        'App actions + initialization',
+                                      ),
                                       style: const TextStyle(
                                         fontSize: 11,
                                         color: Color(AppColors.textMuted),
@@ -133,6 +185,20 @@ class SettingsPage extends StatelessWidget {
                         accent: const Color(AppColors.accentPink),
                         onOpen: _openPrivacyPolicy,
                       ),
+                      const SizedBox(height: 12),
+                      _settingsItem(
+                        context,
+                        indexLabel: '04',
+                        title: _t('初始化', 'Initialize'),
+                        subtitle: _t(
+                          '解散当前群组并恢复初始状态',
+                          'Dissolve the current group and reset state',
+                        ),
+                        accent: const Color(AppColors.errorRed),
+                        onOpen: () {
+                          _openInitializeConfirmDialog(context);
+                        },
+                      ),
                     ],
                   ),
                 ),
@@ -172,40 +238,68 @@ class SettingsPage extends StatelessWidget {
             Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
                   margin: const EdgeInsets.only(right: 12),
                   decoration: BoxDecoration(
                     color: const Color(AppColors.highlight),
-                    borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
+                    borderRadius: BorderRadius.circular(
+                      AppSizes.borderRadiusTag,
+                    ),
                     border: Border.all(color: accent),
                   ),
                   child: Text(
                     indexLabel,
-                    style: TextStyle(fontSize: 11, color: accent, fontFamily: 'monospace'),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: accent,
+                      fontFamily: 'monospace',
+                    ),
                   ),
                 ),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(title, style: const TextStyle(fontSize: AppSizes.fontSizeBody, color: Color(AppColors.textPrimary))),
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: AppSizes.fontSizeBody,
+                          color: Color(AppColors.textPrimary),
+                        ),
+                      ),
                       Text(
                         subtitle,
-                        style: const TextStyle(fontSize: 11, color: Color(AppColors.textMuted), fontFamily: 'monospace'),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(AppColors.textMuted),
+                          fontFamily: 'monospace',
+                        ),
                       ),
                     ],
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(AppColors.chipBg),
-                    borderRadius: BorderRadius.circular(AppSizes.borderRadiusTag),
+                    borderRadius: BorderRadius.circular(
+                      AppSizes.borderRadiusTag,
+                    ),
                     border: Border.all(color: accent),
                   ),
                   child: Text(
                     'OPEN',
-                    style: TextStyle(fontSize: 10, color: accent, fontFamily: 'monospace'),
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: accent,
+                      fontFamily: 'monospace',
+                    ),
                   ),
                 ),
               ],

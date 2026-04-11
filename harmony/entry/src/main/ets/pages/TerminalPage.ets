@@ -125,7 +125,7 @@ struct TerminalPage {
   private maxOutputLength: number = 200000;
   // Keep the client-side replay window aligned with the server retention cap.
   private maxRenderedLength: number = 5000000;
-  private snapshotPageChars: number = 120000;
+  private snapshotPageChars: number = 240000;
   private pendingTerminalOutput: string = '';
   private renderedTerminalBuffer: string = '';
   private snapshotLoading: boolean = false;
