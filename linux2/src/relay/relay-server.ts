@@ -16,6 +16,7 @@ import type {
   MobileBindRequestMessage, MobileUnbindMessage, AuthResponseMessage,
   PanelLoginScanMessage, DeviceRegisterMessage, SessionListRequestMessage,
   TerminalInputMessage, TerminalOutputMessage, TerminalOpenMessage,
+  TerminalSnapshotRequestMessage,
   TerminalHistoryRequestMessage,
   TerminalResizeMessage, TerminalCloseMessage, TerminalOpenedMessage,
   TerminalClosedMessage, SessionListMessage,
@@ -27,6 +28,7 @@ import type {
 } from '../protocol/messages.js';
 
 const TerminalHistoryPageChars = 20000;
+const TerminalSnapshotPageChars = 120000;
 
 interface ConnectedDevice {
   deviceId: string;
@@ -61,6 +63,7 @@ export class RelayServer {
   private readonly tokenManager = new TokenManager();
   private readonly inviteManager = new InviteManager();
   private readonly outputChains = new Map<string, Promise<void>>();
+  private readonly sessionOutputSeq = new Map<string, number>();
   private historyStore: TerminalHistoryStore | null = null;
   private preserveTerminalHistoryOnClose = true;
   private group: GroupInfo | null = null;
@@ -378,15 +381,28 @@ export class RelayServer {
         await this.handleTerminalHistoryRequest(client, req);
         break;
       }
+      case 'terminal.snapshot.request': {
+        const req = message as TerminalSnapshotRequestMessage;
+        await this.handleTerminalSnapshotRequest(client, req);
+        break;
+      }
       case 'terminal.output': {
         const output = message as TerminalOutputMessage;
         client.subscribedDeviceId ??= output.deviceId;
         this.appendTerminalHistory(output.deviceId, output.sessionId, output.data);
+        const outputSeq = this.nextOutputSeq(output.deviceId, output.sessionId);
+        const forwarded = serialize({
+          type: 'terminal.output' as const,
+          deviceId: output.deviceId,
+          sessionId: output.sessionId,
+          data: output.data,
+          outputSeq,
+        });
         for (const c of this.clients.values()) {
           if (c.clientId !== client.clientId &&
               c.subscribedDeviceId === output.deviceId &&
               c.subscribedSessionId === output.sessionId) {
-            await this.send(c, json);
+            await this.send(c, forwarded);
           }
         }
         break;
@@ -421,7 +437,10 @@ export class RelayServer {
               if (snapshot) {
                 await this.send(client, serialize({
                   type: 'terminal.output' as const,
-                  deviceId: resize.deviceId, sessionId: resize.sessionId, data: snapshot,
+                  deviceId: resize.deviceId,
+                  sessionId: resize.sessionId,
+                  data: snapshot,
+                  outputSeq: this.getCurrentOutputSeq(resize.deviceId, resize.sessionId),
                 }));
               }
             }
@@ -445,6 +464,7 @@ export class RelayServer {
             client.subscribedSessionId = undefined;
             this.callbacks.onLocalTerminalSessionEnded?.(close.sessionId);
             this.removeHistoryForSession(close.deviceId, close.sessionId);
+            this.clearOutputSeq(close.deviceId, close.sessionId);
           } else if (target.clientId) {
             const dc = this.clients.get(target.clientId);
             if (dc) await this.send(dc, json);
@@ -462,6 +482,7 @@ export class RelayServer {
         if (message.type === 'terminal.closed') {
           const closed = message as TerminalClosedMessage;
           this.removeHistoryForSession(closed.deviceId, closed.sessionId);
+          this.clearOutputSeq(closed.deviceId, closed.sessionId);
         }
         break;
       case 'control.force_disconnect':
@@ -522,7 +543,10 @@ export class RelayServer {
       if (snapshot) {
         await this.send(client, serialize({
           type: 'terminal.output' as const,
-          deviceId: open.deviceId, sessionId, data: snapshot,
+          deviceId: open.deviceId,
+          sessionId,
+          data: snapshot,
+          outputSeq: this.getCurrentOutputSeq(open.deviceId, sessionId),
         }));
       }
       this.log(`Local terminal opened for ${client.clientId}, session=${sessionId}`);
@@ -537,7 +561,13 @@ export class RelayServer {
 
   async broadcastLocalTerminalOutput(deviceId: string, sessionId: string, data: string): Promise<void> {
     this.appendTerminalHistory(deviceId, sessionId, data);
-    const msg = serialize({ type: 'terminal.output' as const, deviceId, sessionId, data });
+    const msg = serialize({
+      type: 'terminal.output' as const,
+      deviceId,
+      sessionId,
+      data,
+      outputSeq: this.nextOutputSeq(deviceId, sessionId),
+    });
     const promises: Promise<void>[] = [];
     for (const client of this.clients.values()) {
       if (client.subscribedDeviceId === deviceId && client.subscribedSessionId === sessionId) {
@@ -549,6 +579,7 @@ export class RelayServer {
 
   async broadcastLocalTerminalClosed(deviceId: string, sessionId: string): Promise<void> {
     this.removeHistoryForSession(deviceId, sessionId);
+    this.clearOutputSeq(deviceId, sessionId);
     const msg = serialize({ type: 'terminal.closed' as const, deviceId, sessionId });
     for (const client of this.clients.values()) {
       if (client.subscribedDeviceId === deviceId && client.subscribedSessionId === sessionId) {
@@ -568,6 +599,53 @@ export class RelayServer {
   }
 
   // --- Terminal history ---
+
+  private buildSessionOutputKey(deviceId: string, sessionId: string): string {
+    return `${deviceId}\u0000${sessionId}`;
+  }
+
+  private getCurrentOutputSeq(deviceId: string, sessionId: string): number {
+    const key = this.buildSessionOutputKey(deviceId, sessionId);
+    return this.sessionOutputSeq.get(key) || 0;
+  }
+
+  private nextOutputSeq(deviceId: string, sessionId: string): number {
+    const key = this.buildSessionOutputKey(deviceId, sessionId);
+    const next = (this.sessionOutputSeq.get(key) || 0) + 1;
+    this.sessionOutputSeq.set(key, next);
+    return next;
+  }
+
+  private clearOutputSeq(deviceId: string, sessionId: string): void {
+    const key = this.buildSessionOutputKey(deviceId, sessionId);
+    this.sessionOutputSeq.delete(key);
+  }
+
+  private async sendTerminalSnapshotResponse(
+    client: ClientConnection,
+    requestId: string,
+    deviceId: string,
+    sessionId: string,
+    maxChars: number,
+  ): Promise<void> {
+    const page = this.historyStore?.getPage(
+      deviceId,
+      sessionId,
+      0,
+      RelayServer.clampSnapshotPageSize(maxChars),
+    ) || { data: '', nextBeforeSeq: 0, hasMore: false };
+
+    await this.send(client, serialize({
+      type: 'terminal.snapshot.response' as const,
+      deviceId,
+      sessionId,
+      requestId,
+      data: page.data,
+      snapshotSeq: this.getCurrentOutputSeq(deviceId, sessionId),
+      nextBeforeSeq: page.nextBeforeSeq,
+      hasMore: page.hasMore,
+    }));
+  }
 
   private appendTerminalHistory(deviceId: string, sessionId: string, data: string): void {
     if (!deviceId || !sessionId || !data) return;
@@ -610,6 +688,22 @@ export class RelayServer {
     }));
   }
 
+  private async handleTerminalSnapshotRequest(client: ClientConnection, req: TerminalSnapshotRequestMessage): Promise<void> {
+    const deviceId = req.deviceId?.trim() || '';
+    const sessionId = req.sessionId?.trim() || '';
+    if (!deviceId || !sessionId) return;
+
+    client.subscribedDeviceId = deviceId;
+    client.subscribedSessionId = sessionId;
+    await this.sendTerminalSnapshotResponse(
+      client,
+      req.requestId?.trim() || '',
+      deviceId,
+      sessionId,
+      req.maxChars || 0,
+    );
+  }
+
   private removeHistoryForSession(deviceId: string, sessionId: string): void {
     if (!deviceId || !sessionId) return;
     if (this.preserveTerminalHistoryOnClose) return;
@@ -619,6 +713,11 @@ export class RelayServer {
   private static clampHistoryPageSize(requested: number): number {
     if (requested <= 0) return TerminalHistoryPageChars;
     return Math.min(requested, TerminalHistoryPageChars);
+  }
+
+  private static clampSnapshotPageSize(requested: number): number {
+    if (requested <= 0) return TerminalSnapshotPageChars;
+    return Math.min(requested, TerminalSnapshotPageChars);
   }
 
   // --- Group handlers ---

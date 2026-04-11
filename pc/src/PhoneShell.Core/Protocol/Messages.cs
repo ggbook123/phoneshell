@@ -157,6 +157,28 @@ public sealed class TerminalOutputMessage
     public string DeviceId { get; init; } = string.Empty;
     public string SessionId { get; init; } = string.Empty;
     public string Data { get; init; } = string.Empty;
+    public long OutputSeq { get; init; }
+}
+
+public sealed class TerminalSnapshotRequestMessage
+{
+    public string Type => "terminal.snapshot.request";
+    public string DeviceId { get; init; } = string.Empty;
+    public string SessionId { get; init; } = string.Empty;
+    public string RequestId { get; init; } = string.Empty;
+    public int MaxChars { get; init; } = 120_000;
+}
+
+public sealed class TerminalSnapshotResponseMessage
+{
+    public string Type => "terminal.snapshot.response";
+    public string DeviceId { get; init; } = string.Empty;
+    public string SessionId { get; init; } = string.Empty;
+    public string RequestId { get; init; } = string.Empty;
+    public string Data { get; init; } = string.Empty;
+    public long SnapshotSeq { get; init; }
+    public long NextBeforeSeq { get; init; }
+    public bool HasMore { get; init; }
 }
 
 public sealed class TerminalHistoryRequestMessage

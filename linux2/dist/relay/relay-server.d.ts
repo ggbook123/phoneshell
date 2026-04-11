@@ -23,6 +23,7 @@ export declare class RelayServer {
     private readonly tokenManager;
     private readonly inviteManager;
     private readonly outputChains;
+    private readonly sessionOutputSeq;
     private historyStore;
     private preserveTerminalHistoryOnClose;
     private group;
@@ -55,10 +56,17 @@ export declare class RelayServer {
     broadcastLocalTerminalOutput(deviceId: string, sessionId: string, data: string): Promise<void>;
     broadcastLocalTerminalClosed(deviceId: string, sessionId: string): Promise<void>;
     broadcastLocalSessionListChanged(deviceId: string): Promise<void>;
+    private buildSessionOutputKey;
+    private getCurrentOutputSeq;
+    private nextOutputSeq;
+    private clearOutputSeq;
+    private sendTerminalSnapshotResponse;
     private appendTerminalHistory;
     private handleTerminalHistoryRequest;
+    private handleTerminalSnapshotRequest;
     private removeHistoryForSession;
     private static clampHistoryPageSize;
+    private static clampSnapshotPageSize;
     private handleGroupJoinRequest;
     private handleGroupKick;
     private handleDeviceUnregister;

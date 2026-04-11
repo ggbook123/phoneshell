@@ -81,6 +81,26 @@ export interface TerminalOutputMessage {
   deviceId: string;
   sessionId: string;
   data: string;
+  outputSeq?: number;
+}
+
+export interface TerminalSnapshotRequestMessage {
+  type: 'terminal.snapshot.request';
+  deviceId: string;
+  sessionId: string;
+  requestId: string;
+  maxChars: number;
+}
+
+export interface TerminalSnapshotResponseMessage {
+  type: 'terminal.snapshot.response';
+  deviceId: string;
+  sessionId: string;
+  requestId: string;
+  data: string;
+  snapshotSeq: number;
+  nextBeforeSeq: number;
+  hasMore: boolean;
 }
 
 export interface TerminalHistoryRequestMessage {
@@ -397,6 +417,8 @@ export type Message =
   | TerminalOpenedMessage
   | TerminalInputMessage
   | TerminalOutputMessage
+  | TerminalSnapshotRequestMessage
+  | TerminalSnapshotResponseMessage
   | TerminalHistoryRequestMessage
   | TerminalHistoryResponseMessage
   | TerminalResizeMessage

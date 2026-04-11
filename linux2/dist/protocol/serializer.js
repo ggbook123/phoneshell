@@ -2,6 +2,7 @@ const MESSAGE_TYPES = new Set([
     'device.register', 'device.unregister', 'device.list.request', 'device.list',
     'session.list.request', 'session.list',
     'terminal.open', 'terminal.opened', 'terminal.input', 'terminal.output',
+    'terminal.snapshot.request', 'terminal.snapshot.response',
     'terminal.history.request', 'terminal.history.response',
     'terminal.resize', 'terminal.close', 'terminal.closed',
     'control.request', 'control.grant', 'control.force_disconnect',

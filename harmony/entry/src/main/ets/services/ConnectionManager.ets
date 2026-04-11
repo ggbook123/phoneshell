@@ -68,6 +68,14 @@ class TerminalInputMsg {
   data: string = '';
 }
 
+class TerminalSnapshotRequestMsg {
+  type: string = 'terminal.snapshot.request';
+  deviceId: string = '';
+  sessionId: string = '';
+  requestId: string = '';
+  maxChars: number = 120000;
+}
+
 class TerminalHistoryRequestMsg {
   type: string = 'terminal.history.request';
   deviceId: string = '';
@@ -699,6 +707,18 @@ class ConnectionManagerClass {
     conn.send(JSON.stringify(msg));
   }
 
+  requestTerminalSnapshot(deviceId: string, sessionId: string, requestId: string, maxChars: number): void {
+    if (deviceId.length === 0 || sessionId.length === 0 || requestId.length === 0) return;
+    const conn: DeviceConnection | null = this.getConnectionForDevice(deviceId);
+    if (conn === null) return;
+    let msg: TerminalSnapshotRequestMsg = new TerminalSnapshotRequestMsg();
+    msg.deviceId = deviceId;
+    msg.sessionId = sessionId;
+    msg.requestId = requestId;
+    msg.maxChars = maxChars;
+    conn.send(JSON.stringify(msg));
+  }
+
   sendTerminalResize(cols: number, rows: number, targetSessionId: string = ''): void {
     const sessionId: string = targetSessionId.length > 0 ? targetSessionId : this.activeSessionId;
     if (sessionId.length === 0) return;
@@ -946,6 +966,7 @@ class ConnectionManagerClass {
     } else if (type === 'auth.request') {
       this.handleAuthRequest(data);
     } else if (type === 'terminal.opened' || type === 'terminal.output' ||
+               type === 'terminal.snapshot.response' ||
                type === 'terminal.closed' || type === 'session.list') {
       this.handleTerminalMessage(type, data);
     }
@@ -1049,6 +1070,7 @@ class ConnectionManagerClass {
     } else if (type === 'panel.disconnected') {
       // Forward to listeners
     } else if (type === 'terminal.opened' || type === 'terminal.output' ||
+               type === 'terminal.snapshot.response' ||
                type === 'terminal.closed' || type === 'session.list') {
       this.handleTerminalMessage(type, data);
     }
@@ -1090,6 +1112,25 @@ class ConnectionManagerClass {
       const session: SessionState | undefined = this.sessions.get(sessionId);
       if (session !== undefined && outputData.length > 0) {
         session.bufferedOutput += outputData;
+        if (session.bufferedOutput.length > this.maxBufferedTerminalOutput) {
+          session.bufferedOutput = session.bufferedOutput.substring(
+            session.bufferedOutput.length - this.maxBufferedTerminalOutput);
+        }
+      }
+    } else if (type === 'terminal.snapshot.response') {
+      const sessionId: string = (data['sessionId'] ?? '') as string;
+      const deviceId: string = (data['deviceId'] ?? '') as string;
+      const snapshotData: string = (data['data'] ?? '') as string;
+      let session: SessionState | undefined = this.sessions.get(sessionId);
+      if (session === undefined && sessionId.length > 0) {
+        let created: SessionState = new SessionState();
+        created.sessionId = sessionId;
+        created.deviceId = deviceId;
+        this.sessions.set(sessionId, created);
+        session = created;
+      }
+      if (session !== undefined) {
+        session.bufferedOutput = snapshotData;
         if (session.bufferedOutput.length > this.maxBufferedTerminalOutput) {
           session.bufferedOutput = session.bufferedOutput.substring(
             session.bufferedOutput.length - this.maxBufferedTerminalOutput);

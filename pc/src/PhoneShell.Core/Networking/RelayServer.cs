@@ -36,8 +36,10 @@ public sealed class RelayServer : IDisposable
     private GroupStore? _groupStore;
     private readonly InviteManager _inviteManager = new();
     private TerminalHistoryStore? _historyStore;
+    private readonly ConcurrentDictionary<string, long> _sessionOutputSeq = new(StringComparer.Ordinal);
 
     private const int TerminalHistoryPageChars = 20_000;
+    private const int TerminalSnapshotPageChars = 120_000;
 
     public event Action<string>? Log;
     public event Action<List<DeviceInfo>>? DeviceListChanged;
@@ -256,7 +258,8 @@ public sealed class RelayServer : IDisposable
         {
             DeviceId = deviceId,
             SessionId = sessionId,
-            Data = data
+            Data = data,
+            OutputSeq = NextOutputSeq(deviceId, sessionId)
         });
 
         var tasks = new List<Task>();
@@ -280,6 +283,7 @@ public sealed class RelayServer : IDisposable
             return;
 
         RemoveHistoryForSession(deviceId, sessionId);
+        ClearOutputSeq(deviceId, sessionId);
 
         var msg = MessageSerializer.Serialize(new TerminalClosedMessage
         {
@@ -916,8 +920,19 @@ public sealed class RelayServer : IDisposable
                 await HandleTerminalHistoryRequest(client, historyReq);
                 break;
 
+            case TerminalSnapshotRequestMessage snapshotReq:
+                await HandleTerminalSnapshotRequest(client, snapshotReq);
+                break;
+
             case TerminalOutputMessage output:
                 AppendTerminalHistory(output.DeviceId, output.SessionId, output.Data);
+                var outputMsg = MessageSerializer.Serialize(new TerminalOutputMessage
+                {
+                    DeviceId = output.DeviceId,
+                    SessionId = output.SessionId,
+                    Data = output.Data,
+                    OutputSeq = NextOutputSeq(output.DeviceId, output.SessionId)
+                });
                 // Forward output to all clients subscribed to this device
                 client.SubscribedDeviceId ??= output.DeviceId;
                 foreach (var c in _clients.Values)
@@ -926,7 +941,7 @@ public sealed class RelayServer : IDisposable
                         c.SubscribedDeviceId == output.DeviceId &&
                         string.Equals(c.SubscribedSessionId, output.SessionId, StringComparison.Ordinal))
                     {
-                        await SendAsync(c, json);
+                        await SendAsync(c, outputMsg);
                     }
                 }
                 // Also notify the server PC if it requested this remote terminal
@@ -977,7 +992,8 @@ public sealed class RelayServer : IDisposable
                                     {
                                         DeviceId = open.DeviceId,
                                         SessionId = sessionId,
-                                        Data = snapshot
+                                        Data = snapshot,
+                                        OutputSeq = GetCurrentOutputSeq(open.DeviceId, sessionId)
                                     };
                                     await SendAsync(client, MessageSerializer.Serialize(initialOutput));
                                 }
@@ -1057,7 +1073,8 @@ public sealed class RelayServer : IDisposable
                                         {
                                             DeviceId = resize.DeviceId,
                                             SessionId = resize.SessionId,
-                                            Data = snapshot
+                                            Data = snapshot,
+                                            OutputSeq = GetCurrentOutputSeq(resize.DeviceId, resize.SessionId)
                                         }));
                                 }
                             }
@@ -1093,6 +1110,7 @@ public sealed class RelayServer : IDisposable
                         client.SubscribedSessionId = null;
                         InvokeLocalTerminalSessionEnded(client, close);
                         InvokeLocalTerminalCloseRequested(client, close);
+                        ClearOutputSeq(close.DeviceId, close.SessionId);
                         Log?.Invoke($"Local terminal closed for client {client.ClientId}, session={close.SessionId}");
                     }
                     else if (closeTarget.ClientId is not null &&
@@ -1118,6 +1136,7 @@ public sealed class RelayServer : IDisposable
 
             case TerminalClosedMessage closed:
                 RemoveHistoryForSession(closed.DeviceId, closed.SessionId);
+                ClearOutputSeq(closed.DeviceId, closed.SessionId);
                 // Forward to subscribed clients
                 foreach (var c in _clients.Values)
                 {
@@ -2769,6 +2788,40 @@ public sealed class RelayServer : IDisposable
 
     // --- Terminal history ---
 
+    private static string BuildSessionOutputKey(string deviceId, string sessionId)
+    {
+        return $"{deviceId}\0{sessionId}";
+    }
+
+    private long GetCurrentOutputSeq(string deviceId, string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(sessionId))
+            return 0;
+
+        return _sessionOutputSeq.TryGetValue(BuildSessionOutputKey(deviceId, sessionId), out var seq)
+            ? seq
+            : 0;
+    }
+
+    private long NextOutputSeq(string deviceId, string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(sessionId))
+            return 0;
+
+        return _sessionOutputSeq.AddOrUpdate(
+            BuildSessionOutputKey(deviceId, sessionId),
+            1,
+            static (_, current) => current + 1);
+    }
+
+    private void ClearOutputSeq(string deviceId, string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(sessionId))
+            return;
+
+        _sessionOutputSeq.TryRemove(BuildSessionOutputKey(deviceId, sessionId), out _);
+    }
+
     public TerminalHistoryPage GetTerminalHistoryPage(string deviceId, string sessionId, long beforeSeq, int maxChars)
     {
         var deviceKey = deviceId?.Trim() ?? string.Empty;
@@ -2780,6 +2833,28 @@ public sealed class RelayServer : IDisposable
             return TerminalHistoryPage.Empty;
 
         return _historyStore.GetPage(deviceKey, sessionKey, beforeSeq, ClampHistoryPageSize(maxChars));
+    }
+
+    private async Task SendTerminalSnapshotResponseAsync(
+        ConnectedClient client,
+        string requestId,
+        string deviceId,
+        string sessionId,
+        int maxChars)
+    {
+        var page = _historyStore?.GetPage(deviceId, sessionId, 0, ClampSnapshotPageSize(maxChars))
+                   ?? TerminalHistoryPage.Empty;
+        var response = new TerminalSnapshotResponseMessage
+        {
+            DeviceId = deviceId,
+            SessionId = sessionId,
+            RequestId = requestId,
+            Data = page.Data,
+            SnapshotSeq = GetCurrentOutputSeq(deviceId, sessionId),
+            NextBeforeSeq = page.NextBeforeSeq,
+            HasMore = page.HasMore
+        };
+        await SendAsync(client, MessageSerializer.Serialize(response));
     }
 
     private void AppendTerminalHistory(string deviceId, string sessionId, string data)
@@ -2814,6 +2889,23 @@ public sealed class RelayServer : IDisposable
             HasMore = page.HasMore
         };
         await SendAsync(client, MessageSerializer.Serialize(response));
+    }
+
+    private async Task HandleTerminalSnapshotRequest(ConnectedClient client, TerminalSnapshotRequestMessage req)
+    {
+        var deviceId = req.DeviceId?.Trim() ?? string.Empty;
+        var sessionId = req.SessionId?.Trim() ?? string.Empty;
+        if (deviceId.Length == 0 || sessionId.Length == 0)
+            return;
+
+        client.SubscribedDeviceId = deviceId;
+        client.SubscribedSessionId = sessionId;
+        await SendTerminalSnapshotResponseAsync(
+            client,
+            req.RequestId?.Trim() ?? string.Empty,
+            deviceId,
+            sessionId,
+            req.MaxChars);
     }
 
     private async Task HandleQuickPanelSyncRequest(ConnectedClient client, QuickPanelSyncRequestMessage req, string rawJson)
@@ -2930,6 +3022,9 @@ public sealed class RelayServer : IDisposable
 
     private static int ClampHistoryPageSize(int requested) =>
         requested <= 0 ? TerminalHistoryPageChars : Math.Min(requested, TerminalHistoryPageChars);
+
+    private static int ClampSnapshotPageSize(int requested) =>
+        requested <= 0 ? TerminalSnapshotPageChars : Math.Min(requested, TerminalSnapshotPageChars);
 
     private static string? FirstHeaderValue(string? value)
     {

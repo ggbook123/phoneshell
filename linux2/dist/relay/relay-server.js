@@ -6,6 +6,7 @@ import { TokenManager } from '../auth/token-manager.js';
 import { InviteManager } from '../auth/invite-manager.js';
 import { buildGroupBindPayload, buildPanelLoginPayload } from '../auth/qr-service.js';
 const TerminalHistoryPageChars = 20000;
+const TerminalSnapshotPageChars = 120000;
 export class RelayServer {
     devices = new Map();
     clients = new Map();
@@ -13,6 +14,7 @@ export class RelayServer {
     tokenManager = new TokenManager();
     inviteManager = new InviteManager();
     outputChains = new Map();
+    sessionOutputSeq = new Map();
     historyStore = null;
     preserveTerminalHistoryOnClose = true;
     group = null;
@@ -312,15 +314,28 @@ export class RelayServer {
                 await this.handleTerminalHistoryRequest(client, req);
                 break;
             }
+            case 'terminal.snapshot.request': {
+                const req = message;
+                await this.handleTerminalSnapshotRequest(client, req);
+                break;
+            }
             case 'terminal.output': {
                 const output = message;
                 client.subscribedDeviceId ??= output.deviceId;
                 this.appendTerminalHistory(output.deviceId, output.sessionId, output.data);
+                const outputSeq = this.nextOutputSeq(output.deviceId, output.sessionId);
+                const forwarded = serialize({
+                    type: 'terminal.output',
+                    deviceId: output.deviceId,
+                    sessionId: output.sessionId,
+                    data: output.data,
+                    outputSeq,
+                });
                 for (const c of this.clients.values()) {
                     if (c.clientId !== client.clientId &&
                         c.subscribedDeviceId === output.deviceId &&
                         c.subscribedSessionId === output.sessionId) {
-                        await this.send(c, json);
+                        await this.send(c, forwarded);
                     }
                 }
                 break;
@@ -357,7 +372,10 @@ export class RelayServer {
                             if (snapshot) {
                                 await this.send(client, serialize({
                                     type: 'terminal.output',
-                                    deviceId: resize.deviceId, sessionId: resize.sessionId, data: snapshot,
+                                    deviceId: resize.deviceId,
+                                    sessionId: resize.sessionId,
+                                    data: snapshot,
+                                    outputSeq: this.getCurrentOutputSeq(resize.deviceId, resize.sessionId),
                                 }));
                             }
                         }
@@ -383,6 +401,7 @@ export class RelayServer {
                         client.subscribedSessionId = undefined;
                         this.callbacks.onLocalTerminalSessionEnded?.(close.sessionId);
                         this.removeHistoryForSession(close.deviceId, close.sessionId);
+                        this.clearOutputSeq(close.deviceId, close.sessionId);
                     }
                     else if (target.clientId) {
                         const dc = this.clients.get(target.clientId);
@@ -403,6 +422,7 @@ export class RelayServer {
                 if (message.type === 'terminal.closed') {
                     const closed = message;
                     this.removeHistoryForSession(closed.deviceId, closed.sessionId);
+                    this.clearOutputSeq(closed.deviceId, closed.sessionId);
                 }
                 break;
             case 'control.force_disconnect':
@@ -462,7 +482,10 @@ export class RelayServer {
             if (snapshot) {
                 await this.send(client, serialize({
                     type: 'terminal.output',
-                    deviceId: open.deviceId, sessionId, data: snapshot,
+                    deviceId: open.deviceId,
+                    sessionId,
+                    data: snapshot,
+                    outputSeq: this.getCurrentOutputSeq(open.deviceId, sessionId),
                 }));
             }
             this.log(`Local terminal opened for ${client.clientId}, session=${sessionId}`);
@@ -476,7 +499,13 @@ export class RelayServer {
     // --- Broadcast terminal output to subscribed clients ---
     async broadcastLocalTerminalOutput(deviceId, sessionId, data) {
         this.appendTerminalHistory(deviceId, sessionId, data);
-        const msg = serialize({ type: 'terminal.output', deviceId, sessionId, data });
+        const msg = serialize({
+            type: 'terminal.output',
+            deviceId,
+            sessionId,
+            data,
+            outputSeq: this.nextOutputSeq(deviceId, sessionId),
+        });
         const promises = [];
         for (const client of this.clients.values()) {
             if (client.subscribedDeviceId === deviceId && client.subscribedSessionId === sessionId) {
@@ -487,6 +516,7 @@ export class RelayServer {
     }
     async broadcastLocalTerminalClosed(deviceId, sessionId) {
         this.removeHistoryForSession(deviceId, sessionId);
+        this.clearOutputSeq(deviceId, sessionId);
         const msg = serialize({ type: 'terminal.closed', deviceId, sessionId });
         for (const client of this.clients.values()) {
             if (client.subscribedDeviceId === deviceId && client.subscribedSessionId === sessionId) {
@@ -504,6 +534,36 @@ export class RelayServer {
         }
     }
     // --- Terminal history ---
+    buildSessionOutputKey(deviceId, sessionId) {
+        return `${deviceId}\u0000${sessionId}`;
+    }
+    getCurrentOutputSeq(deviceId, sessionId) {
+        const key = this.buildSessionOutputKey(deviceId, sessionId);
+        return this.sessionOutputSeq.get(key) || 0;
+    }
+    nextOutputSeq(deviceId, sessionId) {
+        const key = this.buildSessionOutputKey(deviceId, sessionId);
+        const next = (this.sessionOutputSeq.get(key) || 0) + 1;
+        this.sessionOutputSeq.set(key, next);
+        return next;
+    }
+    clearOutputSeq(deviceId, sessionId) {
+        const key = this.buildSessionOutputKey(deviceId, sessionId);
+        this.sessionOutputSeq.delete(key);
+    }
+    async sendTerminalSnapshotResponse(client, requestId, deviceId, sessionId, maxChars) {
+        const page = this.historyStore?.getPage(deviceId, sessionId, 0, RelayServer.clampSnapshotPageSize(maxChars)) || { data: '', nextBeforeSeq: 0, hasMore: false };
+        await this.send(client, serialize({
+            type: 'terminal.snapshot.response',
+            deviceId,
+            sessionId,
+            requestId,
+            data: page.data,
+            snapshotSeq: this.getCurrentOutputSeq(deviceId, sessionId),
+            nextBeforeSeq: page.nextBeforeSeq,
+            hasMore: page.hasMore,
+        }));
+    }
     appendTerminalHistory(deviceId, sessionId, data) {
         if (!deviceId || !sessionId || !data)
             return;
@@ -537,6 +597,15 @@ export class RelayServer {
             hasMore: page.hasMore,
         }));
     }
+    async handleTerminalSnapshotRequest(client, req) {
+        const deviceId = req.deviceId?.trim() || '';
+        const sessionId = req.sessionId?.trim() || '';
+        if (!deviceId || !sessionId)
+            return;
+        client.subscribedDeviceId = deviceId;
+        client.subscribedSessionId = sessionId;
+        await this.sendTerminalSnapshotResponse(client, req.requestId?.trim() || '', deviceId, sessionId, req.maxChars || 0);
+    }
     removeHistoryForSession(deviceId, sessionId) {
         if (!deviceId || !sessionId)
             return;
@@ -548,6 +617,11 @@ export class RelayServer {
         if (requested <= 0)
             return TerminalHistoryPageChars;
         return Math.min(requested, TerminalHistoryPageChars);
+    }
+    static clampSnapshotPageSize(requested) {
+        if (requested <= 0)
+            return TerminalSnapshotPageChars;
+        return Math.min(requested, TerminalSnapshotPageChars);
     }
     // --- Group handlers ---
     async handleGroupJoinRequest(client, req) {
