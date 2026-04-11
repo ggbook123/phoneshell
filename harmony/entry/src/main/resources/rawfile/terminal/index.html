@@ -137,7 +137,7 @@
       cursorStyle: 'block',
       fontSize: 13,
       lineHeight: 1.08,
-      scrollback: 20000,
+      scrollback: 200000,
       convertEol: false,
       fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
       theme: {
@@ -252,6 +252,18 @@
         return;
       }
       term.write(data, requestScrollbarSync);
+    }
+
+    function replaceTerminalContent(data) {
+      term.reset();
+      if (typeof data !== 'string' || data.length === 0) {
+        requestScrollbarSync();
+        return;
+      }
+
+      term.write(data, function() {
+        requestScrollbarSync();
+      });
     }
 
     function requestScrollbarSync() {
@@ -572,8 +584,12 @@
         term.reset();
         requestScrollbarSync();
       },
+      replace: function(data) {
+        replaceTerminalContent(data);
+      },
       focus: function() {
         term.focus();
+        requestScrollbarSync();
       },
       syncResize: function() {
         fitAndReport(false);

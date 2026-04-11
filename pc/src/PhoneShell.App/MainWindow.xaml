@@ -1388,31 +1388,6 @@
                                             Command="{Binding NewSessionCommand}" />
                                 </StackPanel>
 
-                                <!-- Cross-device auth gate -->
-                                <Grid x:Name="CrossDeviceGatePanel" Visibility="Collapsed" Panel.ZIndex="2"
-                                      Background="{StaticResource Surface0Brush}">
-                                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
-                                                Margin="20">
-                                        <Border Background="{StaticResource Surface2Brush}"
-                                                CornerRadius="10" Padding="14"
-                                                BorderBrush="{StaticResource Border2Brush}" BorderThickness="1"
-                                                Margin="0,0,0,14">
-                                            <Image Source="{Binding CrossDeviceQrImage}" Width="220" Height="220"
-                                                   Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality" />
-                                        </Border>
-                                        <TextBlock x:Name="CrossDevicePromptText"
-                                                   Text="Scan with your phone to continue cross-device access."
-                                                   FontSize="13" FontWeight="SemiBold"
-                                                   Foreground="{StaticResource Text1Brush}"
-                                                   TextAlignment="Center" Margin="0,0,0,6"
-                                                   FontFamily="{StaticResource BodyFont}" />
-                                        <TextBlock Text="{Binding CrossDeviceAuthStatus}"
-                                                   FontSize="11" Foreground="{StaticResource Text3Brush}"
-                                                   TextAlignment="Center" TextWrapping="Wrap"
-                                                   MaxWidth="420"
-                                                   FontFamily="{StaticResource BodyFont}" />
-                                    </StackPanel>
-                                </Grid>
                             </Grid>
                         </DockPanel>
                     </Grid>

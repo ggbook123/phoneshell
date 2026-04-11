@@ -24,19 +24,35 @@ let fitAddon: FitAddon | null = null;
 let resizeObserver: ResizeObserver | null = null;
 const compactCols = computed(() => props.compactCols);
 const compactRows = computed(() => props.compactRows);
-const historyPageChars = 20000;
-let historyLoading = false;
-let historyComplete = false;
-let historyBeforeSeq = 0;
-let historyChunks: string[] = [];
-let pendingOutput = '';
+const latestBufferPageChars = 120000;
+const maxRenderedChars = 5000000;
+let latestBufferLoading = false;
+let latestBufferLoaded = false;
+let latestBufferRequested = false;
+let latestBufferRequestId = '';
+let latestBufferSeq = 0;
+let renderedBuffer = '';
+let pendingOutputs: Array<{ seq: number; data: string }> = [];
+
+function trimRenderedBuffer(data: string): string {
+  if (data.length <= maxRenderedChars) {
+    return data;
+  }
+  return data.slice(data.length - maxRenderedChars);
+}
 
 function handleOutput(msg: any) {
   if (msg.sessionId === props.sessionId && msg.deviceId === props.deviceId && msg.data) {
-    if (!historyComplete) {
-      pendingOutput += msg.data;
+    const outputSeq = Number(msg.outputSeq || 0);
+    if (!latestBufferLoaded) {
+      pendingOutputs.push({ seq: outputSeq, data: msg.data });
       return;
     }
+    if (outputSeq === 0 || outputSeq <= latestBufferSeq) {
+      return;
+    }
+    latestBufferSeq = Math.max(latestBufferSeq, outputSeq);
+    renderedBuffer = trimRenderedBuffer(renderedBuffer + msg.data);
     term?.write(msg.data);
   }
 }
@@ -47,50 +63,72 @@ function handleClosed(msg: any) {
   }
 }
 
-function resetHistoryState() {
-  historyLoading = false;
-  historyComplete = false;
-  historyBeforeSeq = 0;
-  historyChunks = [];
-  pendingOutput = '';
+function resetBufferState() {
+  latestBufferLoading = false;
+  latestBufferLoaded = false;
+  latestBufferRequested = false;
+  latestBufferRequestId = '';
+  latestBufferSeq = 0;
+  renderedBuffer = '';
+  pendingOutputs = [];
 }
 
-function requestHistoryPage() {
-  if (!term || historyLoading || historyComplete) return;
-  historyLoading = true;
+function buildBufferRequestId() {
+  return `${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
+}
+
+function requestLatestBuffer() {
+  if (!term || latestBufferRequested) return;
+  latestBufferRequested = true;
+  latestBufferLoading = true;
+  latestBufferLoaded = false;
+  latestBufferSeq = 0;
+  latestBufferRequestId = buildBufferRequestId();
+  pendingOutputs = [];
   props.ws.send({
-    type: 'terminal.history.request',
+    type: 'terminal.buffer.request',
     deviceId: props.deviceId,
     sessionId: props.sessionId,
-    beforeSeq: historyBeforeSeq,
-    maxChars: historyPageChars,
+    requestId: latestBufferRequestId,
+    beforeCursor: '',
+    maxChars: latestBufferPageChars,
   });
 }
 
-function applyHistoryBuffer() {
+function replaceTerminalBuffer(data: string) {
   if (!term) return;
-  const history = historyChunks.join('');
-  const merged = history + pendingOutput;
-  pendingOutput = '';
+  renderedBuffer = trimRenderedBuffer(data);
   term.reset();
-  if (merged) {
-    term.write(merged);
+  if (renderedBuffer) {
+    term.write(renderedBuffer);
   }
 }
 
-function handleHistoryResponse(msg: any) {
+function handleBufferResponse(msg: any) {
   if (msg.sessionId !== props.sessionId || msg.deviceId !== props.deviceId) return;
-  historyLoading = false;
-  if (msg.data) {
-    historyChunks.unshift(msg.data);
-  }
-  if (msg.hasMore) {
-    historyBeforeSeq = msg.nextBeforeSeq || 0;
-    requestHistoryPage();
+  if ((msg.mode || 'latest') !== 'latest') return;
+  const requestId = typeof msg.requestId === 'string' ? msg.requestId : '';
+  if (latestBufferRequestId && requestId && requestId !== latestBufferRequestId) {
     return;
   }
-  historyComplete = true;
-  applyHistoryBuffer();
+  latestBufferLoading = false;
+  latestBufferLoaded = true;
+  latestBufferRequested = false;
+  latestBufferRequestId = '';
+  latestBufferSeq = Number(msg.snapshotOutputSeq || 0);
+  replaceTerminalBuffer(typeof msg.data === 'string' ? msg.data : '');
+
+  const queuedOutputs = pendingOutputs;
+  pendingOutputs = [];
+  for (const item of queuedOutputs) {
+    if (!item.data) continue;
+    if (item.seq > 0 && item.seq <= latestBufferSeq) continue;
+    if (item.seq > 0) {
+      latestBufferSeq = Math.max(latestBufferSeq, item.seq);
+    }
+    renderedBuffer = trimRenderedBuffer(renderedBuffer + item.data);
+    term?.write(item.data);
+  }
 }
 
 onMounted(() => {
@@ -209,10 +247,10 @@ onMounted(() => {
   // Listen for output
   props.ws.on('terminal.output', handleOutput);
   props.ws.on('terminal.closed', handleClosed);
-  props.ws.on('terminal.history.response', handleHistoryResponse);
+  props.ws.on('terminal.buffer.response', handleBufferResponse);
 
-  resetHistoryState();
-  requestHistoryPage();
+  resetBufferState();
+  requestLatestBuffer();
 
   // Focus
   term.focus();
@@ -230,7 +268,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   props.ws.off('terminal.output', handleOutput);
   props.ws.off('terminal.closed', handleClosed);
-  props.ws.off('terminal.history.response', handleHistoryResponse);
+  props.ws.off('terminal.buffer.response', handleBufferResponse);
   resizeObserver?.disconnect();
   term?.dispose();
   term = null;

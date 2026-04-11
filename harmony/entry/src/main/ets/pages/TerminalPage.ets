@@ -95,7 +95,6 @@ struct TerminalPage {
   @State terminalReady: boolean = false;
   @State terminalHint: string = I18n.t(I18n.getLanguage(), '正在初始化终端...', 'Initializing terminal...');
   @State historyLoadingVisible: boolean = false;
-  @State canLoadOlderHistory: boolean = false;
   @State showSessionClosedDialog: boolean = false;
   @State safeAreaTop: number = 0;
   @State safeAreaBottom: number = 0;
@@ -124,21 +123,17 @@ struct TerminalPage {
   private terminalBridge: TerminalBridge = new TerminalBridge();
   private terminalPageUrl: string = 'resource://rawfile/terminal/index.html';
   private maxOutputLength: number = 200000;
-  private maxRenderedLength: number = 600000;
+  // Keep the client-side replay window aligned with the server retention cap.
+  private maxRenderedLength: number = 5000000;
   private snapshotPageChars: number = 120000;
-  private historyPageChars: number = 20000;
   private pendingTerminalOutput: string = '';
   private renderedTerminalBuffer: string = '';
-  private historyBeforeSeq: number = 0;
-  private historyLoading: boolean = false;
   private snapshotLoading: boolean = false;
   private snapshotLoaded: boolean = false;
   private snapshotRequested: boolean = false;
   private snapshotRequestId: string = '';
   private snapshotSeq: number = 0;
   private pendingSnapshotOutputs: Array<SequencedTerminalOutput> = [];
-  private historySessionId: string = '';
-  private historyDeviceId: string = '';
   private flushTimer: number = -1;
   private quickPanelPendingTimers: Array<number> = [];
   private quickPanelSubmitDelayMs: number = 50;
@@ -152,6 +147,7 @@ struct TerminalPage {
   private quickPanelExplorerChildrenMap: Map<string, Array<QuickPanelExplorerEntryModel>> = new Map();
   private quickPanelLastRequestPath: string = '';
   private quickPanelLastRequestIsExpand: boolean = false;
+  private detachSentForCurrentView: boolean = false;
   private quickPanelTabItems: Array<QuickPanelTabItem> = [
     { id: 'explorer', zhLabel: '资源管理器', enLabel: 'Explorer' } as QuickPanelTabItem,
     { id: 'quick_commands', zhLabel: '快捷指令', enLabel: 'Quick Commands' } as QuickPanelTabItem,
@@ -483,6 +479,7 @@ struct TerminalPage {
   aboutToDisappear(): void {
     hilog.warn(DOMAIN, PAGE_TAG, 'aboutToDisappear sessionActive=%{public}s',
       this.sessionActive ? 'true' : 'false');
+    this.detachCurrentSessionIfNeeded();
     this.deactivatePage();
     this.unregisterKeyboardAvoidArea();
 
@@ -498,10 +495,12 @@ struct TerminalPage {
 
   onPageHide(): void {
     hilog.warn(DOMAIN, PAGE_TAG, 'onPageHide');
+    this.detachCurrentSessionIfNeeded();
     this.deactivatePage();
   }
 
   private activatePage(): void {
+    this.detachSentForCurrentView = false;
     this.terminalBridge.onReadyCallback = (cols: number, rows: number) => {
       this.onTerminalReady(cols, rows);
     };
@@ -542,14 +541,11 @@ struct TerminalPage {
           }
         } else if (type === 'terminal.snapshot.response') {
           this.handleSnapshotResponse(data);
-        } else if (type === 'terminal.history.response') {
-          this.handleHistoryResponse(data);
         } else if (type === 'terminal.closed') {
           if (this.isCurrentSessionMessage(data)) {
             this.sessionActive = false;
             this.terminalHint = this.t('PC 端已关闭当前会话', 'Session closed on PC');
             this.historyLoadingVisible = false;
-            this.canLoadOlderHistory = false;
             this.showQuickPanel = false;
             this.showSessionClosedDialog = true;
           }
@@ -583,6 +579,16 @@ struct TerminalPage {
 
     // Pull latest quick panel data once per page activation.
     this.requestQuickPanelSync('', false);
+  }
+
+  private detachCurrentSessionIfNeeded(): void {
+    if (this.detachSentForCurrentView || !this.sessionActive || this.viewedSessionId.length === 0) {
+      return;
+    }
+
+    this.detachSentForCurrentView = true;
+    hilog.info(DOMAIN, PAGE_TAG, 'detachCurrentSession session=%{public}s', this.viewedSessionId);
+    ConnectionManager.detachTerminalSession(this.viewedSessionId);
   }
 
   private deactivatePage(): void {
@@ -699,19 +705,14 @@ struct TerminalPage {
   }
 
   private resetHistoryState(): void {
-    this.historyLoading = false;
     this.snapshotLoading = false;
     this.snapshotLoaded = false;
     this.snapshotRequested = false;
     this.snapshotRequestId = '';
     this.snapshotSeq = 0;
-    this.historyBeforeSeq = 0;
     this.pendingSnapshotOutputs = [];
     this.renderedTerminalBuffer = '';
-    this.historySessionId = '';
-    this.historyDeviceId = '';
     this.historyLoadingVisible = false;
-    this.canLoadOlderHistory = false;
   }
 
   private syncHistoryLoadingOverlay(): void {
@@ -739,20 +740,16 @@ struct TerminalPage {
     this.snapshotSeq = 0;
     this.snapshotRequestId = this.buildSnapshotRequestId();
     this.pendingSnapshotOutputs = [];
-    this.historySessionId = this.viewedSessionId;
-    this.historyDeviceId = this.normalizeString(ConnectionManager.getActiveDeviceId());
-    if (this.historyDeviceId.length === 0) {
+    const deviceId: string = this.normalizeString(ConnectionManager.getActiveDeviceId());
+    if (deviceId.length === 0) {
       this.snapshotLoading = false;
       this.snapshotRequested = false;
       return;
     }
-    this.historyLoading = false;
-    this.historyBeforeSeq = 0;
-    this.canLoadOlderHistory = false;
     this.terminalHint = this.t('正在恢复会话...', 'Restoring session...');
     ConnectionManager.requestTerminalSnapshot(
-      this.historyDeviceId,
-      this.historySessionId,
+      deviceId,
+      this.viewedSessionId,
       this.snapshotRequestId,
       this.snapshotPageChars
     );
@@ -809,10 +806,9 @@ struct TerminalPage {
 
     this.snapshotLoading = false;
     this.snapshotLoaded = true;
+    this.snapshotRequested = false;
     this.snapshotRequestId = '';
     this.snapshotSeq = this.getMessageNumber(data, 'snapshotSeq', 0);
-    this.historyBeforeSeq = this.getMessageNumber(data, 'nextBeforeSeq', 0);
-    this.canLoadOlderHistory = this.getMessageBoolean(data, 'hasMore', false);
     let snapshotData: string = this.getMessageString(data, 'data');
     let usedLocalPreview: boolean = false;
     if (snapshotData.length === 0 && this.renderedTerminalBuffer.length > 0) {
@@ -843,44 +839,6 @@ struct TerminalPage {
     this.flushPendingTerminalOutput();
   }
 
-  private requestHistoryPage(): void {
-    if (!this.snapshotLoaded || this.historyLoading || !this.canLoadOlderHistory) {
-      return;
-    }
-    if (this.historySessionId.length === 0 || this.historyDeviceId.length === 0 || this.historyBeforeSeq <= 0) {
-      this.canLoadOlderHistory = false;
-      return;
-    }
-
-    this.historyLoading = true;
-    ConnectionManager.requestTerminalHistory(
-      this.historyDeviceId,
-      this.historySessionId,
-      this.historyBeforeSeq,
-      this.historyPageChars
-    );
-  }
-
-  private handleHistoryResponse(data: Record<string, Object>): void {
-    if (!this.snapshotLoaded || !this.isCurrentSessionMessage(data)) {
-      return;
-    }
-    this.historyLoading = false;
-
-    const chunk: string = this.getMessageString(data, 'data');
-    const nextBeforeSeq: number = this.getMessageNumber(data, 'nextBeforeSeq', 0);
-    const hasMore: boolean = this.getMessageBoolean(data, 'hasMore', false);
-    this.historyBeforeSeq = nextBeforeSeq;
-    this.canLoadOlderHistory = hasMore && nextBeforeSeq > 0;
-
-    if (chunk.length === 0) {
-      return;
-    }
-
-    this.replaceTerminalBuffer(this.trimTerminalBuffer(chunk + this.renderedTerminalBuffer));
-    this.flushPendingTerminalOutput();
-  }
-
   private trimTerminalBuffer(data: string): string {
     if (data.length <= this.maxRenderedLength) {
       return data;
@@ -899,7 +857,7 @@ struct TerminalPage {
       return;
     }
     const payload: string = JSON.stringify(normalized);
-    this.runTerminalScript(`window.phoneShell && (window.phoneShell.clear(), window.phoneShell.write(${payload}));`);
+    this.runTerminalScript(`window.phoneShell && window.phoneShell.replace(${payload});`);
   }
 
   private isCurrentSessionMessage(data: Record<string, Object>): boolean {
@@ -1453,23 +1411,6 @@ struct TerminalPage {
         Blank().layoutWeight(1)
 
         Row({ space: 8 }) {
-          Button(this.historyLoading
-            ? this.t('加载中...', 'Loading...')
-            : this.t('更早历史', 'Older History'))
-            .height(34)
-            .fontSize(12)
-            .fontColor(AppColors.TEXT_PRIMARY)
-            .backgroundColor(AppColors.HIGHLIGHT)
-            .borderWidth(1)
-            .borderColor(AppColors.CARD_BORDER)
-            .borderRadius(AppSizes.BORDER_RADIUS_BUTTON)
-            .padding({ left: 12, right: 12 })
-            .enabled(this.canLoadOlderHistory && !this.historyLoading)
-            .opacity(this.canLoadOlderHistory || this.historyLoading ? 1 : 0.45)
-            .onClick(() => {
-              this.requestHistoryPage();
-            })
-
           Button(this.t('快捷面板', 'Quick Panel'))
             .height(34)
             .width(116)

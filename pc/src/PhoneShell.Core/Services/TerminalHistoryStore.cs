@@ -11,9 +11,10 @@ namespace PhoneShell.Core.Services;
 /// </summary>
 public sealed class TerminalHistoryStore : IDisposable
 {
-    private const int DefaultPageChars = 20_000;
+    private const int DefaultPageChars = 80_000;
     private const int DefaultMaxChars = 5_000_000;
     private const int MaxRecordBytes = 8 * 1024 * 1024;
+    private const int MaxCharsPerRecord = 16 * 1024;
     private const int FlushIntervalMs = 150;
     private const int FlushThresholdChars = 32 * 1024;
 
@@ -400,7 +401,7 @@ public sealed class TerminalHistoryStore : IDisposable
         if (string.IsNullOrEmpty(data))
             return;
 
-        var maxCharsPerRecord = Math.Max(1, MaxRecordBytes / 4);
+        var maxCharsPerRecord = Math.Max(1, Math.Min(MaxCharsPerRecord, MaxRecordBytes / 4));
         for (var offset = 0; offset < data.Length; offset += maxCharsPerRecord)
         {
             var length = Math.Min(maxCharsPerRecord, data.Length - offset);

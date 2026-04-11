@@ -22,7 +22,7 @@ class _TerminalPageState extends State<TerminalPage> {
   ConnectionState connectionState = ConnectionState.connected;
   bool terminalReady = false;
   String terminalHint = I18n.tCurrent('正在初始化终端...', 'Initializing terminal...');
-  bool historyLoadingVisible = false;
+  bool snapshotLoadingVisible = false;
   bool showSessionClosedDialog = false;
 
   int _stateListenerId = -1;
@@ -31,18 +31,16 @@ class _TerminalPageState extends State<TerminalPage> {
   late final WebViewController _controller;
 
   final int _maxOutputLength = 200000;
-  final int _historyPageChars = 20000;
+  final int _maxRenderedLength = 5000000;
+  final int _snapshotPageChars = 120000;
   String _pendingTerminalOutput = '';
-  String _pendingHistoryOutput = '';
-  String _pendingHistoryReplace = '';
-  final List<String> _historyChunks = [];
-  int _historyBeforeSeq = 0;
-  bool _historyLoading = false;
-  bool _historyComplete = false;
-  bool _historyStarted = false;
-  bool _historyPlanned = false;
-  String _historySessionId = '';
-  String _historyDeviceId = '';
+  String _renderedTerminalBuffer = '';
+  bool _snapshotLoading = false;
+  bool _snapshotLoaded = false;
+  bool _snapshotRequested = false;
+  String _snapshotRequestId = '';
+  int _snapshotSeq = 0;
+  final List<_SequencedTerminalOutput> _pendingSnapshotOutputs = [];
   Timer? _flushTimer;
   int _lastReportedCols = 0;
   int _lastReportedRows = 0;
@@ -121,10 +119,10 @@ class _TerminalPageState extends State<TerminalPage> {
 
   void _resetTerminalState() {
     _pendingTerminalOutput = '';
-    _resetHistoryState();
+    _resetSnapshotState();
     terminalReady = false;
     terminalHint = _t('正在初始化终端...', 'Initializing terminal...');
-    historyLoadingVisible = false;
+    snapshotLoadingVisible = false;
     showSessionClosedDialog = false;
     _viewedSessionId = ConnectionManager.instance.activeSessionId;
     _resetQuickPanelState();
@@ -213,7 +211,6 @@ class _TerminalPageState extends State<TerminalPage> {
     );
     _viewedSessionId = ConnectionManager.instance.activeSessionId;
     sessionActive = _viewedSessionId.isNotEmpty;
-    _historyPlanned = sessionActive && _viewedSessionId.isNotEmpty;
 
     if (_stateListenerId == -1) {
       _stateListenerId = ConnectionManager.instance.addOnStateChange((
@@ -228,7 +225,7 @@ class _TerminalPageState extends State<TerminalPage> {
           setState(() {
             sessionActive = false;
             terminalHint = _t('连接已断开', 'Disconnected');
-            historyLoadingVisible = false;
+            snapshotLoadingVisible = false;
           });
         }
       });
@@ -243,21 +240,16 @@ class _TerminalPageState extends State<TerminalPage> {
 
         if (type == 'terminal.output') {
           if (_isCurrentSessionMessage(data)) {
-            final output = _normalizeString(data['data']);
-            if (_historyPlanned && !_historyComplete) {
-              _appendPendingHistoryOutput(output);
-            } else {
-              _enqueueTerminalOutput(output);
-            }
+            _handleTerminalOutput(data);
           }
-        } else if (type == 'terminal.history.response') {
-          _handleHistoryResponse(data);
+        } else if (type == 'terminal.snapshot.response') {
+          _handleSnapshotResponse(data);
         } else if (type == 'terminal.closed') {
           if (_isCurrentSessionMessage(data)) {
             setState(() {
               sessionActive = false;
               terminalHint = _t('PC 端已关闭当前会话', 'Session closed on PC');
-              historyLoadingVisible = false;
+              snapshotLoadingVisible = false;
               _showQuickPanel = false;
               showSessionClosedDialog = true;
             });
@@ -295,7 +287,7 @@ class _TerminalPageState extends State<TerminalPage> {
 
     if (terminalReady) {
       _requestRemoteResize();
-      _startHistoryLoadIfNeeded();
+      _startSnapshotLoadIfNeeded();
       _flushPendingTerminalOutput();
     }
 
@@ -303,6 +295,10 @@ class _TerminalPageState extends State<TerminalPage> {
   }
 
   void _deactivatePage() {
+    if (sessionActive && _viewedSessionId.isNotEmpty) {
+      ConnectionManager.instance.detachTerminalSession(_viewedSessionId);
+    }
+
     _flushTimer?.cancel();
     _flushTimer = null;
     _clearQuickPanelPendingTimers();
@@ -341,10 +337,14 @@ class _TerminalPageState extends State<TerminalPage> {
 
   void _flushPendingTerminalOutput() {
     if (!terminalReady || _pendingTerminalOutput.isEmpty) return;
-    if (_historyPlanned && !_historyComplete) return;
+    if (_snapshotLoading && !_snapshotLoaded) return;
 
-    final payload = jsonEncode(_pendingTerminalOutput);
+    final output = _pendingTerminalOutput;
     _pendingTerminalOutput = '';
+    _renderedTerminalBuffer = _trimTerminalBuffer(
+      _renderedTerminalBuffer + output,
+    );
+    final payload = jsonEncode(output);
     _runTerminalScript(
       'window.phoneShell && window.phoneShell.write($payload);',
     );
@@ -364,8 +364,12 @@ class _TerminalPageState extends State<TerminalPage> {
       terminalHint = _t('等待终端输出...', 'Waiting for terminal output...');
     });
     _handleTerminalResize(cols, rows);
-    _startHistoryLoadIfNeeded();
-    _applyPendingHistoryReplace();
+    if (_renderedTerminalBuffer.isNotEmpty) {
+      _replaceTerminalBuffer(_renderedTerminalBuffer);
+    } else {
+      _applyLocalSessionPreview();
+    }
+    _startSnapshotLoadIfNeeded();
     _flushPendingTerminalOutput();
     _runTerminalScript('window.phoneShell && window.phoneShell.focus();');
   }
@@ -383,7 +387,10 @@ class _TerminalPageState extends State<TerminalPage> {
   }
 
   void _requestRemoteResize() {
-    if (!sessionActive || _lastReportedCols <= 0 || _lastReportedRows <= 0) {
+    if (!sessionActive ||
+        !_snapshotLoaded ||
+        _lastReportedCols <= 0 ||
+        _lastReportedRows <= 0) {
       return;
     }
     ConnectionManager.instance.sendTerminalResize(
@@ -392,131 +399,157 @@ class _TerminalPageState extends State<TerminalPage> {
     );
   }
 
-  void _resetHistoryState() {
-    _historyPlanned = false;
-    _historyStarted = false;
-    _historyLoading = false;
-    _historyComplete = false;
-    _historyBeforeSeq = 0;
-    _historyChunks.clear();
-    _pendingHistoryOutput = '';
-    _pendingHistoryReplace = '';
-    _historySessionId = '';
-    _historyDeviceId = '';
-    historyLoadingVisible = false;
+  void _resetSnapshotState() {
+    _snapshotLoading = false;
+    _snapshotLoaded = false;
+    _snapshotRequested = false;
+    _snapshotRequestId = '';
+    _snapshotSeq = 0;
+    _pendingSnapshotOutputs.clear();
+    _renderedTerminalBuffer = '';
+    snapshotLoadingVisible = false;
   }
 
-  void _syncHistoryLoadingOverlay() {
+  void _syncSnapshotLoadingOverlay() {
     setState(() {
-      historyLoadingVisible =
+      snapshotLoadingVisible =
           terminalReady &&
-          _historyStarted &&
-          !_historyComplete &&
+          _snapshotLoading &&
+          _renderedTerminalBuffer.isEmpty &&
           sessionActive;
     });
   }
 
-  void _startHistoryLoadIfNeeded() {
-    if (!_historyPlanned || _historyStarted) return;
+  String _buildSnapshotRequestId() {
+    final now = DateTime.now().microsecondsSinceEpoch;
+    final random = math.Random().nextInt(1000000);
+    return '${now}_$random';
+  }
+
+  void _startSnapshotLoadIfNeeded() {
+    if (_snapshotRequested) return;
     if (!sessionActive || _viewedSessionId.isEmpty) return;
     if (!terminalReady) return;
 
-    _historyStarted = true;
-    _historySessionId = _viewedSessionId;
-    _historyDeviceId = ConnectionManager.instance.activeDeviceId;
-    _historyLoading = false;
-    _historyComplete = false;
-    _historyBeforeSeq = 0;
-    _historyChunks.clear();
-    _pendingHistoryReplace = '';
-
-    _requestHistoryPage();
-    _syncHistoryLoadingOverlay();
-  }
-
-  void _requestHistoryPage() {
-    if (_historyLoading || _historyComplete) return;
-    if (_historySessionId.isEmpty || _historyDeviceId.isEmpty) return;
-    _historyLoading = true;
-    ConnectionManager.instance.requestTerminalHistory(
-      _historyDeviceId,
-      _historySessionId,
-      _historyBeforeSeq,
-      _historyPageChars,
+    _snapshotRequested = true;
+    _snapshotLoading = true;
+    _snapshotLoaded = false;
+    _snapshotSeq = 0;
+    _snapshotRequestId = _buildSnapshotRequestId();
+    _pendingSnapshotOutputs.clear();
+    final deviceId = ConnectionManager.instance.activeDeviceId;
+    if (deviceId.isEmpty) {
+      _snapshotLoading = false;
+      _snapshotRequested = false;
+      return;
+    }
+    terminalHint = _t('正在恢复会话...', 'Restoring session...');
+    ConnectionManager.instance.requestTerminalSnapshot(
+      deviceId,
+      _viewedSessionId,
+      _snapshotRequestId,
+      _snapshotPageChars,
     );
+    _syncSnapshotLoadingOverlay();
   }
 
-  void _handleHistoryResponse(Map<String, dynamic> data) {
-    if (!_historyPlanned || !_isCurrentSessionMessage(data)) return;
-    _historyLoading = false;
-
-    final chunk = _normalizeString(data['data']);
-    final nextBeforeSeq = _toInt(data['nextBeforeSeq']);
-    final hasMore =
-        data['hasMore'] == true ||
-        data['hasMore'] == 1 ||
-        data['hasMore'] == '1';
-
-    if (chunk.isNotEmpty) {
-      _historyChunks.insert(0, chunk);
-    }
-
-    if (hasMore) {
-      _historyBeforeSeq = nextBeforeSeq;
-      _syncHistoryLoadingOverlay();
-      _requestHistoryPage();
+  void _applyLocalSessionPreview() {
+    if (!terminalReady ||
+        _viewedSessionId.isEmpty ||
+        _renderedTerminalBuffer.isNotEmpty) {
       return;
     }
-
-    _historyComplete = true;
-    _applyHistoryBuffer();
-    _syncHistoryLoadingOverlay();
+    final cached = _normalizeString(
+      ConnectionManager.instance.getSessionBufferedOutput(_viewedSessionId),
+    );
+    if (cached.isEmpty) {
+      return;
+    }
+    _replaceTerminalBuffer(cached);
   }
 
-  void _appendPendingHistoryOutput(String data) {
-    final output = _normalizeString(data);
+  void _handleTerminalOutput(Map<String, dynamic> data) {
+    final output = _normalizeString(data['data']);
     if (output.isEmpty) return;
-    _pendingHistoryOutput += output;
-    if (_pendingHistoryOutput.length > _maxOutputLength) {
-      _pendingHistoryOutput = _pendingHistoryOutput.substring(
-        _pendingHistoryOutput.length - _maxOutputLength,
+
+    final outputSeq = _toInt(data['outputSeq']);
+    if (!_snapshotLoaded) {
+      _pendingSnapshotOutputs.add(
+        _SequencedTerminalOutput(seq: outputSeq, data: output),
       );
-    }
-  }
-
-  void _applyHistoryBuffer() {
-    final history = _historyChunks.join('');
-    _historyChunks.clear();
-    final merged = history + _pendingHistoryOutput;
-    _pendingHistoryOutput = '';
-
-    if (!terminalReady) {
-      _pendingHistoryReplace = merged;
       return;
     }
-    _replaceTerminalBuffer(merged);
+
+    if (outputSeq == 0) return;
+    if (outputSeq <= _snapshotSeq) return;
+
+    _enqueueTerminalOutput(output);
   }
 
-  void _applyPendingHistoryReplace() {
-    if (_pendingHistoryReplace.isEmpty) return;
-    final payload = _pendingHistoryReplace;
-    _pendingHistoryReplace = '';
-    _replaceTerminalBuffer(payload);
+  void _handleSnapshotResponse(Map<String, dynamic> data) {
+    if (!_isCurrentSessionMessage(data)) return;
+
+    final requestId = _normalizeString(data['requestId']);
+    if (_snapshotRequestId.isNotEmpty &&
+        requestId.isNotEmpty &&
+        requestId != _snapshotRequestId) {
+      return;
+    }
+
+    _snapshotLoading = false;
+    _snapshotLoaded = true;
+    _snapshotRequested = false;
+    _snapshotRequestId = '';
+    _snapshotSeq = _toInt(data['snapshotSeq']);
+
+    var snapshotData = _normalizeString(data['data']);
+    var usedLocalPreview = false;
+    if (snapshotData.isEmpty && _renderedTerminalBuffer.isNotEmpty) {
+      snapshotData = _renderedTerminalBuffer;
+      usedLocalPreview = true;
+    }
+    _replaceTerminalBuffer(snapshotData);
+
+    final pending = List<_SequencedTerminalOutput>.from(
+      _pendingSnapshotOutputs,
+    );
+    _pendingSnapshotOutputs.clear();
+    for (final item in pending) {
+      if (item.data.isEmpty) continue;
+      if (usedLocalPreview && item.seq == 0) continue;
+      if (item.seq > 0 && item.seq <= _snapshotSeq) continue;
+      _enqueueTerminalOutput(item.data);
+    }
+
+    setState(() {
+      terminalHint = _t('等待终端输出...', 'Waiting for terminal output...');
+    });
+    _syncSnapshotLoadingOverlay();
+    _requestRemoteResize();
+    _flushPendingTerminalOutput();
   }
 
   void _replaceTerminalBuffer(String data) {
+    final normalized = _trimTerminalBuffer(_normalizeString(data));
+    _renderedTerminalBuffer = normalized;
     if (!terminalReady) {
-      _pendingHistoryReplace = data;
       return;
     }
-    if (data.isEmpty) {
+    if (normalized.isEmpty) {
       _runTerminalScript('window.phoneShell && window.phoneShell.clear();');
       return;
     }
-    final payload = jsonEncode(data);
+    final payload = jsonEncode(normalized);
     _runTerminalScript(
-      'window.phoneShell && (window.phoneShell.clear(), window.phoneShell.write($payload));',
+      'window.phoneShell && window.phoneShell.replace($payload);',
     );
+  }
+
+  String _trimTerminalBuffer(String data) {
+    if (data.length <= _maxRenderedLength) {
+      return data;
+    }
+    return data.substring(data.length - _maxRenderedLength);
   }
 
   bool _isCurrentSessionMessage(Map<String, dynamic> data) {
@@ -1123,14 +1156,14 @@ class _TerminalPageState extends State<TerminalPage> {
           child: Stack(
             children: [
               WebViewWidget(controller: _controller),
-              if (!terminalReady || historyLoadingVisible)
+              if (!terminalReady || snapshotLoadingVisible)
                 Container(
                   color: const Color(AppColors.terminalBg),
                   alignment: Alignment.center,
                   child: Text(
                     !terminalReady
                         ? terminalHint
-                        : _t('内容较多，加载中，请等待', 'Loading history, please wait'),
+                        : _t('正在恢复会话，请稍候', 'Restoring session, please wait'),
                     style: const TextStyle(
                       fontSize: AppSizes.fontSizeBody,
                       color: Color(AppColors.textSecondary),
@@ -2023,6 +2056,13 @@ class _TerminalPageState extends State<TerminalPage> {
       ),
     );
   }
+}
+
+class _SequencedTerminalOutput {
+  const _SequencedTerminalOutput({required this.seq, required this.data});
+
+  final int seq;
+  final String data;
 }
 
 class _ShortcutKey {

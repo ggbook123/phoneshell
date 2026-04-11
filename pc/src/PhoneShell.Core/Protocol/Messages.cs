@@ -160,6 +160,29 @@ public sealed class TerminalOutputMessage
     public long OutputSeq { get; init; }
 }
 
+public sealed class TerminalBufferRequestMessage
+{
+    public string Type => "terminal.buffer.request";
+    public string DeviceId { get; init; } = string.Empty;
+    public string SessionId { get; init; } = string.Empty;
+    public string RequestId { get; init; } = string.Empty;
+    public string BeforeCursor { get; init; } = string.Empty;
+    public int MaxChars { get; init; } = 120_000;
+}
+
+public sealed class TerminalBufferResponseMessage
+{
+    public string Type => "terminal.buffer.response";
+    public string DeviceId { get; init; } = string.Empty;
+    public string SessionId { get; init; } = string.Empty;
+    public string RequestId { get; init; } = string.Empty;
+    public string Mode { get; init; } = "latest";
+    public string Data { get; init; } = string.Empty;
+    public long SnapshotOutputSeq { get; init; }
+    public string NextBeforeCursor { get; init; } = string.Empty;
+    public bool HasMore { get; init; }
+}
+
 public sealed class TerminalSnapshotRequestMessage
 {
     public string Type => "terminal.snapshot.request";
@@ -183,6 +206,7 @@ public sealed class TerminalSnapshotResponseMessage
 
 public sealed class TerminalHistoryRequestMessage
 {
+    // Compatibility-only entry: PC remote terminal loading has migrated to terminal.buffer.request.
     public string Type => "terminal.history.request";
     public string DeviceId { get; init; } = string.Empty;
     public string SessionId { get; init; } = string.Empty;
@@ -192,6 +216,7 @@ public sealed class TerminalHistoryRequestMessage
 
 public sealed class TerminalHistoryResponseMessage
 {
+    // Compatibility-only entry: PC remote terminal loading has migrated to terminal.buffer.response.
     public string Type => "terminal.history.response";
     public string DeviceId { get; init; } = string.Empty;
     public string SessionId { get; init; } = string.Empty;
@@ -212,6 +237,13 @@ public sealed class TerminalResizeMessage
 public sealed class TerminalCloseMessage
 {
     public string Type => "terminal.close";
+    public string DeviceId { get; init; } = string.Empty;
+    public string SessionId { get; init; } = string.Empty;
+}
+
+public sealed class TerminalDetachMessage
+{
+    public string Type => "terminal.detach";
     public string DeviceId { get; init; } = string.Empty;
     public string SessionId { get; init; } = string.Empty;
 }
@@ -361,15 +393,6 @@ public sealed class AuthResponseMessage
     public bool Approved { get; init; }
 }
 
-// --- Panel login scan ---
-
-public sealed class PanelLoginScanMessage
-{
-    public string Type => "panel.login.scan";
-    public string RequestId { get; init; } = string.Empty;
-    public string MobileDeviceId { get; init; } = string.Empty;
-}
-
 // --- Error ---
 
 public sealed class ErrorMessage
@@ -452,14 +475,6 @@ public sealed class GroupDissolvedMessage
 {
     public string Type => "group.dissolved";
     public string Reason { get; init; } = string.Empty;
-}
-
-// --- Panel disconnect notification ---
-
-public sealed class PanelDisconnectedMessage
-{
-    public string Type => "panel.disconnected";
-    public string ClientId { get; init; } = string.Empty;
 }
 
 // --- Server migration ---

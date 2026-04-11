@@ -257,6 +257,18 @@
       term.write(data, requestScrollbarSync);
     }
 
+    function replaceTerminalContent(data) {
+      term.reset();
+      if (typeof data !== 'string' || data.length === 0) {
+        requestScrollbarSync();
+        return;
+      }
+
+      term.write(data, function() {
+        requestScrollbarSync();
+      });
+    }
+
     function requestScrollbarSync() {
       if (scrollbarSyncPending) {
         return;
@@ -574,6 +586,9 @@
       clear: function() {
         term.reset();
         requestScrollbarSync();
+      },
+      replace: function(data) {
+        replaceTerminalContent(data);
       },
       focus: function() {
         term.focus();

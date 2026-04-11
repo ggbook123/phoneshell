@@ -2,10 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -26,6 +26,8 @@ using PhoneShell.Services;
 using PhoneShell.Utilities;
 
 namespace PhoneShell.ViewModels;
+
+internal readonly record struct PendingRemoteOutput(long OutputSeq, string Data);
 
 /// <summary>
 /// Represents a single terminal tab with its own session, buffers, and state.
@@ -49,9 +51,13 @@ public sealed class TerminalTab : ObservableObject, IDisposable
     private string _remoteDeviceId = string.Empty;
     private string _remoteDeviceName = string.Empty;
     private string _remoteSessionId = string.Empty;
-    private long _historyBeforeSeq;
-    private bool _historyLoading;
-    private bool _historyComplete;
+    private long _remoteBufferBeforeSeq;
+    private long _latestBufferSnapshotSeq;
+    private bool _latestBufferLoading;
+    private bool _latestBufferLoaded;
+    private bool _olderBufferLoading;
+    private string _latestBufferRequestId = string.Empty;
+    private string _olderBufferRequestId = string.Empty;
 
     public TerminalTab(string tabId, ShellInfo shell, int tabNumber)
     {
@@ -89,26 +95,49 @@ public sealed class TerminalTab : ObservableObject, IDisposable
     public VirtualScreen VirtualScreen { get; }
     public TerminalOutputStabilizer OutputStabilizer { get; }
 
-    internal List<string> HistoryChunks { get; } = new();
-    internal StringBuilder PendingHistoryOutput { get; } = new();
-    internal StringBuilder HistoryCache { get; } = new();
+    internal List<PendingRemoteOutput> PendingRemoteOutputs { get; } = new();
+    internal StringBuilder RemoteBufferCache { get; } = new();
 
-    internal long HistoryBeforeSeq
+    internal long RemoteBufferBeforeSeq
     {
-        get => _historyBeforeSeq;
-        set => _historyBeforeSeq = value;
+        get => _remoteBufferBeforeSeq;
+        set => _remoteBufferBeforeSeq = value;
     }
 
-    internal bool HistoryLoading
+    internal long LatestBufferSnapshotSeq
     {
-        get => _historyLoading;
-        set => _historyLoading = value;
+        get => _latestBufferSnapshotSeq;
+        set => _latestBufferSnapshotSeq = value;
     }
 
-    internal bool HistoryComplete
+    internal bool LatestBufferLoading
     {
-        get => _historyComplete;
-        set => _historyComplete = value;
+        get => _latestBufferLoading;
+        set => _latestBufferLoading = value;
+    }
+
+    internal bool LatestBufferLoaded
+    {
+        get => _latestBufferLoaded;
+        set => _latestBufferLoaded = value;
+    }
+
+    internal bool OlderBufferLoading
+    {
+        get => _olderBufferLoading;
+        set => _olderBufferLoading = value;
+    }
+
+    internal string LatestBufferRequestId
+    {
+        get => _latestBufferRequestId;
+        set => _latestBufferRequestId = value;
+    }
+
+    internal string OlderBufferRequestId
+    {
+        get => _olderBufferRequestId;
+        set => _olderBufferRequestId = value;
     }
 
     /// <summary>Cached delegate for OutputReceived subscription (allows proper unsubscribe).</summary>
@@ -259,8 +288,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly GroupStore _groupStore;
     private readonly TerminalHistoryStore _historyStore;
     private readonly Dispatcher _dispatcher;
-    private readonly HttpClient _httpClient;
-
     private DeviceIdentity _identity = new();
     private string _deviceId = string.Empty;
     private string _qrPayload = string.Empty;
@@ -288,13 +315,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private static readonly bool EnableDebugLog = true;
     private static readonly string NetLogFile =
         System.IO.Path.Combine(AppContext.BaseDirectory, "data", "net-debug.log");
-    private const int HistoryPageChars = 20000;
-    private const string CrossDevicePromptText = "跨设备连接请先用手机扫码。";
-    private const int CrossDeviceAuthValidHours = 18;
-    private static readonly JsonSerializerOptions _panelJsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true
-    };
+    private const int RemoteLatestBufferPageChars = 120000;
+    private const int RemoteOlderBufferPageChars = 20000;
     private string _autoExecStatus = string.Empty;
 
     // Server/Client fields
@@ -320,15 +342,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private string _groupStatus = string.Empty;
     private string? _selectedGroupDeviceId;
 
-    // Cross-device auth fields
-    private bool _isCrossDeviceAuthorized;
-    private bool _crossDeviceAuthInProgress;
-    private string _crossDeviceAuthStatus = string.Empty;
-    private BitmapImage? _crossDeviceQrImage;
-    private string _crossDeviceBindQrPayload = string.Empty;
-    private DateTimeOffset? _crossDeviceAuthExpiresAt;
-    private CancellationTokenSource? _crossDeviceAuthCts;
-
     // Shell selection fields
     private readonly IShellLocator _shellLocator;
     private ObservableCollection<ShellInfo> _availableShells = new();
@@ -350,11 +363,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _historyStore = new TerminalHistoryStore(AppContext.BaseDirectory);
         _shellLocator = new WindowsShellLocator();
         _dispatcher = Application.Current.Dispatcher;
-        _httpClient = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(8)
-        };
-
         _aiSettings = _aiSettingsStore.Load();
         _aiEndpoint = _aiSettings.ApiEndpoint;
         _aiApiKey = _aiSettings.ApiKey;
@@ -639,39 +647,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _groupStatus, value);
     }
 
-    public bool IsCrossDeviceAuthorized
-    {
-        get => _isCrossDeviceAuthorized;
-        private set
-        {
-            if (SetProperty(ref _isCrossDeviceAuthorized, value))
-            {
-                OnPropertyChanged(nameof(IsCrossDeviceAuthRequired));
-                NewSessionCommand.RaiseCanExecuteChanged();
-            }
-        }
-    }
-
-    public bool IsCrossDeviceAuthRequired => IsCurrentSessionTargetRemote && !IsCrossDeviceAuthValid;
-    private bool IsCrossDeviceAuthValid =>
-        IsCrossDeviceAuthorized &&
-        _crossDeviceAuthExpiresAt.HasValue &&
-        _crossDeviceAuthExpiresAt.Value > DateTimeOffset.UtcNow;
-
-    public BitmapImage? CrossDeviceQrImage
-    {
-        get => _crossDeviceQrImage;
-        private set => SetProperty(ref _crossDeviceQrImage, value);
-    }
-
-    public string CrossDeviceAuthStatus
-    {
-        get => _crossDeviceAuthStatus;
-        private set => SetProperty(ref _crossDeviceAuthStatus, value);
-    }
-
-    public string CrossDeviceAuthPrompt => CrossDevicePromptText;
-
     public ObservableCollection<GroupDeviceItem> GroupMembers { get; } = new();
     public ObservableCollection<ShellInfo> SessionTargetShells { get; } = new();
 
@@ -752,8 +727,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _autoExecCts?.Dispose();
         _aiChatService.Dispose();
         _historyStore.Dispose();
-        StopCrossDeviceAuthFlow(clearUi: false);
-        _httpClient.Dispose();
 
         foreach (var tab in Tabs)
             tab.Dispose();
@@ -773,8 +746,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         if (IsCurrentSessionTargetRemote)
         {
-            if (!await EnsureCrossDeviceAuthorizationAsync())
-                return;
             await OpenRemoteTerminalAsync(CurrentSessionTargetDeviceId, shell.Id);
             return;
         }
@@ -887,9 +858,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (!IsCurrentSessionTargetRemote)
             return;
 
-        if (!await EnsureCrossDeviceAuthorizationAsync())
-            return;
-
         await RequestRemoteSessionListAsync(CurrentSessionTargetDeviceId);
     }
 
@@ -904,8 +872,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         if (IsCurrentSessionTargetRemote)
         {
-            if (!await EnsureCrossDeviceAuthorizationAsync())
-                return;
             await OpenRemoteTerminalAsync(CurrentSessionTargetDeviceId, shell.Id);
             return;
         }
@@ -927,7 +893,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CurrentSessionTargetDisplayName));
         OnPropertyChanged(nameof(NewSessionTargetButtonText));
         OnPropertyChanged(nameof(IsCurrentSessionTargetRemote));
-        OnPropertyChanged(nameof(IsCrossDeviceAuthRequired));
     }
 
     private void RefreshSessionTargetShells()
@@ -985,13 +950,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private bool CanCreateNewSession()
     {
-        if (ResolveSessionTargetShell() is null)
-            return false;
-
-        if (IsCrossDeviceAuthRequired)
-            return false;
-
-        return true;
+        return ResolveSessionTargetShell() is not null;
     }
 
     private bool IsTabInCurrentTarget(TerminalTab tab)
@@ -1090,7 +1049,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             var tab = CreateRemoteTab(deviceId, deviceName, session.ShellId, session.SessionId,
                 cols: 120, rows: 30, activate: false, titleOverride: desiredTitle);
-            StartRemoteHistorySync(tab);
+            StartRemoteBufferSync(tab);
         }
 
         if (string.Equals(CurrentSessionTargetDeviceId, deviceId, StringComparison.Ordinal))
@@ -1126,7 +1085,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CurrentSessionTargetDisplayName));
         OnPropertyChanged(nameof(NewSessionTargetButtonText));
         OnPropertyChanged(nameof(IsCurrentSessionTargetRemote));
-        OnPropertyChanged(nameof(IsCrossDeviceAuthRequired));
         RefreshVisibleTabs();
     }
 
@@ -1464,7 +1422,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public string GetTabReplayData(TerminalTab tab)
     {
         if (tab.IsRemote)
-            return tab.HistoryCache.ToString();
+            return tab.RemoteBufferCache.ToString();
 
         return _historyStore.ReadAll(_identity.DeviceId, tab.TabId);
     }
@@ -1535,10 +1493,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ControlOwner = ControlOwner.Pc;
         IsMobileConnected = false;
         ConnectionStatus = "Local only";
-        IsCrossDeviceAuthorized = false;
-        _crossDeviceAuthExpiresAt = null;
-        CrossDeviceAuthStatus = string.Empty;
-        CrossDeviceQrImage = null;
     }
 
     private void RefreshQr()
@@ -1565,320 +1519,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             QrPayload = _payloadBuilder.Build(_identity);
         }
         QrImage = _qrCodeService.Generate(QrPayload);
-    }
-
-    // --- Cross-device authorization (mobile scan required) ---
-
-    private async Task<bool> EnsureCrossDeviceAuthorizationAsync()
-    {
-        if (!IsCurrentSessionTargetRemote)
-            return true;
-
-        if (!IsCrossDeviceAuthRequired)
-            return true;
-
-        if (IsCrossDeviceAuthorized && !IsCrossDeviceAuthValid)
-        {
-            ResetCrossDeviceAuthorization();
-        }
-
-        if (_crossDeviceAuthInProgress)
-            return false;
-
-        await StartCrossDeviceAuthFlowAsync();
-        return IsCrossDeviceAuthorized;
-    }
-
-    private async Task StartCrossDeviceAuthFlowAsync()
-    {
-        if (_crossDeviceAuthInProgress)
-            return;
-
-        _crossDeviceAuthInProgress = true;
-        _crossDeviceAuthCts?.Cancel();
-        _crossDeviceAuthCts?.Dispose();
-        _crossDeviceAuthCts = new CancellationTokenSource();
-        var ct = _crossDeviceAuthCts.Token;
-
-        await _dispatcher.InvokeAsync(() =>
-        {
-            CrossDeviceAuthStatus = "正在生成二维码...";
-            CrossDeviceQrImage = null;
-        });
-
-        var baseUrl = GetPanelBaseUrl();
-        if (string.IsNullOrWhiteSpace(baseUrl))
-        {
-            await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "无法获取服务器地址");
-            StopCrossDeviceAuthFlow(clearUi: false);
-            return;
-        }
-
-        var pairing = await GetPanelPairingInfoAsync(baseUrl, ct);
-        if (pairing is null)
-        {
-            await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "无法连接服务器");
-            StopCrossDeviceAuthFlow(clearUi: false);
-            return;
-        }
-
-        if (!pairing.HasGroup)
-        {
-            await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "服务器未初始化群组");
-            StopCrossDeviceAuthFlow(clearUi: false);
-            return;
-        }
-
-        _crossDeviceBindQrPayload = pairing.QrPayload ?? string.Empty;
-        if (!pairing.HasBoundMobile && !string.IsNullOrWhiteSpace(_crossDeviceBindQrPayload))
-        {
-            await _dispatcher.InvokeAsync(() =>
-            {
-                CrossDeviceQrImage = _qrCodeService.Generate(_crossDeviceBindQrPayload);
-                CrossDeviceAuthStatus = "等待手机扫码加入群组";
-            });
-        }
-
-        var login = await GetPanelLoginStartAsync(baseUrl, ct);
-        if (login is null || string.IsNullOrWhiteSpace(login.RequestId))
-        {
-            await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "无法创建登录会话");
-            StopCrossDeviceAuthFlow(clearUi: false);
-            return;
-        }
-
-        await ApplyPanelLoginStatusAsync(login, baseUrl, ct);
-
-        _ = Task.Run(() => PollPanelLoginStatusAsync(baseUrl, login.RequestId, ct));
-    }
-
-    private async Task PollPanelLoginStatusAsync(string baseUrl, string requestId, CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested && _crossDeviceAuthInProgress)
-        {
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(2), ct);
-            }
-            catch (TaskCanceledException)
-            {
-                break;
-            }
-
-            if (ct.IsCancellationRequested || !_crossDeviceAuthInProgress)
-                break;
-
-            var status = await GetPanelLoginStatusAsync(baseUrl, requestId, ct);
-            if (status is null)
-                continue;
-
-            await ApplyPanelLoginStatusAsync(status, baseUrl, ct);
-
-            if (IsCrossDeviceAuthorized || !_crossDeviceAuthInProgress)
-                break;
-        }
-    }
-
-    private async Task ApplyPanelLoginStatusAsync(PanelLoginResponse status, string baseUrl, CancellationToken ct)
-    {
-        if (ct.IsCancellationRequested)
-            return;
-
-        var state = status.Status?.Trim().ToLowerInvariant();
-        switch (state)
-        {
-            case "approved":
-                await _dispatcher.InvokeAsync(() =>
-                {
-                    IsCrossDeviceAuthorized = true;
-                    _crossDeviceAuthExpiresAt = DateTimeOffset.UtcNow.AddHours(CrossDeviceAuthValidHours);
-                    CrossDeviceAuthStatus = string.Empty;
-                    CrossDeviceQrImage = null;
-                });
-                StopCrossDeviceAuthFlow(clearUi: false);
-                return;
-            case "rejected":
-                await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "手机端已拒绝，请重新扫码");
-                ScheduleCrossDeviceAuthRestart(TimeSpan.FromSeconds(2));
-                return;
-            case "expired":
-                await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "登录会话已过期，正在刷新...");
-                ScheduleCrossDeviceAuthRestart(TimeSpan.FromSeconds(1));
-                return;
-            case "awaiting_scan":
-                if (!string.IsNullOrWhiteSpace(status.LoginQrPayload))
-                {
-                    var qr = _qrCodeService.Generate(status.LoginQrPayload);
-                    await _dispatcher.InvokeAsync(() => CrossDeviceQrImage = qr);
-                }
-                await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "请使用绑定的手机扫描二维码");
-                return;
-            case "awaiting_mobile":
-                if (!string.IsNullOrWhiteSpace(_crossDeviceBindQrPayload))
-                {
-                    var qr = _qrCodeService.Generate(_crossDeviceBindQrPayload);
-                    await _dispatcher.InvokeAsync(() => CrossDeviceQrImage = qr);
-                }
-                await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "等待手机扫码加入群组");
-                return;
-            case "awaiting_approval":
-                await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = "请在手机端确认登录");
-                return;
-            default:
-                if (!string.IsNullOrWhiteSpace(status.Message))
-                    await _dispatcher.InvokeAsync(() => CrossDeviceAuthStatus = status.Message);
-                return;
-        }
-    }
-
-    private void ScheduleCrossDeviceAuthRestart(TimeSpan delay)
-    {
-        StopCrossDeviceAuthFlow(clearUi: false);
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await Task.Delay(delay);
-            }
-            catch
-            {
-                return;
-            }
-
-            if (!IsCrossDeviceAuthRequired || IsCrossDeviceAuthorized)
-                return;
-
-            if (_dispatcher.HasShutdownStarted)
-                return;
-
-            await StartCrossDeviceAuthFlowAsync();
-        });
-    }
-
-    private string? GetPanelBaseUrl()
-    {
-        var wsUrl = IsRelayServer ? PrimaryRelayAddress : RelayServerAddress;
-        if (string.IsNullOrWhiteSpace(wsUrl))
-            return null;
-
-        var httpUrl = wsUrl
-            .Replace("ws://", "http://", StringComparison.OrdinalIgnoreCase)
-            .Replace("wss://", "https://", StringComparison.OrdinalIgnoreCase)
-            .TrimEnd('/');
-
-        if (httpUrl.EndsWith("/ws", StringComparison.OrdinalIgnoreCase))
-            httpUrl = httpUrl[..^3];
-
-        return httpUrl;
-    }
-
-    private async Task<PanelPairingInfo?> GetPanelPairingInfoAsync(string baseUrl, CancellationToken ct)
-    {
-        var url = $"{baseUrl}/api/panel/pairing";
-        return await GetPanelJsonAsync<PanelPairingInfo>(url, ct);
-    }
-
-    private async Task<PanelLoginResponse?> GetPanelLoginStartAsync(string baseUrl, CancellationToken ct)
-    {
-        var url = $"{baseUrl}/api/panel/login/start";
-        return await GetPanelJsonAsync<PanelLoginResponse>(url, ct);
-    }
-
-    private async Task<PanelLoginResponse?> GetPanelLoginStatusAsync(string baseUrl, string requestId, CancellationToken ct)
-    {
-        var safeId = Uri.EscapeDataString(requestId);
-        var url = $"{baseUrl}/api/panel/login/status/{safeId}";
-        return await GetPanelJsonAsync<PanelLoginResponse>(url, ct);
-    }
-
-    private async Task<T?> GetPanelJsonAsync<T>(string url, CancellationToken ct)
-    {
-        try
-        {
-            using var response = await _httpClient.GetAsync(url, ct);
-            if (!response.IsSuccessStatusCode)
-            {
-                OnNetworkLog($"[panel] HTTP {(int)response.StatusCode} for {url}");
-                return default;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            return await JsonSerializer.DeserializeAsync<T>(stream, _panelJsonOptions, ct);
-        }
-        catch (TaskCanceledException)
-        {
-            return default;
-        }
-        catch (Exception ex)
-        {
-            OnNetworkLog($"[panel] Request failed: {ex.Message}");
-            return default;
-        }
-    }
-
-    private void StopCrossDeviceAuthFlow(bool clearUi)
-    {
-        _crossDeviceAuthCts?.Cancel();
-        _crossDeviceAuthCts?.Dispose();
-        _crossDeviceAuthCts = null;
-        _crossDeviceAuthInProgress = false;
-        _crossDeviceBindQrPayload = string.Empty;
-
-        if (!clearUi)
-            return;
-
-        if (_dispatcher.CheckAccess())
-        {
-            CrossDeviceQrImage = null;
-            CrossDeviceAuthStatus = string.Empty;
-        }
-        else
-        {
-            _dispatcher.InvokeAsync(() =>
-            {
-                CrossDeviceQrImage = null;
-                CrossDeviceAuthStatus = string.Empty;
-            });
-        }
-    }
-
-    private void ResetCrossDeviceAuthorization()
-    {
-        if (_dispatcher.CheckAccess())
-        {
-            IsCrossDeviceAuthorized = false;
-            _crossDeviceAuthExpiresAt = null;
-            StopCrossDeviceAuthFlow(clearUi: true);
-            return;
-        }
-
-        _dispatcher.InvokeAsync(() =>
-        {
-            IsCrossDeviceAuthorized = false;
-            _crossDeviceAuthExpiresAt = null;
-            StopCrossDeviceAuthFlow(clearUi: true);
-        });
-    }
-
-    private sealed class PanelPairingInfo
-    {
-        public bool RequiresAuth { get; set; }
-        public bool HasGroup { get; set; }
-        public string GroupId { get; set; } = string.Empty;
-        public string ServerUrl { get; set; } = string.Empty;
-        public string QrPayload { get; set; } = string.Empty;
-        public bool HasBoundMobile { get; set; }
-        public bool BoundMobileOnline { get; set; }
-    }
-
-    private sealed class PanelLoginResponse
-    {
-        public string RequestId { get; set; } = string.Empty;
-        public string Status { get; set; } = string.Empty;
-        public string Message { get; set; } = string.Empty;
-        public string LoginQrPayload { get; set; } = string.Empty;
-        public string? Token { get; set; }
     }
 
     private void ForceDisconnect()
@@ -2118,10 +1758,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             if (IsRelayServer)
             {
-                _relayServer = new RelayServer
-                {
-                    WebPanelEnabled = true
-                };
+                _relayServer = new RelayServer();
                 _relayServer.HistoryStore = _historyStore;
                 _relayServer.PreserveTerminalHistoryOnClose = true;
                 _relayServer.Log += OnNetworkLog;
@@ -2221,6 +1858,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _relayClient.TerminalOpenRequested += OnRelayClientTerminalOpenRequested;
                 _relayClient.TerminalResizeRequested += OnRemoteTerminalResize;
                 _relayClient.TerminalCloseRequested += OnRemoteTerminalCloseRequested;
+                _relayClient.TerminalDetachRequested += OnRemoteTerminalSessionEnded;
                 _relayClient.GroupJoined += OnGroupJoined;
                 _relayClient.GroupJoinRejected += OnGroupJoinRejected;
                 _relayClient.GroupMemberChanged += OnGroupMemberListChanged;
@@ -2232,14 +1870,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _relayClient.DeviceUnbound += OnDeviceUnbound;
                 _relayClient.TerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
                 _relayClient.TerminalOutputReceived += OnRemoteTerminalOutputReceived;
-                _relayClient.TerminalHistoryReceived += OnRemoteTerminalHistoryReceived;
+                _relayClient.TerminalBufferReceived += OnRemoteTerminalBufferReceived;
                 _relayClient.TerminalClosedReceived += OnRemoteTerminalClosedReceived;
                 _relayClient.RelayDesignated += OnRelayDesignated;
                 _relayClient.InviteCreated += OnInviteCreated;
                 _relayClient.DeviceSettingsUpdated += OnDeviceSettingsUpdated;
                 _relayClient.DeviceKicked += OnDeviceKicked;
                 _relayClient.GroupDissolved += OnGroupDissolved;
-                _relayClient.PanelDisconnected += OnPanelDisconnected;
 
                 _ = _relayClient.ConnectAsync(url);
 
@@ -2252,10 +1889,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 // No relay server address configured - start in standalone mode
                 // Standalone mode: start local WS server without group secret, show connect QR
                 _isStandaloneMode = true;
-                _relayServer = new RelayServer
-                {
-                    WebPanelEnabled = true
-                };
+                _relayServer = new RelayServer();
                 _relayServer.HistoryStore = _historyStore;
                 _relayServer.PreserveTerminalHistoryOnClose = true;
                 _relayServer.Log += OnNetworkLog;
@@ -2411,6 +2045,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _relayClient.TerminalOpenRequested -= OnRelayClientTerminalOpenRequested;
             _relayClient.TerminalResizeRequested -= OnRemoteTerminalResize;
             _relayClient.TerminalCloseRequested -= OnRemoteTerminalCloseRequested;
+            _relayClient.TerminalDetachRequested -= OnRemoteTerminalSessionEnded;
             _relayClient.GroupJoined -= OnGroupJoined;
             _relayClient.GroupJoinRejected -= OnGroupJoinRejected;
             _relayClient.GroupMemberChanged -= OnGroupMemberListChanged;
@@ -2422,14 +2057,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _relayClient.DeviceUnbound -= OnDeviceUnbound;
             _relayClient.TerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
             _relayClient.TerminalOutputReceived -= OnRemoteTerminalOutputReceived;
-            _relayClient.TerminalHistoryReceived -= OnRemoteTerminalHistoryReceived;
+            _relayClient.TerminalBufferReceived -= OnRemoteTerminalBufferReceived;
             _relayClient.TerminalClosedReceived -= OnRemoteTerminalClosedReceived;
             _relayClient.RelayDesignated -= OnRelayDesignated;
             _relayClient.InviteCreated -= OnInviteCreated;
             _relayClient.DeviceSettingsUpdated -= OnDeviceSettingsUpdated;
             _relayClient.DeviceKicked -= OnDeviceKicked;
             _relayClient.GroupDissolved -= OnGroupDissolved;
-            _relayClient.PanelDisconnected -= OnPanelDisconnected;
             _relayClient.LocalQuickPanelSyncProvider = null;
             _relayClient.LocalRecentInputAppendRequested = null;
             _relayClient.Dispose();
@@ -2572,7 +2206,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher.InvokeAsync(() =>
         {
-            ResetCrossDeviceAuthorization();
             GroupSecret = string.Empty;
             SaveServerSettings();
 
@@ -2739,7 +2372,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher.InvokeAsync(() =>
         {
-            ResetCrossDeviceAuthorization();
             OnNetworkLog($"Kicked from group: {reason}");
             StopNetwork("device_kicked");
             GroupStatus = $"Kicked: {reason}";
@@ -2751,19 +2383,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher.InvokeAsync(() =>
         {
-            ResetCrossDeviceAuthorization();
             OnNetworkLog($"Group dissolved: {reason}");
             StopNetwork("group_dissolved");
             GroupStatus = $"Group dissolved: {reason}";
             ServerStatus = "Group dissolved. Returning to standalone.";
-        });
-    }
-
-    private void OnPanelDisconnected(string clientId)
-    {
-        _dispatcher.InvokeAsync(() =>
-        {
-            OnNetworkLog($"Web panel disconnected: {clientId}");
         });
     }
 
@@ -2791,7 +2414,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             {
                 var tab = CreateRemoteTab(deviceId, deviceName, "remote", sessionId, cols, rows,
                     activate: string.Equals(CurrentSessionTargetDeviceId, deviceId, StringComparison.Ordinal));
-                StartRemoteHistorySync(tab);
+                StartRemoteBufferSync(tab);
                 OnNetworkLog($"Remote tab created: [{deviceName}] session={sessionId}");
             }
 
@@ -2799,7 +2422,29 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         });
     }
 
-    private void OnRemoteTerminalOutputReceived(string deviceId, string sessionId, string data)
+    private static string BuildRemoteBufferRequestId()
+    {
+        return Guid.NewGuid().ToString("N");
+    }
+
+    private static string BuildRemoteBufferCursor(long beforeSeq)
+    {
+        return beforeSeq > 0
+            ? beforeSeq.ToString(CultureInfo.InvariantCulture)
+            : string.Empty;
+    }
+
+    private static long ParseRemoteBufferCursor(string? beforeCursor)
+    {
+        if (string.IsNullOrWhiteSpace(beforeCursor))
+            return 0;
+
+        return long.TryParse(beforeCursor, NumberStyles.Integer, CultureInfo.InvariantCulture, out var beforeSeq)
+            ? Math.Max(0, beforeSeq)
+            : 0;
+    }
+
+    private void OnRemoteTerminalOutputReceived(string deviceId, string sessionId, string data, long outputSeq)
     {
         _dispatcher.InvokeAsync(() =>
         {
@@ -2809,16 +2454,22 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 string.Equals(t.RemoteSessionId, sessionId, StringComparison.Ordinal));
             if (tab is null) return;
 
+            if (tab.LatestBufferLoaded && outputSeq > 0 && outputSeq <= tab.LatestBufferSnapshotSeq)
+                return;
+
             tab.OutputBuffer.Append(data);
             tab.VirtualScreen.Write(data);
 
-            if (!tab.HistoryComplete)
+            if (!tab.LatestBufferLoaded)
             {
-                tab.PendingHistoryOutput.Append(data);
+                tab.PendingRemoteOutputs.Add(new PendingRemoteOutput(outputSeq, data));
                 return;
             }
 
-            tab.HistoryCache.Append(data);
+            tab.RemoteBufferCache.Append(data);
+            if (outputSeq > 0)
+                tab.LatestBufferSnapshotSeq = Math.Max(tab.LatestBufferSnapshotSeq, outputSeq);
+
             if (tab == ActiveTab)
                 TerminalOutputForwarded?.Invoke(data);
         });
@@ -2840,68 +2491,150 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         });
     }
 
-    private void OnRemoteTerminalHistoryReceived(string deviceId, string sessionId, string data, long nextBeforeSeq, bool hasMore)
+    private void OnRemoteTerminalBufferReceived(
+        string deviceId,
+        string sessionId,
+        string mode,
+        string data,
+        long snapshotOutputSeq,
+        string nextBeforeCursor,
+        bool hasMore,
+        string requestId)
     {
         _dispatcher.InvokeAsync(() =>
         {
-            HandleRemoteHistoryResponse(deviceId, sessionId, data, nextBeforeSeq, hasMore);
+            HandleRemoteBufferResponse(
+                deviceId,
+                sessionId,
+                mode,
+                requestId,
+                data,
+                snapshotOutputSeq,
+                nextBeforeCursor,
+                hasMore);
         });
     }
 
-    private void StartRemoteHistorySync(TerminalTab tab)
+    private void StartRemoteBufferSync(TerminalTab tab)
     {
         if (!tab.IsRemote) return;
-        ResetRemoteHistoryState(tab);
-        RequestRemoteHistoryPage(tab);
+        ResetRemoteBufferState(tab);
+        RequestRemoteLatestBufferPage(tab);
     }
 
-    private void ResetRemoteHistoryState(TerminalTab tab)
+    private void ResetRemoteBufferState(TerminalTab tab)
     {
-        tab.HistoryLoading = false;
-        tab.HistoryComplete = false;
-        tab.HistoryBeforeSeq = 0;
-        tab.HistoryChunks.Clear();
-        tab.PendingHistoryOutput.Clear();
-        tab.HistoryCache.Clear();
+        tab.LatestBufferLoading = false;
+        tab.LatestBufferLoaded = false;
+        tab.OlderBufferLoading = false;
+        tab.LatestBufferRequestId = string.Empty;
+        tab.OlderBufferRequestId = string.Empty;
+        tab.RemoteBufferBeforeSeq = 0;
+        tab.LatestBufferSnapshotSeq = 0;
+        tab.PendingRemoteOutputs.Clear();
+        tab.RemoteBufferCache.Clear();
     }
 
-    private void RequestRemoteHistoryPage(TerminalTab tab)
+    private void RequestRemoteLatestBufferPage(TerminalTab tab)
     {
-        if (tab.HistoryLoading || tab.HistoryComplete) return;
+        if (tab.LatestBufferLoading || tab.LatestBufferLoaded) return;
         if (string.IsNullOrWhiteSpace(tab.RemoteSessionId) || string.IsNullOrWhiteSpace(tab.RemoteDeviceId))
             return;
 
-        tab.HistoryLoading = true;
+        tab.LatestBufferLoading = true;
+        tab.LatestBufferRequestId = BuildRemoteBufferRequestId();
 
         if (_relayClient is not null && _relayClient.IsConnected)
         {
-            _ = _relayClient.SendTerminalHistoryRequestAsync(
-                tab.RemoteDeviceId, tab.RemoteSessionId, tab.HistoryBeforeSeq, HistoryPageChars);
+            _ = _relayClient.SendTerminalBufferRequestAsync(
+                tab.RemoteDeviceId,
+                tab.RemoteSessionId,
+                string.Empty,
+                RemoteLatestBufferPageChars,
+                tab.LatestBufferRequestId);
             return;
         }
 
         if (_relayServer is not null && _relayServer.IsRunning)
         {
-            var page = _relayServer.GetTerminalHistoryPage(
-                tab.RemoteDeviceId, tab.RemoteSessionId, tab.HistoryBeforeSeq, HistoryPageChars);
-            HandleRemoteHistoryResponse(tab.RemoteDeviceId, tab.RemoteSessionId,
-                page.Data, page.NextBeforeSeq, page.HasMore);
+            var page = _relayServer.GetTerminalBufferPage(
+                tab.RemoteDeviceId, tab.RemoteSessionId, string.Empty, RemoteLatestBufferPageChars);
+            HandleRemoteBufferResponse(
+                tab.RemoteDeviceId,
+                tab.RemoteSessionId,
+                page.Mode,
+                tab.LatestBufferRequestId,
+                page.Data,
+                page.SnapshotOutputSeq,
+                page.NextBeforeCursor,
+                page.HasMore);
             return;
         }
 
-        tab.HistoryLoading = false;
-        tab.HistoryComplete = true;
-        if (tab.PendingHistoryOutput.Length > 0)
+        tab.LatestBufferLoading = false;
+        tab.LatestBufferLoaded = true;
+        if (tab.PendingRemoteOutputs.Count > 0)
         {
-            var merged = tab.PendingHistoryOutput.ToString();
-            tab.PendingHistoryOutput.Clear();
-            tab.HistoryCache.Append(merged);
+            foreach (var pending in tab.PendingRemoteOutputs)
+            {
+                if (!string.IsNullOrEmpty(pending.Data))
+                    tab.RemoteBufferCache.Append(pending.Data);
+            }
+            tab.PendingRemoteOutputs.Clear();
             if (tab == ActiveTab)
-                TerminalBufferReplaceRequested?.Invoke(merged);
+                TerminalBufferReplaceRequested?.Invoke(tab.RemoteBufferCache.ToString());
         }
     }
 
-    private void HandleRemoteHistoryResponse(string deviceId, string sessionId, string data, long nextBeforeSeq, bool hasMore)
+    private void RequestRemoteOlderBufferPage(TerminalTab tab)
+    {
+        if (tab.OlderBufferLoading || tab.RemoteBufferBeforeSeq <= 0) return;
+        if (string.IsNullOrWhiteSpace(tab.RemoteSessionId) || string.IsNullOrWhiteSpace(tab.RemoteDeviceId))
+            return;
+
+        tab.OlderBufferLoading = true;
+        tab.OlderBufferRequestId = BuildRemoteBufferRequestId();
+        var beforeCursor = BuildRemoteBufferCursor(tab.RemoteBufferBeforeSeq);
+
+        if (_relayClient is not null && _relayClient.IsConnected)
+        {
+            _ = _relayClient.SendTerminalBufferRequestAsync(
+                tab.RemoteDeviceId,
+                tab.RemoteSessionId,
+                beforeCursor,
+                RemoteOlderBufferPageChars,
+                tab.OlderBufferRequestId);
+            return;
+        }
+
+        if (_relayServer is not null && _relayServer.IsRunning)
+        {
+            var page = _relayServer.GetTerminalBufferPage(
+                tab.RemoteDeviceId, tab.RemoteSessionId, beforeCursor, RemoteOlderBufferPageChars);
+            HandleRemoteBufferResponse(
+                tab.RemoteDeviceId,
+                tab.RemoteSessionId,
+                page.Mode,
+                tab.OlderBufferRequestId,
+                page.Data,
+                page.SnapshotOutputSeq,
+                page.NextBeforeCursor,
+                page.HasMore);
+            return;
+        }
+
+        tab.OlderBufferLoading = false;
+    }
+
+    private void HandleRemoteBufferResponse(
+        string deviceId,
+        string sessionId,
+        string mode,
+        string requestId,
+        string data,
+        long snapshotOutputSeq,
+        string nextBeforeCursor,
+        bool hasMore)
     {
         var tab = Tabs.FirstOrDefault(t =>
             t.IsRemote &&
@@ -2909,28 +2642,67 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             string.Equals(t.RemoteSessionId, sessionId, StringComparison.Ordinal));
         if (tab is null) return;
 
-        tab.HistoryLoading = false;
-        if (!string.IsNullOrEmpty(data))
-            tab.HistoryChunks.Insert(0, data);
-
-        if (hasMore)
+        var older = string.Equals(mode, "older", StringComparison.OrdinalIgnoreCase);
+        if (older)
         {
-            tab.HistoryBeforeSeq = nextBeforeSeq;
-            RequestRemoteHistoryPage(tab);
+            if (!string.IsNullOrEmpty(tab.OlderBufferRequestId) &&
+                !string.IsNullOrEmpty(requestId) &&
+                !string.Equals(tab.OlderBufferRequestId, requestId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            tab.OlderBufferLoading = false;
+            tab.OlderBufferRequestId = string.Empty;
+            tab.RemoteBufferBeforeSeq = ParseRemoteBufferCursor(nextBeforeCursor);
+
+            if (!string.IsNullOrEmpty(data))
+            {
+                tab.RemoteBufferCache.Insert(0, data);
+                if (tab == ActiveTab)
+                    TerminalBufferReplaceRequested?.Invoke(tab.RemoteBufferCache.ToString());
+            }
+
+            if (hasMore && tab.RemoteBufferBeforeSeq > 0)
+                RequestRemoteOlderBufferPage(tab);
             return;
         }
 
-        tab.HistoryComplete = true;
-        var history = string.Concat(tab.HistoryChunks);
-        tab.HistoryChunks.Clear();
-        var pending = tab.PendingHistoryOutput.ToString();
-        tab.PendingHistoryOutput.Clear();
-        var merged = history + pending;
-        tab.HistoryCache.Clear();
-        tab.HistoryCache.Append(merged);
+        if (!string.IsNullOrEmpty(tab.LatestBufferRequestId) &&
+            !string.IsNullOrEmpty(requestId) &&
+            !string.Equals(tab.LatestBufferRequestId, requestId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        tab.LatestBufferLoading = false;
+        tab.LatestBufferLoaded = true;
+        tab.LatestBufferRequestId = string.Empty;
+        tab.LatestBufferSnapshotSeq = Math.Max(0, snapshotOutputSeq);
+        tab.RemoteBufferBeforeSeq = ParseRemoteBufferCursor(nextBeforeCursor);
+        tab.RemoteBufferCache.Clear();
+        if (!string.IsNullOrEmpty(data))
+            tab.RemoteBufferCache.Append(data);
+
+        foreach (var pending in tab.PendingRemoteOutputs)
+        {
+            if (string.IsNullOrEmpty(pending.Data))
+                continue;
+
+            if (pending.OutputSeq > 0 && pending.OutputSeq <= tab.LatestBufferSnapshotSeq)
+                continue;
+
+            tab.RemoteBufferCache.Append(pending.Data);
+            if (pending.OutputSeq > 0)
+                tab.LatestBufferSnapshotSeq = Math.Max(tab.LatestBufferSnapshotSeq, pending.OutputSeq);
+        }
+        tab.PendingRemoteOutputs.Clear();
 
         if (tab == ActiveTab)
-            TerminalBufferReplaceRequested?.Invoke(merged);
+            TerminalBufferReplaceRequested?.Invoke(tab.RemoteBufferCache.ToString());
+
+        if (hasMore && tab.RemoteBufferBeforeSeq > 0)
+            RequestRemoteOlderBufferPage(tab);
     }
 
     private void UpdateRelayAddressPreview()
@@ -3894,6 +3666,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _relayClient.TerminalOpenRequested += OnRelayClientTerminalOpenRequested;
             _relayClient.TerminalResizeRequested += OnRemoteTerminalResize;
             _relayClient.TerminalCloseRequested += OnRemoteTerminalCloseRequested;
+            _relayClient.TerminalDetachRequested += OnRemoteTerminalSessionEnded;
             _relayClient.GroupJoined += OnGroupJoined;
             _relayClient.GroupJoinRejected += OnGroupJoinRejected;
             _relayClient.GroupMemberChanged += OnGroupMemberListChanged;
@@ -3905,14 +3678,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _relayClient.DeviceUnbound += OnDeviceUnbound;
             _relayClient.TerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
             _relayClient.TerminalOutputReceived += OnRemoteTerminalOutputReceived;
-            _relayClient.TerminalHistoryReceived += OnRemoteTerminalHistoryReceived;
+            _relayClient.TerminalBufferReceived += OnRemoteTerminalBufferReceived;
             _relayClient.TerminalClosedReceived += OnRemoteTerminalClosedReceived;
             _relayClient.RelayDesignated += OnRelayDesignated;
             _relayClient.InviteCreated += OnInviteCreated;
             _relayClient.DeviceSettingsUpdated += OnDeviceSettingsUpdated;
             _relayClient.DeviceKicked += OnStandaloneClientKicked;
             _relayClient.GroupDissolved += OnStandaloneClientDissolved;
-            _relayClient.PanelDisconnected += OnPanelDisconnected;
 
             // Update settings to reflect client mode
             RelayServerAddress = relayUrl;
@@ -3954,7 +3726,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher.InvokeAsync(async () =>
         {
-            ResetCrossDeviceAuthorization();
             OnNetworkLog($"[standalone] Kicked from group: {reason}");
             StopNetwork("standalone_client_kicked");
             GroupStatus = $"Kicked: {reason}";
@@ -3971,7 +3742,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher.InvokeAsync(async () =>
         {
-            ResetCrossDeviceAuthorization();
             OnNetworkLog($"[standalone] Group dissolved: {reason}");
             StopNetwork("standalone_client_dissolved");
             GroupStatus = $"Group dissolved: {reason}";

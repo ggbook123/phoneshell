@@ -9,7 +9,8 @@ public sealed class TerminalHistoryBuffer
     private readonly long _maxChars;
     private long _nextSeq = 1;
     private long _totalChars;
-    private const int DefaultPageChars = 20_000;
+    private const int DefaultPageChars = 80_000;
+    private const int MaxChunkChars = 16 * 1024;
 
     public TerminalHistoryBuffer(int maxChars = 5_000_000)
     {
@@ -22,8 +23,13 @@ public sealed class TerminalHistoryBuffer
 
         lock (_lock)
         {
-            _chunks.AddLast(new Chunk(_nextSeq++, data));
-            _totalChars += data.Length;
+            for (var offset = 0; offset < data.Length; offset += MaxChunkChars)
+            {
+                var length = Math.Min(MaxChunkChars, data.Length - offset);
+                var chunk = data.Substring(offset, length);
+                _chunks.AddLast(new Chunk(_nextSeq++, chunk));
+                _totalChars += chunk.Length;
+            }
             TrimIfNeeded();
         }
     }

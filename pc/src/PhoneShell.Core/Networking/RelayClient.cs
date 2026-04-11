@@ -53,6 +53,9 @@ public sealed class RelayClient : IDisposable
     /// <summary>Raised when the server sends a terminal close request.</summary>
     public event Action<string>? TerminalCloseRequested; // sessionId
 
+    /// <summary>Raised when the server indicates a mobile client detached from a session.</summary>
+    public event Action<string>? TerminalDetachRequested; // sessionId
+
     /// <summary>Raised when this device is unbound by the server.</summary>
     public event Action? DeviceUnbound;
 
@@ -75,9 +78,15 @@ public sealed class RelayClient : IDisposable
     public event Action<string, string, string>? SessionRenameRequested; // deviceId, sessionId, title
 
     /// <summary>Raised when terminal output is received from a remote device.</summary>
-    public event Action<string, string, string>? TerminalOutputReceived; // deviceId, sessionId, data
+    public event Action<string, string, string, long>? TerminalOutputReceived; // deviceId, sessionId, data, outputSeq
 
-    /// <summary>Raised when terminal history is received from the relay server.</summary>
+    /// <summary>Raised when a terminal buffer page is received from the relay server.</summary>
+    public event Action<string, string, string, string, long, string, bool, string>? TerminalBufferReceived;
+    // deviceId, sessionId, mode, data, snapshotOutputSeq, nextBeforeCursor, hasMore, requestId
+
+    /// <summary>
+    /// Compatibility-only event. PC remote terminal loading now uses terminal.buffer.response.
+    /// </summary>
     public event Action<string, string, string, long, bool>? TerminalHistoryReceived; // deviceId, sessionId, data, nextBeforeSeq, hasMore
 
     /// <summary>Raised when a remote terminal is closed.</summary>
@@ -106,9 +115,6 @@ public sealed class RelayClient : IDisposable
 
     /// <summary>Raised when the group is dissolved.</summary>
     public event Action<string>? GroupDissolved; // reason
-
-    /// <summary>Raised when a web panel disconnects.</summary>
-    public event Action<string>? PanelDisconnected; // clientId
 
     /// <summary>Provides local session list when a remote client requests it.</summary>
     public Func<List<SessionInfo>>? LocalSessionListProvider { get; set; }
@@ -209,7 +215,31 @@ public sealed class RelayClient : IDisposable
     }
 
     /// <summary>
-    /// Request terminal history for a session from the relay server.
+    /// Request a terminal buffer page for a session from the relay server.
+    /// </summary>
+    public async Task SendTerminalBufferRequestAsync(
+        string deviceId,
+        string sessionId,
+        string beforeCursor,
+        int maxChars,
+        string requestId)
+    {
+        if (_ws?.State != WebSocketState.Open) return;
+
+        var msg = MessageSerializer.Serialize(new TerminalBufferRequestMessage
+        {
+            DeviceId = deviceId,
+            SessionId = sessionId,
+            RequestId = requestId,
+            BeforeCursor = beforeCursor,
+            MaxChars = maxChars
+        });
+
+        await SendAsync(msg);
+    }
+
+    /// <summary>
+    /// Compatibility-only request path. PC remote terminal loading now uses terminal.buffer.request.
     /// </summary>
     public async Task SendTerminalHistoryRequestAsync(string deviceId, string sessionId, long beforeSeq, int maxChars)
     {
@@ -508,7 +538,19 @@ public sealed class RelayClient : IDisposable
                 break;
 
             case TerminalOutputMessage output:
-                TerminalOutputReceived?.Invoke(output.DeviceId, output.SessionId, output.Data);
+                TerminalOutputReceived?.Invoke(output.DeviceId, output.SessionId, output.Data, output.OutputSeq);
+                break;
+
+            case TerminalBufferResponseMessage buffer:
+                TerminalBufferReceived?.Invoke(
+                    buffer.DeviceId,
+                    buffer.SessionId,
+                    buffer.Mode,
+                    buffer.Data,
+                    buffer.SnapshotOutputSeq,
+                    buffer.NextBeforeCursor,
+                    buffer.HasMore,
+                    buffer.RequestId);
                 break;
 
             case TerminalHistoryResponseMessage history:
@@ -522,6 +564,10 @@ public sealed class RelayClient : IDisposable
 
             case TerminalCloseMessage close:
                 TerminalCloseRequested?.Invoke(close.SessionId);
+                break;
+
+            case TerminalDetachMessage detach:
+                TerminalDetachRequested?.Invoke(detach.SessionId);
                 break;
 
             case TerminalClosedMessage closed:
@@ -638,10 +684,6 @@ public sealed class RelayClient : IDisposable
                 GroupDissolved?.Invoke(dissolved.Reason);
                 break;
 
-            case PanelDisconnectedMessage panelDisconnected:
-                Log?.Invoke($"Panel disconnected: {panelDisconnected.ClientId}");
-                PanelDisconnected?.Invoke(panelDisconnected.ClientId);
-                break;
         }
     }
 
@@ -687,6 +729,17 @@ public sealed class RelayClient : IDisposable
     public async Task SendTerminalCloseAsync(string deviceId, string sessionId)
     {
         var msg = MessageSerializer.Serialize(new TerminalCloseMessage
+        {
+            DeviceId = deviceId,
+            SessionId = sessionId
+        });
+        await SendAsync(msg);
+    }
+
+    /// <summary>Send a detach request for a remote device's session without closing it.</summary>
+    public async Task SendTerminalDetachAsync(string deviceId, string sessionId)
+    {
+        var msg = MessageSerializer.Serialize(new TerminalDetachMessage
         {
             DeviceId = deviceId,
             SessionId = sessionId

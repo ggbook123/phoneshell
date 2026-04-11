@@ -84,6 +84,27 @@ export interface TerminalOutputMessage {
   outputSeq?: number;
 }
 
+export interface TerminalBufferRequestMessage {
+  type: 'terminal.buffer.request';
+  deviceId: string;
+  sessionId: string;
+  requestId: string;
+  beforeCursor: string;
+  maxChars: number;
+}
+
+export interface TerminalBufferResponseMessage {
+  type: 'terminal.buffer.response';
+  deviceId: string;
+  sessionId: string;
+  requestId: string;
+  mode: 'latest' | 'older';
+  data: string;
+  snapshotOutputSeq: number;
+  nextBeforeCursor: string;
+  hasMore: boolean;
+}
+
 export interface TerminalSnapshotRequestMessage {
   type: 'terminal.snapshot.request';
   deviceId: string;
@@ -99,23 +120,6 @@ export interface TerminalSnapshotResponseMessage {
   requestId: string;
   data: string;
   snapshotSeq: number;
-  nextBeforeSeq: number;
-  hasMore: boolean;
-}
-
-export interface TerminalHistoryRequestMessage {
-  type: 'terminal.history.request';
-  deviceId: string;
-  sessionId: string;
-  beforeSeq: number;
-  maxChars: number;
-}
-
-export interface TerminalHistoryResponseMessage {
-  type: 'terminal.history.response';
-  deviceId: string;
-  sessionId: string;
-  data: string;
   nextBeforeSeq: number;
   hasMore: boolean;
 }
@@ -417,10 +421,10 @@ export type Message =
   | TerminalOpenedMessage
   | TerminalInputMessage
   | TerminalOutputMessage
+  | TerminalBufferRequestMessage
+  | TerminalBufferResponseMessage
   | TerminalSnapshotRequestMessage
   | TerminalSnapshotResponseMessage
-  | TerminalHistoryRequestMessage
-  | TerminalHistoryResponseMessage
   | TerminalResizeMessage
   | TerminalCloseMessage
   | TerminalClosedMessage

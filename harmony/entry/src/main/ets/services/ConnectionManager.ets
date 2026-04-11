@@ -76,14 +76,6 @@ class TerminalSnapshotRequestMsg {
   maxChars: number = 120000;
 }
 
-class TerminalHistoryRequestMsg {
-  type: string = 'terminal.history.request';
-  deviceId: string = '';
-  sessionId: string = '';
-  beforeSeq: number = 0;
-  maxChars: number = 20000;
-}
-
 class TerminalResizeMsg {
   type: string = 'terminal.resize';
   deviceId: string = '';
@@ -94,6 +86,12 @@ class TerminalResizeMsg {
 
 class TerminalCloseMsg {
   type: string = 'terminal.close';
+  deviceId: string = '';
+  sessionId: string = '';
+}
+
+class TerminalDetachMsg {
+  type: string = 'terminal.detach';
   deviceId: string = '';
   sessionId: string = '';
 }
@@ -695,18 +693,6 @@ class ConnectionManagerClass {
     conn.send(JSON.stringify(msg));
   }
 
-  requestTerminalHistory(deviceId: string, sessionId: string, beforeSeq: number, maxChars: number): void {
-    if (deviceId.length === 0 || sessionId.length === 0) return;
-    const conn: DeviceConnection | null = this.getConnectionForDevice(deviceId);
-    if (conn === null) return;
-    let msg: TerminalHistoryRequestMsg = new TerminalHistoryRequestMsg();
-    msg.deviceId = deviceId;
-    msg.sessionId = sessionId;
-    msg.beforeSeq = beforeSeq;
-    msg.maxChars = maxChars;
-    conn.send(JSON.stringify(msg));
-  }
-
   requestTerminalSnapshot(deviceId: string, sessionId: string, requestId: string, maxChars: number): void {
     if (deviceId.length === 0 || sessionId.length === 0 || requestId.length === 0) return;
     const conn: DeviceConnection | null = this.getConnectionForDevice(deviceId);
@@ -731,6 +717,25 @@ class ConnectionManagerClass {
     msg.sessionId = sessionId;
     msg.cols = cols;
     msg.rows = rows;
+    conn.send(JSON.stringify(msg));
+  }
+
+  detachTerminalSession(targetSessionId: string = ''): void {
+    const sessionId: string = targetSessionId.length > 0 ? targetSessionId : this.activeSessionId;
+    if (sessionId.length === 0) {
+      return;
+    }
+
+    const session: SessionState | undefined = this.sessions.get(sessionId);
+    const deviceId: string = session !== undefined ? session.deviceId : this.activeDeviceId;
+    const conn: DeviceConnection | null = this.getConnectionForDevice(deviceId);
+    if (conn === null || deviceId.length === 0) {
+      return;
+    }
+
+    let msg: TerminalDetachMsg = new TerminalDetachMsg();
+    msg.deviceId = deviceId;
+    msg.sessionId = sessionId;
     conn.send(JSON.stringify(msg));
   }
 

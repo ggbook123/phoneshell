@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
@@ -22,23 +23,18 @@ public sealed class RelayServer : IDisposable
     private readonly ConcurrentDictionary<string, ConnectedDevice> _devices = new();
     private readonly ConcurrentDictionary<string, ConnectedClient> _clients = new();
     private readonly ConcurrentDictionary<string, PendingAuth> _pendingAuths = new();
-    private readonly ConcurrentDictionary<string, PanelLoginSession> _panelLoginSessions = new();
-    private readonly ConcurrentDictionary<string, PanelAccessToken> _panelAccessTokens = new();
-    private readonly TimeSpan _panelLoginTtl = TimeSpan.FromMinutes(10);
-    private readonly TimeSpan _panelTokenTtl = TimeSpan.FromDays(365);
     private readonly List<string> _listenPrefixes = new();
     private readonly List<string> _reachableWebSocketUrls = new();
     private int _clientIdCounter;
     private bool _disposed;
     private DateTimeOffset _startedAtUtc;
-    private WebPanelModule? _webPanelModule;
     private GroupInfo? _group;
     private GroupStore? _groupStore;
     private readonly InviteManager _inviteManager = new();
     private TerminalHistoryStore? _historyStore;
     private readonly ConcurrentDictionary<string, long> _sessionOutputSeq = new(StringComparer.Ordinal);
 
-    private const int TerminalHistoryPageChars = 20_000;
+    private const int TerminalHistoryPageChars = 80_000;
     private const int TerminalSnapshotPageChars = 120_000;
 
     public event Action<string>? Log;
@@ -55,7 +51,6 @@ public sealed class RelayServer : IDisposable
     public Func<HttpListenerContext, string, Task<bool>>? CustomHttpHandler { get; set; }
 
     public string AuthToken { get; set; } = string.Empty;
-    public bool WebPanelEnabled { get; set; }
     public bool PreserveTerminalHistoryOnClose { get; set; } = true;
 
     public TerminalHistoryStore? HistoryStore
@@ -119,12 +114,6 @@ public sealed class RelayServer : IDisposable
         Log?.Invoke($"Relay server started on port {port}");
         foreach (var url in _reachableWebSocketUrls)
             Log?.Invoke($"Relay server reachable at {url}");
-
-        if (WebPanelEnabled)
-        {
-            _webPanelModule = new WebPanelModule();
-            Log?.Invoke("Web panel enabled — serving at /panel");
-        }
 
         _ = AcceptClientsLoopAsync(_cts.Token);
         return Task.CompletedTask;
@@ -385,7 +374,7 @@ public sealed class RelayServer : IDisposable
     /// Event raised when a remote device sends terminal output back.
     /// Used by server-mode PC to display remote terminal output.
     /// </summary>
-    public event Action<string, string, string>? RemoteTerminalOutputReceived; // deviceId, sessionId, data
+    public event Action<string, string, string, long>? RemoteTerminalOutputReceived; // deviceId, sessionId, data, outputSeq
 
     /// <summary>
     /// Event raised when a remote device terminal is closed.
@@ -709,15 +698,6 @@ public sealed class RelayServer : IDisposable
                 NotifyDeviceListChanged();
                 Log?.Invoke($"Device unregistered: {client.RegisteredDeviceId}");
 
-                // If the disconnecting client is the bound mobile, only clear pending login sessions.
-                // Panel access tokens remain valid — mobile may reconnect later and tokens have their own TTL.
-                // Tokens are fully invalidated only when the mobile is explicitly unbound.
-                if (_group is not null && client.RegisteredDeviceId == _group.BoundMobileId)
-                {
-                    _panelLoginSessions.Clear();
-                    Log?.Invoke("Bound mobile disconnected — pending login sessions cleared (panel tokens preserved)");
-                }
-
                 // Broadcast group member left (device goes offline, stays in persistent list)
                 if (_group is not null)
                 {
@@ -771,10 +751,6 @@ public sealed class RelayServer : IDisposable
 
             case AuthResponseMessage authResp:
                 HandleAuthResponse(client, authResp);
-                break;
-
-            case PanelLoginScanMessage loginScan:
-                await HandlePanelLoginScan(client, loginScan);
                 break;
 
             case DeviceRegisterMessage reg:
@@ -916,6 +892,10 @@ public sealed class RelayServer : IDisposable
                 }
                 break;
 
+            case TerminalBufferRequestMessage bufferReq:
+                await HandleTerminalBufferRequest(client, bufferReq);
+                break;
+
             case TerminalHistoryRequestMessage historyReq:
                 await HandleTerminalHistoryRequest(client, historyReq);
                 break;
@@ -926,12 +906,13 @@ public sealed class RelayServer : IDisposable
 
             case TerminalOutputMessage output:
                 AppendTerminalHistory(output.DeviceId, output.SessionId, output.Data);
+                var outputSeq = NextOutputSeq(output.DeviceId, output.SessionId);
                 var outputMsg = MessageSerializer.Serialize(new TerminalOutputMessage
                 {
                     DeviceId = output.DeviceId,
                     SessionId = output.SessionId,
                     Data = output.Data,
-                    OutputSeq = NextOutputSeq(output.DeviceId, output.SessionId)
+                    OutputSeq = outputSeq
                 });
                 // Forward output to all clients subscribed to this device
                 client.SubscribedDeviceId ??= output.DeviceId;
@@ -945,7 +926,7 @@ public sealed class RelayServer : IDisposable
                     }
                 }
                 // Also notify the server PC if it requested this remote terminal
-                RemoteTerminalOutputReceived?.Invoke(output.DeviceId, output.SessionId, output.Data);
+                RemoteTerminalOutputReceived?.Invoke(output.DeviceId, output.SessionId, output.Data, outputSeq);
                 break;
 
             case TerminalOpenMessage open:
@@ -1118,6 +1099,26 @@ public sealed class RelayServer : IDisposable
                     {
                         await SendAsync(closeClient, json);
                     }
+                }
+                break;
+
+            case TerminalDetachMessage detach:
+                if (_devices.TryGetValue(detach.DeviceId, out var detachTarget))
+                {
+                    client.SubscribedDeviceId = detach.DeviceId;
+
+                    if (detachTarget.IsLocal)
+                    {
+                        InvokeLocalTerminalSessionDetached(client, detach.SessionId);
+                    }
+                    else if (detachTarget.ClientId is not null &&
+                             _clients.TryGetValue(detachTarget.ClientId, out var detachClient))
+                    {
+                        await SendAsync(detachClient, json);
+                    }
+
+                    if (string.Equals(client.SubscribedSessionId, detach.SessionId, StringComparison.Ordinal))
+                        client.SubscribedSessionId = null;
                 }
                 break;
 
@@ -1334,6 +1335,21 @@ public sealed class RelayServer : IDisposable
         }
     }
 
+    private void InvokeLocalTerminalSessionDetached(ConnectedClient client, string sessionId)
+    {
+        try
+        {
+            Log?.Invoke(
+                $"Local terminal session detached by {client.ClientId}: session={sessionId}");
+            LocalTerminalSessionEnded?.Invoke(sessionId);
+        }
+        catch (Exception ex)
+        {
+            Log?.Invoke(
+                $"Local terminal detach handler failed for {client.ClientId}: {ex.Message}");
+        }
+    }
+
     private void InvokeLocalTerminalCloseRequested(ConnectedClient client, TerminalCloseMessage close)
     {
         try
@@ -1495,10 +1511,7 @@ public sealed class RelayServer : IDisposable
         Log?.Invoke($"Group member joined: {req.DisplayName} ({req.DeviceId})");
 
         if (autoBindMobile)
-        {
             Log?.Invoke($"Mobile auto-bound: {req.DisplayName} ({req.DeviceId})");
-            TryDispatchPendingPanelLogins();
-        }
     }
 
     private async Task HandleGroupKick(ConnectedClient client, GroupKickMessage kick)
@@ -1710,8 +1723,6 @@ public sealed class RelayServer : IDisposable
         GroupMemberListChanged?.Invoke(memberList);
         NotifyDeviceListChanged();
         Log?.Invoke($"Mobile bound: {req.MobileDisplayName} ({req.MobileDeviceId})");
-
-        TryDispatchPendingPanelLogins();
     }
 
     private async Task HandleMobileUnbind(ConnectedClient client, MobileUnbindMessage unbind)
@@ -1737,9 +1748,6 @@ public sealed class RelayServer : IDisposable
         _group.Members.RemoveAll(m => m.DeviceId == boundMobileId);
 
         _groupStore?.SaveGroup(_group);
-
-        _panelAccessTokens.Clear();
-        _panelLoginSessions.Clear();
 
         // Notify the bound mobile to clear its local binding
         var boundClient = _clients.Values.FirstOrDefault(c => c.RegisteredDeviceId == boundMobileId);
@@ -2113,8 +2121,6 @@ public sealed class RelayServer : IDisposable
         _group = null;
         _groupStore?.ClearGroup();
         _inviteManager.ClearAll();
-        _panelLoginSessions.Clear();
-        _panelAccessTokens.Clear();
 
         // Disconnect all remote clients
         foreach (var c in _clients.Values)
@@ -2285,25 +2291,6 @@ public sealed class RelayServer : IDisposable
             }
         }
 
-        // Web panel routes (served before relay API routes)
-        if (_webPanelModule is not null && _webPanelModule.CanHandle(path))
-        {
-            var handled = await _webPanelModule.HandleAsync(
-                context,
-                path,
-                isAuthorized: () => IsAuthorized(context.Request),
-                buildStatusPayload: BuildStatusPayload,
-                getDeviceList: GetDeviceList,
-                getSessionsForDevice: GetSessionsForDevice,
-                getPanelPairingPayload: BuildPanelPairingPayload,
-                getPanelQrPayload: GetPanelQrPayload,
-                startPanelLogin: StartPanelLoginAsync,
-                getPanelLoginStatus: GetPanelLoginStatusPayload,
-                getGroupInfo: GetGroupInfo,
-                getGroupMembers: BuildGroupMemberInfoList);
-            if (handled) return;
-        }
-
         if (path == "/ws/healthz")
         {
             await WriteJsonResponseAsync(context.Response, HttpStatusCode.OK, new
@@ -2377,415 +2364,6 @@ public sealed class RelayServer : IDisposable
         };
     }
 
-    private object BuildPanelPairingPayload(HttpListenerRequest request)
-    {
-        var group = _group;
-        var serverUrl = ResolvePanelServerUrl(request) ??
-                        _reachableWebSocketUrls.FirstOrDefault() ??
-                        string.Empty;
-        var boundMobileId = group?.BoundMobileId;
-        var hasBoundMobile = !string.IsNullOrWhiteSpace(boundMobileId);
-        var boundMobileOnline = false;
-        if (hasBoundMobile)
-        {
-            boundMobileOnline = _clients.Values.Any(c => c.RegisteredDeviceId == boundMobileId);
-        }
-
-        // Only return bind QR when no mobile is bound yet
-        var qrPayload = hasBoundMobile ? string.Empty : (GetPanelQrPayload(request) ?? string.Empty);
-
-        return new
-        {
-            requiresAuth = !string.IsNullOrWhiteSpace(AuthToken),
-            hasGroup = group is not null,
-            groupId = group?.GroupId ?? string.Empty,
-            serverUrl,
-            qrPayload,
-            hasBoundMobile,
-            boundMobileOnline
-        };
-    }
-
-    private string? GetPanelQrPayload(HttpListenerRequest request)
-    {
-        if (_group is null)
-            return null;
-
-        var serverUrl = ResolvePanelServerUrl(request) ??
-                        _reachableWebSocketUrls.FirstOrDefault();
-        if (string.IsNullOrWhiteSpace(serverUrl))
-            return null;
-
-        var builder = new QrPayloadBuilder();
-        return builder.BuildGroupBind(
-            serverUrl,
-            _group.GroupId,
-            _group.GroupSecret,
-            _group.ServerDeviceId);
-    }
-
-    private Task<object> StartPanelLoginAsync(HttpListenerRequest request)
-    {
-        CleanupExpiredPanelAuth();
-
-        var requestId = Guid.NewGuid().ToString("N");
-        var token = GeneratePanelToken();
-        var requesterAddress = request.RemoteEndPoint?.Address?.ToString();
-        var serverUrl = ResolvePanelServerUrl(request) ??
-                        _reachableWebSocketUrls.FirstOrDefault();
-
-        var hasBoundMobile = !string.IsNullOrWhiteSpace(_group?.BoundMobileId);
-
-        var session = new PanelLoginSession
-        {
-            RequestId = requestId,
-            Token = token,
-            Status = hasBoundMobile ? PanelLoginState.AwaitingScan : PanelLoginState.AwaitingMobile,
-            CreatedAtUtc = DateTimeOffset.UtcNow,
-            ExpiresAtUtc = DateTimeOffset.UtcNow.Add(_panelLoginTtl),
-            RequesterAddress = requesterAddress,
-            Message = hasBoundMobile ? "Waiting for mobile scan." : "Waiting for mobile binding.",
-            ServerUrl = serverUrl
-        };
-        _panelLoginSessions[requestId] = session;
-
-        // Build login QR payload for already-bound case
-        string? loginQrPayload = null;
-        if (hasBoundMobile && _group is not null && !string.IsNullOrWhiteSpace(serverUrl))
-        {
-            var builder = new QrPayloadBuilder();
-            loginQrPayload = builder.BuildPanelLogin(serverUrl, _group.GroupId, requestId);
-            session.LoginQrPayload = loginQrPayload;
-        }
-
-        // For unbound case, don't dispatch immediately — wait for bind flow
-        // For bound case, don't dispatch immediately — wait for mobile to scan the login QR
-
-        return Task.FromResult<object>(new
-        {
-            requestId,
-            status = PanelLoginStateToString(session.Status),
-            message = session.Message ?? string.Empty,
-            expiresAtUtc = session.ExpiresAtUtc,
-            loginQrPayload = loginQrPayload ?? string.Empty
-        });
-    }
-
-    private object? GetPanelLoginStatusPayload(string requestId)
-    {
-        CleanupExpiredPanelAuth();
-
-        if (!_panelLoginSessions.TryGetValue(requestId, out var session))
-            return null;
-
-        if (session.Status != PanelLoginState.Approved &&
-            DateTimeOffset.UtcNow > session.ExpiresAtUtc)
-        {
-            session.Status = PanelLoginState.Expired;
-            session.Message ??= "Request expired.";
-        }
-
-        // Include loginQrPayload for AwaitingScan state so frontend can display the QR
-        string? loginQrPayload = null;
-        if (session.Status == PanelLoginState.AwaitingScan && _group is not null)
-        {
-            if (string.IsNullOrWhiteSpace(session.LoginQrPayload))
-            {
-                var serverUrl = session.ServerUrl ?? _reachableWebSocketUrls.FirstOrDefault();
-                if (!string.IsNullOrWhiteSpace(serverUrl))
-                {
-                    var builder = new QrPayloadBuilder();
-                    session.LoginQrPayload = builder.BuildPanelLogin(serverUrl, _group.GroupId, session.RequestId);
-                }
-            }
-            loginQrPayload = session.LoginQrPayload;
-        }
-
-        return new
-        {
-            requestId = session.RequestId,
-            status = PanelLoginStateToString(session.Status),
-            message = session.Message ?? string.Empty,
-            token = session.Status == PanelLoginState.Approved ? session.Token : null,
-            expiresAtUtc = session.ExpiresAtUtc,
-            loginQrPayload = loginQrPayload ?? string.Empty
-        };
-    }
-
-    private async Task TryDispatchPanelLoginSessionAsync(PanelLoginSession session)
-    {
-        if (session.Status is PanelLoginState.Approved or PanelLoginState.Rejected or PanelLoginState.Expired)
-            return;
-
-        // AwaitingScan means we're waiting for mobile to scan the login QR — don't auto-dispatch
-        if (session.Status == PanelLoginState.AwaitingScan)
-            return;
-
-        if (_group?.BoundMobileId is null)
-        {
-            session.Status = PanelLoginState.AwaitingMobile;
-            session.Message = "Waiting for mobile binding.";
-            return;
-        }
-
-        var mobileClient = _clients.Values.FirstOrDefault(c => c.RegisteredDeviceId == _group.BoundMobileId);
-        if (mobileClient is null)
-        {
-            // Mobile is bound but offline — keep waiting, do NOT auto-approve
-            session.Status = PanelLoginState.AwaitingScan;
-            session.Message = "Waiting for mobile scan.";
-            return;
-        }
-
-        if (_pendingAuths.ContainsKey(session.RequestId))
-        {
-            session.Status = PanelLoginState.AwaitingApproval;
-            session.Message = "Waiting for mobile approval.";
-            return;
-        }
-
-        session.Status = PanelLoginState.AwaitingApproval;
-        session.Message = "Waiting for mobile approval.";
-
-        _pendingAuths[session.RequestId] = new PendingAuth
-        {
-            RequestId = session.RequestId,
-            Approved = () => ApprovePanelLogin(session),
-            Rejected = () => RejectPanelLogin(session, "Rejected by mobile.")
-        };
-
-        var description = string.IsNullOrWhiteSpace(session.RequesterAddress)
-            ? "Web panel login request."
-            : $"Web panel login request from {session.RequesterAddress}.";
-
-        await SendAsync(mobileClient, MessageSerializer.Serialize(new AuthRequestMessage
-        {
-            RequestId = session.RequestId,
-            Action = "panel.login",
-            RequesterId = "web-panel",
-            RequesterName = "Web Panel",
-            TargetDeviceId = null,
-            Description = description
-        }));
-
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(TimeSpan.FromSeconds(60));
-            if (_pendingAuths.TryRemove(session.RequestId, out var timedOut))
-            {
-                Log?.Invoke($"Panel login request {session.RequestId} timed out");
-                timedOut.Rejected?.Invoke();
-            }
-        });
-    }
-
-    private void ApprovePanelLogin(PanelLoginSession session)
-    {
-        session.Status = PanelLoginState.Approved;
-        session.Message = "Approved.";
-        _panelAccessTokens[session.Token] = new PanelAccessToken
-        {
-            Token = session.Token,
-            ExpiresAtUtc = DateTimeOffset.UtcNow.Add(_panelTokenTtl)
-        };
-    }
-
-    private void RejectPanelLogin(PanelLoginSession session, string message)
-    {
-        session.Status = PanelLoginState.Rejected;
-        session.Message = message;
-    }
-
-    private void TryDispatchPendingPanelLogins()
-    {
-        foreach (var session in _panelLoginSessions.Values)
-        {
-            if (session.Status == PanelLoginState.AwaitingMobile)
-            {
-                // First bind just completed — auto-approve pending sessions
-                Log?.Invoke($"Panel login auto-approved (first bind completed, requestId={session.RequestId})");
-                ApprovePanelLogin(session);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Handle a panel login scan message from a mobile device.
-    /// Verifies the sender is the bound mobile, then sends an auth request for confirmation.
-    /// </summary>
-    private async Task HandlePanelLoginScan(ConnectedClient client, PanelLoginScanMessage loginScan)
-    {
-        if (_group is null)
-        {
-            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
-            {
-                Code = "no_group",
-                Message = "No group exists on this server."
-            }));
-            return;
-        }
-
-        // Verify sender is the bound mobile
-        if (string.IsNullOrEmpty(_group.BoundMobileId) ||
-            client.RegisteredDeviceId != _group.BoundMobileId)
-        {
-            Log?.Invoke($"Panel login scan rejected: {client.RegisteredDeviceId} is not the bound mobile");
-            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
-            {
-                Code = "not_bound_mobile",
-                Message = "Only the bound mobile can scan login QR codes."
-            }));
-            return;
-        }
-
-        // Find the corresponding login session
-        if (!_panelLoginSessions.TryGetValue(loginScan.RequestId, out var session))
-        {
-            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
-            {
-                Code = "login_session_not_found",
-                Message = "Login session not found or expired."
-            }));
-            return;
-        }
-
-        if (session.Status is PanelLoginState.Approved or PanelLoginState.Rejected or PanelLoginState.Expired)
-        {
-            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
-            {
-                Code = "login_session_closed",
-                Message = "Login session already resolved."
-            }));
-            return;
-        }
-
-        if (DateTimeOffset.UtcNow > session.ExpiresAtUtc)
-        {
-            session.Status = PanelLoginState.Expired;
-            session.Message = "Request expired.";
-            await SendAsync(client, MessageSerializer.Serialize(new ErrorMessage
-            {
-                Code = "login_session_expired",
-                Message = "Login session expired."
-            }));
-            return;
-        }
-
-        // Scan verified — now send auth request to mobile for confirmation
-        session.Status = PanelLoginState.AwaitingApproval;
-        session.Message = "Waiting for mobile approval.";
-
-        _pendingAuths[session.RequestId] = new PendingAuth
-        {
-            RequestId = session.RequestId,
-            Approved = () => ApprovePanelLogin(session),
-            Rejected = () => RejectPanelLogin(session, "Rejected by mobile.")
-        };
-
-        var description = string.IsNullOrWhiteSpace(session.RequesterAddress)
-            ? "Web panel login request."
-            : $"Web panel login request from {session.RequesterAddress}.";
-
-        await SendAsync(client, MessageSerializer.Serialize(new AuthRequestMessage
-        {
-            RequestId = session.RequestId,
-            Action = "panel.login",
-            RequesterId = "web-panel",
-            RequesterName = "Web Panel",
-            TargetDeviceId = null,
-            Description = description
-        }));
-        Log?.Invoke($"Panel login scan accepted, auth request sent to mobile (requestId={loginScan.RequestId})");
-
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(TimeSpan.FromSeconds(60));
-            if (_pendingAuths.TryRemove(session.RequestId, out var timedOut))
-            {
-                Log?.Invoke($"Panel login request {session.RequestId} timed out");
-                timedOut.Rejected?.Invoke();
-            }
-        });
-    }
-
-    private void CleanupExpiredPanelAuth()
-    {
-        var now = DateTimeOffset.UtcNow;
-        foreach (var kvp in _panelAccessTokens)
-        {
-            if (kvp.Value.ExpiresAtUtc <= now)
-                _panelAccessTokens.TryRemove(kvp.Key, out _);
-        }
-
-        foreach (var kvp in _panelLoginSessions)
-        {
-            if (kvp.Value.Status == PanelLoginState.Approved)
-                continue;
-
-            if (kvp.Value.ExpiresAtUtc <= now)
-            {
-                kvp.Value.Status = PanelLoginState.Expired;
-                kvp.Value.Message ??= "Request expired.";
-            }
-        }
-    }
-
-    private bool IsPanelTokenAuthorized(string token)
-    {
-        if (string.IsNullOrWhiteSpace(token))
-            return false;
-
-        if (_panelAccessTokens.TryGetValue(token, out var entry))
-        {
-            if (entry.ExpiresAtUtc > DateTimeOffset.UtcNow)
-                return true;
-
-            _panelAccessTokens.TryRemove(token, out _);
-        }
-
-        return false;
-    }
-
-    private static string? ResolvePanelServerUrl(HttpListenerRequest request)
-    {
-        var forwarded = ParseForwardedHeader(request.Headers["Forwarded"]);
-        var proto = FirstHeaderValue(request.Headers["X-Forwarded-Proto"]) ?? forwarded.Proto;
-        var host = FirstHeaderValue(request.Headers["X-Forwarded-Host"]) ?? forwarded.Host;
-        var port = FirstHeaderValue(request.Headers["X-Forwarded-Port"]);
-
-        if (string.IsNullOrWhiteSpace(host))
-        {
-            var origin = FirstHeaderValue(request.Headers["Origin"]) ??
-                         FirstHeaderValue(request.Headers["Referer"]);
-            if (!string.IsNullOrWhiteSpace(origin) &&
-                Uri.TryCreate(origin, UriKind.Absolute, out var originUri))
-            {
-                host = originUri.Authority;
-                if (string.IsNullOrWhiteSpace(proto))
-                    proto = originUri.Scheme;
-            }
-        }
-
-        host ??= request.Headers["Host"] ?? request.Url?.Authority;
-
-        if (!string.IsNullOrWhiteSpace(port) &&
-            !string.IsNullOrWhiteSpace(host) &&
-            !host.Contains(':'))
-        {
-            host = $"{host}:{port}";
-        }
-
-        if (string.IsNullOrWhiteSpace(host))
-            return null;
-
-        if (string.IsNullOrWhiteSpace(proto))
-            proto = request.IsSecureConnection ? "https" : "http";
-
-        var scheme = proto.Trim().ToLowerInvariant();
-        var wsScheme = scheme is "https" or "wss" ? "wss" : "ws";
-        return $"{wsScheme}://{host}/ws/";
-    }
-
     // --- Terminal history ---
 
     private static string BuildSessionOutputKey(string deviceId, string sessionId)
@@ -2822,6 +2400,7 @@ public sealed class RelayServer : IDisposable
         _sessionOutputSeq.TryRemove(BuildSessionOutputKey(deviceId, sessionId), out _);
     }
 
+    // Compatibility-only read path. PC remote terminal loading now uses terminal.buffer.*.
     public TerminalHistoryPage GetTerminalHistoryPage(string deviceId, string sessionId, long beforeSeq, int maxChars)
     {
         var deviceKey = deviceId?.Trim() ?? string.Empty;
@@ -2835,6 +2414,93 @@ public sealed class RelayServer : IDisposable
         return _historyStore.GetPage(deviceKey, sessionKey, beforeSeq, ClampHistoryPageSize(maxChars));
     }
 
+    public TerminalBufferResponseMessage GetTerminalBufferPage(
+        string deviceId,
+        string sessionId,
+        string? beforeCursor,
+        int maxChars)
+    {
+        var deviceKey = deviceId?.Trim() ?? string.Empty;
+        var sessionKey = sessionId?.Trim() ?? string.Empty;
+        return BuildTerminalBufferResponse(deviceKey, sessionKey, beforeCursor, maxChars);
+    }
+
+    private static string BuildTerminalBufferCursor(long beforeSeq)
+    {
+        return beforeSeq > 0
+            ? beforeSeq.ToString(CultureInfo.InvariantCulture)
+            : string.Empty;
+    }
+
+    private static long ParseTerminalBufferCursor(string? beforeCursor)
+    {
+        if (string.IsNullOrWhiteSpace(beforeCursor))
+            return 0;
+
+        return long.TryParse(beforeCursor, NumberStyles.Integer, CultureInfo.InvariantCulture, out var beforeSeq)
+            ? Math.Max(0, beforeSeq)
+            : 0;
+    }
+
+    private TerminalHistoryPage ReadTerminalBufferPage(
+        string deviceId,
+        string sessionId,
+        string? beforeCursor,
+        int maxChars,
+        bool latest)
+    {
+        var beforeSeq = ParseTerminalBufferCursor(beforeCursor);
+        var pageSize = latest
+            ? ClampSnapshotPageSize(maxChars)
+            : ClampHistoryPageSize(maxChars);
+
+        return _historyStore?.GetPage(deviceId, sessionId, beforeSeq, pageSize)
+               ?? TerminalHistoryPage.Empty;
+    }
+
+    private TerminalBufferResponseMessage BuildTerminalBufferResponse(
+        string deviceId,
+        string sessionId,
+        string? beforeCursor,
+        int maxChars)
+    {
+        var latest = string.IsNullOrWhiteSpace(beforeCursor);
+        var page = ReadTerminalBufferPage(deviceId, sessionId, beforeCursor, maxChars, latest);
+        return new TerminalBufferResponseMessage
+        {
+            DeviceId = deviceId,
+            SessionId = sessionId,
+            Mode = latest ? "latest" : "older",
+            Data = page.Data,
+            SnapshotOutputSeq = latest ? GetCurrentOutputSeq(deviceId, sessionId) : 0,
+            NextBeforeCursor = BuildTerminalBufferCursor(page.NextBeforeSeq),
+            HasMore = page.HasMore
+        };
+    }
+
+    private async Task SendTerminalBufferResponseAsync(
+        ConnectedClient client,
+        string requestId,
+        string deviceId,
+        string sessionId,
+        string? beforeCursor,
+        int maxChars)
+    {
+        var page = BuildTerminalBufferResponse(deviceId, sessionId, beforeCursor, maxChars);
+        var response = new TerminalBufferResponseMessage
+        {
+            DeviceId = page.DeviceId,
+            SessionId = page.SessionId,
+            RequestId = requestId,
+            Mode = page.Mode,
+            Data = page.Data,
+            SnapshotOutputSeq = page.SnapshotOutputSeq,
+            NextBeforeCursor = page.NextBeforeCursor,
+            HasMore = page.HasMore
+        };
+        await SendAsync(client, MessageSerializer.Serialize(response));
+    }
+
     private async Task SendTerminalSnapshotResponseAsync(
         ConnectedClient client,
         string requestId,
@@ -2842,8 +2508,7 @@ public sealed class RelayServer : IDisposable
         string sessionId,
         int maxChars)
     {
-        var page = _historyStore?.GetPage(deviceId, sessionId, 0, ClampSnapshotPageSize(maxChars))
-                   ?? TerminalHistoryPage.Empty;
+        var page = ReadTerminalBufferPage(deviceId, sessionId, string.Empty, maxChars, latest: true);
         var response = new TerminalSnapshotResponseMessage
         {
             DeviceId = deviceId,
@@ -2868,6 +2533,7 @@ public sealed class RelayServer : IDisposable
         _historyStore?.Append(deviceId, sessionId, data);
     }
 
+    // Compatibility-only protocol handler. Keep this so history can be restored later if needed.
     private async Task HandleTerminalHistoryRequest(ConnectedClient client, TerminalHistoryRequestMessage req)
     {
         var deviceId = req.DeviceId?.Trim() ?? string.Empty;
@@ -2878,8 +2544,7 @@ public sealed class RelayServer : IDisposable
         client.SubscribedDeviceId = deviceId;
         client.SubscribedSessionId = sessionId;
 
-        var page = _historyStore?.GetPage(deviceId, sessionId, req.BeforeSeq, ClampHistoryPageSize(req.MaxChars))
-                   ?? TerminalHistoryPage.Empty;
+        var page = GetTerminalHistoryPage(deviceId, sessionId, req.BeforeSeq, req.MaxChars);
         var response = new TerminalHistoryResponseMessage
         {
             DeviceId = deviceId,
@@ -2889,6 +2554,25 @@ public sealed class RelayServer : IDisposable
             HasMore = page.HasMore
         };
         await SendAsync(client, MessageSerializer.Serialize(response));
+    }
+
+    private async Task HandleTerminalBufferRequest(ConnectedClient client, TerminalBufferRequestMessage req)
+    {
+        var deviceId = req.DeviceId?.Trim() ?? string.Empty;
+        var sessionId = req.SessionId?.Trim() ?? string.Empty;
+        if (deviceId.Length == 0 || sessionId.Length == 0)
+            return;
+
+        client.SubscribedDeviceId = deviceId;
+        client.SubscribedSessionId = sessionId;
+
+        await SendTerminalBufferResponseAsync(
+            client,
+            req.RequestId,
+            deviceId,
+            sessionId,
+            req.BeforeCursor,
+            req.MaxChars);
     }
 
     private async Task HandleTerminalSnapshotRequest(ConnectedClient client, TerminalSnapshotRequestMessage req)
@@ -3026,61 +2710,6 @@ public sealed class RelayServer : IDisposable
     private static int ClampSnapshotPageSize(int requested) =>
         requested <= 0 ? TerminalSnapshotPageChars : Math.Min(requested, TerminalSnapshotPageChars);
 
-    private static string? FirstHeaderValue(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-        var first = value.Split(',', 2)[0].Trim();
-        return string.IsNullOrWhiteSpace(first) ? null : first;
-    }
-
-    private static (string? Proto, string? Host) ParseForwardedHeader(string? header)
-    {
-        if (string.IsNullOrWhiteSpace(header))
-            return (null, null);
-
-        var first = header.Split(',', 2)[0];
-        string? proto = null;
-        string? host = null;
-
-        foreach (var part in first.Split(';'))
-        {
-            var kv = part.Split('=', 2);
-            if (kv.Length != 2)
-                continue;
-
-            var key = kv[0].Trim().ToLowerInvariant();
-            var value = kv[1].Trim().Trim('"');
-            if (key == "proto")
-                proto = value;
-            else if (key == "host")
-                host = value;
-        }
-
-        return (proto, host);
-    }
-
-    private static string PanelLoginStateToString(PanelLoginState state) => state switch
-    {
-        PanelLoginState.AwaitingScan => "awaiting_scan",
-        PanelLoginState.AwaitingMobile => "awaiting_mobile",
-        PanelLoginState.AwaitingApproval => "awaiting_approval",
-        PanelLoginState.Approved => "approved",
-        PanelLoginState.Rejected => "rejected",
-        PanelLoginState.Expired => "expired",
-        _ => "unknown"
-    };
-
-    private static string GeneratePanelToken()
-    {
-        Span<byte> buffer = stackalloc byte[32];
-        RandomNumberGenerator.Fill(buffer);
-        return Convert.ToBase64String(buffer)
-            .Replace('+', '-')
-            .Replace('/', '_')
-            .TrimEnd('=');
-    }
-
     private bool IsAuthorized(HttpListenerRequest request)
     {
         if (string.IsNullOrWhiteSpace(AuthToken))
@@ -3089,8 +2718,7 @@ public sealed class RelayServer : IDisposable
         var bearerHeader = request.Headers["Authorization"];
         if (!string.IsNullOrWhiteSpace(bearerHeader) &&
             bearerHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) &&
-            (TokensEqual(bearerHeader["Bearer ".Length..].Trim(), AuthToken) ||
-             IsPanelTokenAuthorized(bearerHeader["Bearer ".Length..].Trim())))
+            TokensEqual(bearerHeader["Bearer ".Length..].Trim(), AuthToken))
         {
             return true;
         }
@@ -3099,16 +2727,18 @@ public sealed class RelayServer : IDisposable
         if (!string.IsNullOrWhiteSpace(tokenHeader))
         {
             var trimmed = tokenHeader.Trim();
-            if (TokensEqual(trimmed, AuthToken) || IsPanelTokenAuthorized(trimmed))
+            if (TokensEqual(trimmed, AuthToken))
                 return true;
         }
 
-        // Support token via query string (for browser WebSocket connections)
+        // Native mobile clients still attach the relay/group token via query string
+        // when connecting from a scanned QR payload.
         var queryToken = request.QueryString["token"];
         if (!string.IsNullOrWhiteSpace(queryToken))
         {
             var trimmed = queryToken.Trim();
-            return TokensEqual(trimmed, AuthToken) || IsPanelTokenAuthorized(trimmed);
+            if (TokensEqual(trimmed, AuthToken))
+                return true;
         }
 
         // Support invite code via query string (for devices joining via invite)
@@ -3159,8 +2789,6 @@ public sealed class RelayServer : IDisposable
             "/ws/healthz" => "/ws/healthz",
             "/ws/status" => "/ws/status",
             "/" => "/",
-            "/panel" => "/panel",
-            _ when normalized.StartsWith("/panel/", StringComparison.Ordinal) => normalized,
             _ when normalized.StartsWith("/api/", StringComparison.Ordinal) => normalized,
             _ when path.EndsWith('/') => normalized + "/",
             _ => normalized
@@ -3221,33 +2849,5 @@ public sealed class RelayServer : IDisposable
         public Action? Rejected { get; init; }
     }
 
-    private sealed class PanelLoginSession
-    {
-        public string RequestId { get; init; } = string.Empty;
-        public string Token { get; init; } = string.Empty;
-        public PanelLoginState Status { get; set; }
-        public DateTimeOffset CreatedAtUtc { get; init; }
-        public DateTimeOffset ExpiresAtUtc { get; set; }
-        public string? RequesterAddress { get; init; }
-        public string? Message { get; set; }
-        public string? ServerUrl { get; set; }
-        public string? LoginQrPayload { get; set; }
-    }
-
-    private sealed class PanelAccessToken
-    {
-        public string Token { get; init; } = string.Empty;
-        public DateTimeOffset ExpiresAtUtc { get; init; }
-    }
-
-    private enum PanelLoginState
-    {
-        AwaitingScan,
-        AwaitingMobile,
-        AwaitingApproval,
-        Approved,
-        Rejected,
-        Expired
-    }
 }
 

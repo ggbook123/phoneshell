@@ -464,20 +464,20 @@ class ConnectionManager {
     conn.send(jsonEncode(msg));
   }
 
-  void requestTerminalHistory(
+  void requestTerminalSnapshot(
     String deviceId,
     String sessionId,
-    int beforeSeq,
+    String requestId,
     int maxChars,
   ) {
-    if (deviceId.isEmpty || sessionId.isEmpty) return;
+    if (deviceId.isEmpty || sessionId.isEmpty || requestId.isEmpty) return;
     final conn = _getConnectionForDevice(deviceId);
     if (conn == null) return;
     final msg = {
-      'type': 'terminal.history.request',
+      'type': 'terminal.snapshot.request',
       'deviceId': deviceId,
       'sessionId': sessionId,
-      'beforeSeq': beforeSeq,
+      'requestId': requestId,
       'maxChars': maxChars,
     };
     conn.send(jsonEncode(msg));
@@ -510,6 +510,20 @@ class ConnectionManager {
     if (conn == null) return;
     final msg = {
       'type': 'terminal.close',
+      'deviceId': session.deviceId,
+      'sessionId': sessionId,
+    };
+    conn.send(jsonEncode(msg));
+  }
+
+  void detachTerminalSession(String sessionId) {
+    if (sessionId.isEmpty) return;
+    final session = _sessions[sessionId];
+    if (session == null) return;
+    final conn = _getConnectionForDevice(session.deviceId);
+    if (conn == null) return;
+    final msg = {
+      'type': 'terminal.detach',
       'deviceId': session.deviceId,
       'sessionId': sessionId,
     };
@@ -706,6 +720,7 @@ class ConnectionManager {
       _handleAuthRequest(data);
     } else if (type == 'terminal.opened' ||
         type == 'terminal.output' ||
+        type == 'terminal.snapshot.response' ||
         type == 'terminal.closed' ||
         type == 'session.list') {
       _handleTerminalMessage(type, data);
@@ -784,6 +799,7 @@ class ConnectionManager {
       _handleAuthRequest(data);
     } else if (type == 'terminal.opened' ||
         type == 'terminal.output' ||
+        type == 'terminal.snapshot.response' ||
         type == 'terminal.closed' ||
         type == 'session.list') {
       _handleTerminalMessage(type, data);
@@ -821,6 +837,24 @@ class ConnectionManager {
       final session = _sessions[sessionId];
       if (session != null && outputData.isNotEmpty) {
         session.bufferedOutput += outputData;
+        if (session.bufferedOutput.length > _maxBufferedTerminalOutput) {
+          session.bufferedOutput = session.bufferedOutput.substring(
+            session.bufferedOutput.length - _maxBufferedTerminalOutput,
+          );
+        }
+      }
+    } else if (type == 'terminal.snapshot.response') {
+      final sessionId = (data['sessionId'] ?? '') as String;
+      final deviceId = (data['deviceId'] ?? '') as String;
+      final snapshotData = (data['data'] ?? '') as String;
+      final session = _sessions.putIfAbsent(sessionId, () {
+        final created = SessionState();
+        created.sessionId = sessionId;
+        created.deviceId = deviceId;
+        return created;
+      });
+      if (sessionId.isNotEmpty) {
+        session.bufferedOutput = snapshotData;
         if (session.bufferedOutput.length > _maxBufferedTerminalOutput) {
           session.bufferedOutput = session.bufferedOutput.substring(
             session.bufferedOutput.length - _maxBufferedTerminalOutput,

@@ -5,7 +5,7 @@ import { createClientConnection, sendToClient } from './client-connection.js';
 import { TokenManager } from '../auth/token-manager.js';
 import { InviteManager } from '../auth/invite-manager.js';
 import { buildGroupBindPayload, buildPanelLoginPayload } from '../auth/qr-service.js';
-const TerminalHistoryPageChars = 20000;
+const TerminalOlderBufferPageChars = 20000;
 const TerminalSnapshotPageChars = 120000;
 export class RelayServer {
     devices = new Map();
@@ -309,9 +309,9 @@ export class RelayServer {
                 }
                 break;
             }
-            case 'terminal.history.request': {
+            case 'terminal.buffer.request': {
                 const req = message;
-                await this.handleTerminalHistoryRequest(client, req);
+                await this.handleTerminalBufferRequest(client, req);
                 break;
             }
             case 'terminal.snapshot.request': {
@@ -551,8 +551,47 @@ export class RelayServer {
         const key = this.buildSessionOutputKey(deviceId, sessionId);
         this.sessionOutputSeq.delete(key);
     }
+    static buildTerminalBufferCursor(beforeSeq) {
+        return beforeSeq > 0 ? String(beforeSeq) : '';
+    }
+    static parseTerminalBufferCursor(beforeCursor) {
+        if (!beforeCursor?.trim())
+            return 0;
+        const parsed = Number.parseInt(beforeCursor, 10);
+        if (!Number.isFinite(parsed) || parsed <= 0)
+            return 0;
+        return parsed;
+    }
+    readTerminalBufferPage(deviceId, sessionId, beforeCursor, maxChars, latest) {
+        const beforeSeq = RelayServer.parseTerminalBufferCursor(beforeCursor);
+        const pageSize = latest
+            ? RelayServer.clampSnapshotPageSize(maxChars)
+            : RelayServer.clampOlderBufferPageSize(maxChars);
+        return this.historyStore?.getPage(deviceId, sessionId, beforeSeq, pageSize)
+            || { data: '', nextBeforeSeq: 0, hasMore: false };
+    }
+    buildTerminalBufferResponse(deviceId, sessionId, beforeCursor, maxChars) {
+        const latest = !beforeCursor;
+        const page = this.readTerminalBufferPage(deviceId, sessionId, beforeCursor, maxChars, latest);
+        return {
+            type: 'terminal.buffer.response',
+            deviceId,
+            sessionId,
+            requestId: '',
+            mode: latest ? 'latest' : 'older',
+            data: page.data,
+            snapshotOutputSeq: latest ? this.getCurrentOutputSeq(deviceId, sessionId) : 0,
+            nextBeforeCursor: RelayServer.buildTerminalBufferCursor(page.nextBeforeSeq),
+            hasMore: page.hasMore,
+        };
+    }
+    async sendTerminalBufferResponse(client, requestId, deviceId, sessionId, beforeCursor, maxChars) {
+        const response = this.buildTerminalBufferResponse(deviceId, sessionId, beforeCursor, maxChars);
+        response.requestId = requestId;
+        await this.send(client, serialize(response));
+    }
     async sendTerminalSnapshotResponse(client, requestId, deviceId, sessionId, maxChars) {
-        const page = this.historyStore?.getPage(deviceId, sessionId, 0, RelayServer.clampSnapshotPageSize(maxChars)) || { data: '', nextBeforeSeq: 0, hasMore: false };
+        const page = this.readTerminalBufferPage(deviceId, sessionId, '', maxChars, true);
         await this.send(client, serialize({
             type: 'terminal.snapshot.response',
             deviceId,
@@ -569,33 +608,14 @@ export class RelayServer {
             return;
         this.historyStore?.append(deviceId, sessionId, data);
     }
-    async handleTerminalHistoryRequest(client, req) {
+    async handleTerminalBufferRequest(client, req) {
         const deviceId = req.deviceId?.trim() || '';
         const sessionId = req.sessionId?.trim() || '';
         if (!deviceId || !sessionId)
             return;
         client.subscribedDeviceId = deviceId;
         client.subscribedSessionId = sessionId;
-        if (!this.historyStore) {
-            await this.send(client, serialize({
-                type: 'terminal.history.response',
-                deviceId,
-                sessionId,
-                data: '',
-                nextBeforeSeq: 0,
-                hasMore: false,
-            }));
-            return;
-        }
-        const page = this.historyStore.getPage(deviceId, sessionId, req.beforeSeq || 0, RelayServer.clampHistoryPageSize(req.maxChars || 0));
-        await this.send(client, serialize({
-            type: 'terminal.history.response',
-            deviceId,
-            sessionId,
-            data: page.data,
-            nextBeforeSeq: page.nextBeforeSeq,
-            hasMore: page.hasMore,
-        }));
+        await this.sendTerminalBufferResponse(client, req.requestId?.trim() || '', deviceId, sessionId, req.beforeCursor || '', req.maxChars || 0);
     }
     async handleTerminalSnapshotRequest(client, req) {
         const deviceId = req.deviceId?.trim() || '';
@@ -613,10 +633,10 @@ export class RelayServer {
             return;
         this.historyStore?.removeSession(deviceId, sessionId);
     }
-    static clampHistoryPageSize(requested) {
+    static clampOlderBufferPageSize(requested) {
         if (requested <= 0)
-            return TerminalHistoryPageChars;
-        return Math.min(requested, TerminalHistoryPageChars);
+            return TerminalOlderBufferPageChars;
+        return Math.min(requested, TerminalOlderBufferPageChars);
     }
     static clampSnapshotPageSize(requested) {
         if (requested <= 0)

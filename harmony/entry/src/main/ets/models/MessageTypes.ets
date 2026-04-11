@@ -154,6 +154,12 @@ export interface TerminalCloseMessage extends BaseMessage {
   sessionId: string;
 }
 
+export interface TerminalDetachMessage extends BaseMessage {
+  type: 'terminal.detach';
+  deviceId: string;
+  sessionId: string;
+}
+
 export interface TerminalClosedMessage extends BaseMessage {
   type: 'terminal.closed';
   deviceId: string;

@@ -61,12 +61,15 @@ public static class MessageSerializer
             "terminal.opened" => Deserialize<TerminalOpenedMessage>(json),
             "terminal.input" => Deserialize<TerminalInputMessage>(json),
             "terminal.output" => Deserialize<TerminalOutputMessage>(json),
+            "terminal.buffer.request" => Deserialize<TerminalBufferRequestMessage>(json),
+            "terminal.buffer.response" => Deserialize<TerminalBufferResponseMessage>(json),
             "terminal.snapshot.request" => Deserialize<TerminalSnapshotRequestMessage>(json),
             "terminal.snapshot.response" => Deserialize<TerminalSnapshotResponseMessage>(json),
             "terminal.history.request" => Deserialize<TerminalHistoryRequestMessage>(json),
             "terminal.history.response" => Deserialize<TerminalHistoryResponseMessage>(json),
             "terminal.resize" => Deserialize<TerminalResizeMessage>(json),
             "terminal.close" => Deserialize<TerminalCloseMessage>(json),
+            "terminal.detach" => Deserialize<TerminalDetachMessage>(json),
             "terminal.closed" => Deserialize<TerminalClosedMessage>(json),
             "control.request" => Deserialize<ControlRequestMessage>(json),
             "control.grant" => Deserialize<ControlGrantMessage>(json),
@@ -89,7 +92,6 @@ public static class MessageSerializer
             "group.server.change.commit" => Deserialize<GroupServerChangeCommitMessage>(json),
             "group.secret.rotate.request" => Deserialize<GroupSecretRotateRequestMessage>(json),
             "group.secret.rotate.done" => Deserialize<GroupSecretRotateDoneMessage>(json),
-            "panel.login.scan" => Deserialize<PanelLoginScanMessage>(json),
             "error" => Deserialize<ErrorMessage>(json),
             "relay.designate" => Deserialize<RelayDesignateMessage>(json),
             "relay.designated" => Deserialize<RelayDesignatedMessage>(json),
@@ -101,7 +103,6 @@ public static class MessageSerializer
             "device.kicked" => Deserialize<DeviceKickedMessage>(json),
             "group.dissolve" => Deserialize<GroupDissolveMessage>(json),
             "group.dissolved" => Deserialize<GroupDissolvedMessage>(json),
-            "panel.disconnected" => Deserialize<PanelDisconnectedMessage>(json),
             _ => null
         };
     }

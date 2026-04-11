@@ -436,19 +436,13 @@ public partial class MainWindow : Window
     private void UpdatePanelVisibility()
     {
         var hasVisibleTabs = _viewModel.HasVisibleTabs;
-        var requiresCrossDeviceAuth = _viewModel.IsCrossDeviceAuthRequired;
         var showWelcome = !hasVisibleTabs || _forceWelcomeVisible;
-        if (requiresCrossDeviceAuth)
-            showWelcome = false;
-
-        if (CrossDeviceGatePanel is not null)
-            CrossDeviceGatePanel.Visibility = requiresCrossDeviceAuth ? Visibility.Visible : Visibility.Collapsed;
         if (WelcomePanel is not null)
-            WelcomePanel.Visibility = (!requiresCrossDeviceAuth && showWelcome) ? Visibility.Visible : Visibility.Collapsed;
+            WelcomePanel.Visibility = showWelcome ? Visibility.Visible : Visibility.Collapsed;
         if (TerminalWebView is not null)
-            TerminalWebView.Visibility = (!requiresCrossDeviceAuth && !showWelcome) ? Visibility.Visible : Visibility.Collapsed;
+            TerminalWebView.Visibility = !showWelcome ? Visibility.Visible : Visibility.Collapsed;
         if (TabBarHost is not null)
-            TabBarHost.Visibility = (!requiresCrossDeviceAuth && hasVisibleTabs) ? Visibility.Visible : Visibility.Collapsed;
+            TabBarHost.Visibility = hasVisibleTabs ? Visibility.Visible : Visibility.Collapsed;
         if (TabContainer is not null)
             TabContainer.Visibility = Visibility.Visible;
     }
@@ -470,11 +464,7 @@ public partial class MainWindow : Window
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(MainViewModel.IsCrossDeviceAuthRequired))
-        {
-            Dispatcher.InvokeAsync(UpdatePanelVisibility);
-        }
-        else if (e.PropertyName == nameof(MainViewModel.ExplorerRootPath))
+        if (e.PropertyName == nameof(MainViewModel.ExplorerRootPath))
         {
             Dispatcher.InvokeAsync(UpdateExplorerNavButtons);
         }
@@ -1935,7 +1925,6 @@ public partial class MainWindow : Window
             if (AiSettingsExpander is not null) AiSettingsExpander.Header = "AI Settings";
             if (DebugLogExpander is not null) DebugLogExpander.Header = "Debug Log";
             if (NewTabButtonInline is not null) NewTabButtonInline.ToolTip = "New Session";
-            if (CrossDevicePromptText is not null) CrossDevicePromptText.Text = "Scan with your phone to continue cross-device access.";
             if (RightExplorerButton is not null) RightExplorerButton.Content = "Explorer";
             if (RightQuickCommandsButton is not null) RightQuickCommandsButton.Content = "Quick Commands";
             if (RightRecentInputsButton is not null) RightRecentInputsButton.Content = "Recent Commands";
@@ -1981,7 +1970,6 @@ public partial class MainWindow : Window
             if (AiSettingsExpander is not null) AiSettingsExpander.Header = "AI 设置";
             if (DebugLogExpander is not null) DebugLogExpander.Header = "调试日志";
             if (NewTabButtonInline is not null) NewTabButtonInline.ToolTip = "新会话";
-            if (CrossDevicePromptText is not null) CrossDevicePromptText.Text = "跨设备连接请先用手机扫码。";
             if (RightExplorerButton is not null) RightExplorerButton.Content = "资源管理器";
             if (RightQuickCommandsButton is not null) RightQuickCommandsButton.Content = "快捷指令";
             if (RightRecentInputsButton is not null) RightRecentInputsButton.Content = "历史指令";

@@ -44,6 +44,12 @@ class TerminalCloseMsg {
   sessionId: string = '';
 }
 
+class TerminalDetachMsg {
+  type: string = 'terminal.detach';
+  deviceId: string = '';
+  sessionId: string = '';
+}
+
 class GroupJoinRequestMsg {
   type: string = 'group.join.request';
   groupSecret: string = '';
@@ -573,6 +579,19 @@ class WebSocketServiceClass {
           this.activeDeviceId = s.deviceId;
         }
       });
+    }
+  }
+
+  detachTerminal(targetSessionId: string = ''): void {
+    const sessionId: string = targetSessionId.length > 0 ? targetSessionId : this.getActiveSessionId();
+    const session: SessionState | undefined = this.sessions.get(sessionId);
+    const deviceId: string = session !== undefined ? session.deviceId : this.getActiveDeviceId();
+    if (sessionId.length > 0 && deviceId.length > 0) {
+      let msg: TerminalDetachMsg = new TerminalDetachMsg();
+      msg.type = 'terminal.detach';
+      msg.deviceId = deviceId;
+      msg.sessionId = sessionId;
+      this.send(JSON.stringify(msg));
     }
   }
 
