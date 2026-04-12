@@ -122,6 +122,11 @@ public partial class MainWindow : Window
         TerminalWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
         TerminalWebView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
         TerminalWebView.CoreWebView2.NavigationStarting += TerminalWebView_NavigationStarting;
+        TerminalWebView.CoreWebView2.NavigationCompleted += TerminalWebView_NavigationCompleted;
+
+        var hostTerminalConfig = BuildHostTerminalConfigJson();
+        await TerminalWebView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
+            $"window.__HOST_TERMINAL_CONFIG__ = {hostTerminalConfig};");
 
         var assetsPath = Path.Combine(AppContext.BaseDirectory, "Assets");
         TerminalWebView.CoreWebView2.SetVirtualHostNameToFolderMapping(
@@ -302,6 +307,24 @@ public partial class MainWindow : Window
         e.Cancel = true;
     }
 
+    private async void TerminalWebView_NavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+    {
+        if (!e.IsSuccess || !_webViewReady || TerminalWebView.CoreWebView2 is null)
+            return;
+
+        var hostConfig = BuildHostTerminalConfigJson();
+
+        try
+        {
+            await TerminalWebView.CoreWebView2.ExecuteScriptAsync(
+                $"window.configureHostTerminal && window.configureHostTerminal({hostConfig})");
+        }
+        catch
+        {
+            // Best-effort only: WebView may be reloading or tearing down.
+        }
+    }
+
     private static bool IsAllowedTerminalUri(string uri)
     {
         if (!Uri.TryCreate(uri, UriKind.Absolute, out var parsed))
@@ -309,6 +332,24 @@ public partial class MainWindow : Window
 
         return parsed.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) &&
                parsed.Host.Equals("app.local", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int GetWindowsBuildNumber()
+    {
+        var build = Environment.OSVersion.Version.Build;
+        return build > 0 ? build : 19045;
+    }
+
+    private static string BuildHostTerminalConfigJson()
+    {
+        return JsonSerializer.Serialize(new
+        {
+            windowsPty = new
+            {
+                backend = "conpty",
+                buildNumber = GetWindowsBuildNumber()
+            }
+        });
     }
 
     private void OnTerminalViewportLockRequested(int cols, int rows)
@@ -326,15 +367,66 @@ public partial class MainWindow : Window
 
     private void OnTerminalViewportAutoFitRequested()
     {
-        if (!_webViewReady) return;
+        if (!_webViewReady || TerminalWebView.CoreWebView2 is null) return;
 
-        Dispatcher.InvokeAsync(() =>
+        Dispatcher.InvokeAsync(async () =>
         {
             UpdateCompactModeButton();
 
-            TerminalWebView.CoreWebView2.ExecuteScriptAsync(
+            await TerminalWebView.CoreWebView2.ExecuteScriptAsync(
                 "window.fitTerminalToContainer && window.fitTerminalToContainer()");
+
+            await SyncTerminalSizeFromWebViewAsync();
+            await Task.Delay(120);
+            await SyncTerminalSizeFromWebViewAsync();
         });
+    }
+
+    private async Task SyncTerminalSizeFromWebViewAsync()
+    {
+        if (!_webViewReady || TerminalWebView.CoreWebView2 is null)
+            return;
+
+        var outerJson = await TerminalWebView.CoreWebView2.ExecuteScriptAsync(
+            "(function(){ if (!window.term) return null; return JSON.stringify({ cols: window.term.cols || 0, rows: window.term.rows || 0 }); })()");
+
+        if (string.IsNullOrWhiteSpace(outerJson) || string.Equals(outerJson, "null", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        string? innerJson;
+        try
+        {
+            innerJson = JsonSerializer.Deserialize<string>(outerJson);
+        }
+        catch
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(innerJson))
+            return;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(innerJson);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("cols", out var colsElement) ||
+                !root.TryGetProperty("rows", out var rowsElement))
+            {
+                return;
+            }
+
+            var cols = colsElement.GetInt32();
+            var rows = rowsElement.GetInt32();
+            if (cols > 0 && rows > 0)
+            {
+                _viewModel.HandleLocalViewportResize(cols, rows, force: true);
+            }
+        }
+        catch
+        {
+            // Best-effort sync only.
+        }
     }
 
     private void OnTerminalOutputForwarded(string text)

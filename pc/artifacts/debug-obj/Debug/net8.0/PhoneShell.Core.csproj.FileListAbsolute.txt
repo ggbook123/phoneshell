@@ -1,0 +1,6 @@
+F:\AIxiangmu\phoneshell\pc\artifacts\debug-obj\Debug\net8.0\PhoneShell.Core.csproj.AssemblyReference.cache
+F:\AIxiangmu\phoneshell\pc\artifacts\debug-obj\Debug\net8.0\PhoneShell.Core.GeneratedMSBuildEditorConfig.editorconfig
+F:\AIxiangmu\phoneshell\pc\artifacts\debug-obj\Debug\net8.0\PhoneShell.Core.AssemblyInfoInputs.cache
+F:\AIxiangmu\phoneshell\pc\artifacts\debug-obj\Debug\net8.0\PhoneShell.Core.AssemblyInfo.cs
+F:\AIxiangmu\phoneshell\pc\artifacts\debug-obj\Debug\net8.0\PhoneShell.Core.csproj.CoreCompileInputs.cache
+F:\AIxiangmu\phoneshell\pc\artifacts\debug-obj\Debug\net8.0\PhoneShell.Core.sourcelink.json

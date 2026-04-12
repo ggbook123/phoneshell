@@ -1263,13 +1263,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 // Restore to desktop size
                 // Clear mobile lock so HandleLocalViewportResize will apply the new size
                 tab.IsMobileViewportLocked = false;
-                TerminalViewportAutoFitRequested?.Invoke();
 
-                // If we have saved desktop dimensions, apply them immediately
                 if (tab.DesktopCols > 0 && tab.DesktopRows > 0)
                 {
                     ApplyTabTerminalSize(tab, tab.DesktopCols, tab.DesktopRows);
                 }
+
+                TerminalViewportAutoFitRequested?.Invoke();
             }
         }
 
@@ -1314,14 +1314,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         tab.IsMobileViewportLocked = false;
         tab.IsMobileControlPaused = true;
 
-        if (tab == ActiveTab)
-        {
-            TerminalViewportAutoFitRequested?.Invoke();
-        }
-
         if (tab.DesktopCols > 0 && tab.DesktopRows > 0)
         {
             ApplyTabTerminalSize(tab, tab.DesktopCols, tab.DesktopRows);
+        }
+
+        if (tab == ActiveTab)
+        {
+            TerminalViewportAutoFitRequested?.Invoke();
         }
 
         UpdateMobileConnectionState();
@@ -1441,21 +1441,28 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     // --- Viewport resize handling ---
 
-    public void HandleLocalViewportResize(int cols, int rows)
+    public void HandleLocalViewportResize(int cols, int rows, bool force = false)
     {
         if (cols <= 0 || rows <= 0) return;
 
         if (ActiveTab is not null)
         {
             // Always save desktop dimensions unless in compact mode
-            if (!ActiveTab.IsCompactMode)
+            if (force || !ActiveTab.IsCompactMode)
             {
                 ActiveTab.DesktopCols = cols;
                 ActiveTab.DesktopRows = rows;
             }
 
             // Don't apply resize if compact mode or mobile viewport is locked
-            if (ActiveTab.IsCompactMode || ActiveTab.IsMobileViewportLocked) return;
+            if (!force && (ActiveTab.IsCompactMode || ActiveTab.IsMobileViewportLocked)) return;
+
+            if (force)
+            {
+                // Force desktop restoration even if stale compact/mobile lock state lingers.
+                ActiveTab.IsCompactMode = false;
+                ActiveTab.IsMobileViewportLocked = false;
+            }
 
             ApplyTabTerminalSize(ActiveTab, cols, rows);
             SessionStatus = "Running";

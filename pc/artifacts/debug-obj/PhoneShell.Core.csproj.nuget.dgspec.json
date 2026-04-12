@@ -1,0 +1,88 @@
+{
+  "format": 1,
+  "restore": {
+    "F:\\AIxiangmu\\phoneshell\\pc\\src\\PhoneShell.Core\\PhoneShell.Core.csproj": {}
+  },
+  "projects": {
+    "F:\\AIxiangmu\\phoneshell\\pc\\src\\PhoneShell.Core\\PhoneShell.Core.csproj": {
+      "version": "0.4.0",
+      "restore": {
+        "projectUniqueName": "F:\\AIxiangmu\\phoneshell\\pc\\src\\PhoneShell.Core\\PhoneShell.Core.csproj",
+        "projectName": "PhoneShell.Core",
+        "projectPath": "F:\\AIxiangmu\\phoneshell\\pc\\src\\PhoneShell.Core\\PhoneShell.Core.csproj",
+        "packagesPath": "F:\\AIxiangmu\\phoneshell\\.nuget\\packages",
+        "outputPath": "F:\\AIxiangmu\\phoneshell\\pc\\artifacts\\debug-obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "F:\\AIxiangmu\\phoneshell\\NuGet.Config",
+          "C:\\Users\\小符\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "10.0.100"
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "QRCoder": {
+              "target": "Package",
+              "version": "[1.4.3, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "downloadDependencies": [
+            {
+              "name": "Microsoft.AspNetCore.App.Ref",
+              "version": "[8.0.25, 8.0.25]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Ref",
+              "version": "[8.0.25, 8.0.25]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Ref",
+              "version": "[8.0.25, 8.0.25]"
+            }
+          ],
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.104/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}

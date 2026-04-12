@@ -131,7 +131,7 @@ class AboutPage extends StatelessWidget {
                               'Download the desktop app from GitHub: https://github.com/ggbook123/phoneshell'),
                           _t('第一次请以管理员身份打开电脑端，电脑端点击启动，防火墙打开对应端口，手机扫码连接即可。',
                               'First run: open the desktop app as administrator, click Start, allow the firewall ports, then scan the QR code on your phone.'),
-                          _t('软件版本：v1.0.1', 'Version: v1.0.1'),
+                          _t('软件版本：v1.0.2', 'Version: v1.0.2'),
                         ],
                         accent: const Color(AppColors.accent),
                         tag: 'ABOUT',

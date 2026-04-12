@@ -36,8 +36,14 @@
   }
 
   #terminalHost.geometry-locked {
+    align-items: center;
+    justify-content: center;
+  }
+
+  #terminalHost.geometry-locked.geometry-overflowing {
     align-items: flex-start;
     justify-content: flex-start;
+    overflow: auto;
   }
 
   #terminal {
@@ -92,13 +98,26 @@
     padding: 12px 4px 8px 12px;
   }
 
+  #terminalHost.geometry-locked .xterm {
+    padding: 10px 0 8px 8px;
+  }
+
   .xterm,
   .xterm .xterm-viewport {
     background-color: var(--terminal-bg) !important;
   }
 
+  #terminalHost.geometry-locked .xterm .xterm-viewport {
+    scrollbar-width: none;
+  }
+
   .xterm .xterm-viewport::-webkit-scrollbar {
     width: 6px;
+  }
+
+  #terminalHost.geometry-locked .xterm .xterm-viewport::-webkit-scrollbar {
+    width: 0;
+    height: 0;
   }
 
   .xterm .xterm-viewport::-webkit-scrollbar-track {
@@ -131,6 +150,25 @@
   var terminalHost = document.getElementById('terminalHost');
   var terminalElement = document.getElementById('terminal');
   var defaultScrollback = 80000;
+  var hostTerminalConfig = window.__HOST_TERMINAL_CONFIG__ || null;
+  var initialWindowsPty = {
+    backend: 'conpty'
+  };
+
+  if (hostTerminalConfig &&
+      hostTerminalConfig.windowsPty &&
+      typeof hostTerminalConfig.windowsPty === 'object') {
+    if (typeof hostTerminalConfig.windowsPty.backend === 'string' &&
+        hostTerminalConfig.windowsPty.backend) {
+      initialWindowsPty.backend = hostTerminalConfig.windowsPty.backend;
+    }
+
+    if (typeof hostTerminalConfig.windowsPty.buildNumber === 'number' &&
+        hostTerminalConfig.windowsPty.buildNumber > 0) {
+      initialWindowsPty.buildNumber = hostTerminalConfig.windowsPty.buildNumber;
+    }
+  }
+
   var term = new Terminal({
     cursorBlink: true,
     cursorStyle: 'bar',
@@ -142,6 +180,7 @@
     letterSpacing: 0.3,
     lineHeight: 1.25,
     scrollback: defaultScrollback,
+    windowsPty: initialWindowsPty,
     theme: {
       background: '#0A0E14',
       foreground: '#CBD3E0',
@@ -171,11 +210,16 @@
 
   var fitAddon = new FitAddon.FitAddon();
   var manualGeometryLock = false;
+  var lockedGeometryCols = 0;
+  var lockedGeometryRows = 0;
+  var baseFontSize = 14;
+  var minimumLockedFontSize = 6;
   var lastReportedCols = 0;
   var lastReportedRows = 0;
   var clipboardReadRequestSeq = 0;
   var clipboardReadRequests = {};
   var clipboardReadFallbackTimeoutMs = 1000;
+  var pendingFullRefresh = false;
 
   term.loadAddon(fitAddon);
   term.open(terminalElement);
@@ -191,6 +235,7 @@
     }
 
     terminalHost.classList.remove('geometry-locked');
+    terminalHost.classList.remove('geometry-overflowing');
     if (term.options.scrollback !== defaultScrollback) {
       term.options.scrollback = defaultScrollback;
     }
@@ -203,6 +248,43 @@
 
     term.scrollToBottom();
     term.refresh(0, Math.max(0, term.rows - 1));
+  }
+
+  function scheduleFullRefresh() {
+    if (pendingFullRefresh) {
+      return;
+    }
+
+    pendingFullRefresh = true;
+    window.requestAnimationFrame(function() {
+      pendingFullRefresh = false;
+      term.refresh(0, Math.max(0, term.rows - 1));
+    });
+  }
+
+  function needsAnsiRefresh(data) {
+    if (!data || typeof data !== 'string') {
+      return false;
+    }
+
+    return data.indexOf('\r') >= 0 || data.indexOf('\x1b') >= 0;
+  }
+
+  function applyHostTerminalConfig(config) {
+    if (!config || !config.windowsPty) {
+      return;
+    }
+
+    var nextWindowsPty = {
+      backend: config.windowsPty.backend || 'conpty'
+    };
+
+    if (typeof config.windowsPty.buildNumber === 'number' && config.windowsPty.buildNumber > 0) {
+      nextWindowsPty.buildNumber = config.windowsPty.buildNumber;
+    }
+
+    term.options.windowsPty = nextWindowsPty;
+    stabilizeViewport();
   }
 
   function postResize(cols, rows, force) {
@@ -223,6 +305,7 @@
 
   function fitAndNotify(force) {
     if (manualGeometryLock) {
+      applyManualGeometryLayout();
       return;
     }
 
@@ -250,26 +333,90 @@
     return cell;
   }
 
+  function getTerminalChromeSize() {
+    var terminalComputed = window.getComputedStyle(terminalElement);
+    var xtermComputed = term.element
+      ? window.getComputedStyle(term.element)
+      : terminalComputed;
+
+    return {
+      paddingX:
+        parseInt(xtermComputed.getPropertyValue('padding-left') || '0', 10) +
+        parseInt(xtermComputed.getPropertyValue('padding-right') || '0', 10),
+      paddingY:
+        parseInt(xtermComputed.getPropertyValue('padding-top') || '0', 10) +
+        parseInt(xtermComputed.getPropertyValue('padding-bottom') || '0', 10),
+      borderX:
+        parseInt(terminalComputed.getPropertyValue('border-left-width') || '0', 10) +
+        parseInt(terminalComputed.getPropertyValue('border-right-width') || '0', 10),
+      borderY:
+        parseInt(terminalComputed.getPropertyValue('border-top-width') || '0', 10) +
+        parseInt(terminalComputed.getPropertyValue('border-bottom-width') || '0', 10)
+    };
+  }
+
+  function measureLockedGeometrySize(cols, rows) {
+    var cell = getCellMetrics();
+    if (!cell) {
+      return null;
+    }
+
+    var chrome = getTerminalChromeSize();
+    return {
+      width: Math.ceil(cols * cell.width + chrome.paddingX + chrome.borderX),
+      height: Math.ceil(rows * cell.height + chrome.paddingY + chrome.borderY)
+    };
+  }
+
+  function applyManualGeometryLayout() {
+    if (!manualGeometryLock || lockedGeometryCols <= 0 || lockedGeometryRows <= 0) {
+      return;
+    }
+
+    if (term.options.fontSize !== baseFontSize) {
+      term.options.fontSize = baseFontSize;
+    }
+
+    var measured = measureLockedGeometrySize(lockedGeometryCols, lockedGeometryRows);
+    if (!measured) {
+      return;
+    }
+
+    var hostWidth = Math.max(1, terminalHost.clientWidth);
+    var hostHeight = Math.max(1, terminalHost.clientHeight);
+    var scale = Math.min(hostWidth / measured.width, hostHeight / measured.height);
+
+    if (!Number.isFinite(scale) || scale <= 0) {
+      scale = 1;
+    }
+
+    var targetFontSize = baseFontSize;
+    if (scale < 1) {
+      targetFontSize = Math.max(minimumLockedFontSize, Math.floor(baseFontSize * scale * 100) / 100);
+    }
+
+    if (Math.abs(term.options.fontSize - targetFontSize) > 0.01) {
+      term.options.fontSize = targetFontSize;
+      measured = measureLockedGeometrySize(lockedGeometryCols, lockedGeometryRows) || measured;
+    }
+
+    var isOverflowing = measured.width > hostWidth || measured.height > hostHeight;
+    if (isOverflowing) {
+      terminalHost.classList.add('geometry-overflowing');
+    } else {
+      terminalHost.classList.remove('geometry-overflowing');
+    }
+
+    terminalElement.style.width = measured.width + 'px';
+    terminalElement.style.height = measured.height + 'px';
+    stabilizeViewport();
+  }
+
   function setManualGeometry(cols, rows) {
     manualGeometryLock = true;
+    lockedGeometryCols = cols;
+    lockedGeometryRows = rows;
     syncHostLayout();
-
-    var cell = getCellMetrics();
-    if (cell) {
-      var computed = window.getComputedStyle(terminalElement);
-      var paddingX = parseInt(computed.getPropertyValue('padding-left') || '0', 10) +
-        parseInt(computed.getPropertyValue('padding-right') || '0', 10);
-      var paddingY = parseInt(computed.getPropertyValue('padding-top') || '0', 10) +
-        parseInt(computed.getPropertyValue('padding-bottom') || '0', 10);
-      var scrollBarWidth = 0;
-
-      if (term._core && term._core.viewport && typeof term._core.viewport.scrollBarWidth === 'number') {
-        scrollBarWidth = term._core.viewport.scrollBarWidth;
-      }
-
-      terminalElement.style.width = Math.ceil(cols * cell.width + paddingX + scrollBarWidth) + 'px';
-      terminalElement.style.height = Math.ceil(rows * cell.height + paddingY) + 'px';
-    }
 
     if (term.cols !== cols || term.rows !== rows) {
       term.resize(cols, rows);
@@ -277,7 +424,7 @@
 
     lastReportedCols = cols;
     lastReportedRows = rows;
-    stabilizeViewport();
+    applyManualGeometryLayout();
   }
 
   function resolveClipboardReadRequest(requestId, text) {
@@ -434,6 +581,8 @@
     term.write(data, function() {
       if (manualGeometryLock) {
         stabilizeViewport();
+      } else if (needsAnsiRefresh(data)) {
+        scheduleFullRefresh();
       }
     });
   };
@@ -445,11 +594,14 @@
   window.replaceTerminalBuffer = function(data) {
     term.reset();
     if (!data) {
+      scheduleFullRefresh();
       return;
     }
     term.write(data, function() {
       if (manualGeometryLock) {
         stabilizeViewport();
+      } else {
+        scheduleFullRefresh();
       }
     });
   };
@@ -462,8 +614,18 @@
 
   window.fitTerminalToContainer = function() {
     manualGeometryLock = false;
+    lockedGeometryCols = 0;
+    lockedGeometryRows = 0;
+    if (term.options.fontSize !== baseFontSize) {
+      term.options.fontSize = baseFontSize;
+    }
     syncHostLayout();
     fitAndNotify(true);
+  };
+
+  window.configureHostTerminal = function(config) {
+    hostTerminalConfig = config || null;
+    applyHostTerminalConfig(hostTerminalConfig);
   };
 
   window.getScreenSnapshot = function() {
@@ -498,7 +660,11 @@
     });
 
     new ResizeObserver(function() {
-      fitAndNotify(false);
+      if (manualGeometryLock) {
+        applyManualGeometryLayout();
+      } else {
+        fitAndNotify(false);
+      }
     }).observe(terminalHost);
 
     setTimeout(function() {
@@ -506,6 +672,7 @@
     }, 200);
   }
 
+  applyHostTerminalConfig(hostTerminalConfig);
   syncHostLayout();
 </script>
 </body>

@@ -4,7 +4,7 @@
   #define AppName "PhoneShell"
 #endif
 #if !defined(AppVersion)
-  #define AppVersion "0.4.0"
+  #define AppVersion "1.0.0"
 #endif
 #if !defined(Publisher)
   #define Publisher "PhoneShell"
