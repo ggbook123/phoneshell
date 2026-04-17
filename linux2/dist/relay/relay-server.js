@@ -902,14 +902,35 @@ export class RelayServer {
         }));
         this.log(`Server migration: sent prepare to ${req.newServerDeviceId}`);
     }
-    async handleServerChangePrepare(_client, prepare) {
+    async handleServerChangePrepare(client, prepare) {
         if (!this.group || !prepare.newServerUrl)
             return;
+        const nextGroupId = (prepare.groupId || '').trim();
+        const nextGroupSecret = (prepare.groupSecret || '').trim();
+        if (!nextGroupId || !nextGroupSecret)
+            return;
+        const isExternalMigration = nextGroupId !== this.group.groupId ||
+            !this.tokenManager.tokensEqual(nextGroupSecret, this.group.groupSecret);
+        if (isExternalMigration && client.memberRole !== 'Mobile') {
+            await this.send(client, serialize({
+                type: 'error',
+                code: 'permission_denied',
+                message: 'Only the bound mobile can migrate to another group.',
+            }));
+            return;
+        }
+        if (isExternalMigration) {
+            this.group.groupId = nextGroupId;
+            this.group.groupSecret = nextGroupSecret;
+            this.authToken = nextGroupSecret;
+            this.groupStore?.saveGroup(this.group);
+        }
         this.broadcastToAll(serialize({
             type: 'group.server.change.commit',
             newServerUrl: prepare.newServerUrl, groupId: this.group.groupId, groupSecret: this.group.groupSecret,
         }));
         this.log(`Server migration: commit broadcast, new server=${prepare.newServerUrl}`);
+        this.callbacks.onServerMigrationCommitted?.(prepare.newServerUrl, this.group.groupId, this.group.groupSecret);
     }
     async handleSecretRotateRequest(client, _req) {
         if (!this.group)

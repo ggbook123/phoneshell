@@ -1556,9 +1556,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         else if (_isStandaloneMode && _relayServer is not null && !string.IsNullOrEmpty(PrimaryRelayAddress))
         {
-            var wsUrl = PrimaryRelayAddress;
-            var httpUrl = wsUrl.Replace("ws://", "http://").Replace("wss://", "https://")
-                .TrimEnd('/').Replace("/ws", "");
+            var baseWsUrl = PrimaryRelayAddress;
+            var httpUrl = BuildHttpUrlFromWebSocketUrl(baseWsUrl);
+            var wsUrl = AppendOrReplaceTokenQuery(baseWsUrl, _relayServer.AuthToken);
             QrPayload = _payloadBuilder.BuildStandalone(httpUrl, wsUrl, _identity.DeviceId, _identity.DisplayName);
         }
         else
@@ -1566,6 +1566,60 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             QrPayload = _payloadBuilder.Build(_identity);
         }
         QrImage = _qrCodeService.Generate(QrPayload);
+    }
+
+    private static string BuildHttpUrlFromWebSocketUrl(string wsUrl)
+    {
+        if (string.IsNullOrWhiteSpace(wsUrl))
+            return string.Empty;
+
+        var withoutQuery = wsUrl.Split('?', 2)[0];
+        return withoutQuery.Replace("ws://", "http://").Replace("wss://", "https://")
+            .TrimEnd('/').Replace("/ws", "");
+    }
+
+    private static string AppendOrReplaceTokenQuery(string wsUrl, string? token)
+    {
+        var trimmedUrl = wsUrl?.Trim() ?? string.Empty;
+        var trimmedToken = token?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmedUrl) || string.IsNullOrWhiteSpace(trimmedToken))
+            return trimmedUrl;
+
+        var encodedToken = Uri.EscapeDataString(trimmedToken);
+        if (trimmedUrl.Contains("token=", StringComparison.OrdinalIgnoreCase))
+            return Regex.Replace(trimmedUrl, @"token=[^&]*", $"token={encodedToken}", RegexOptions.IgnoreCase);
+
+        var separator = trimmedUrl.Contains('?') ? "&" : "?";
+        return $"{trimmedUrl}{separator}token={encodedToken}";
+    }
+
+    private static bool IsLoopbackRelayUrl(string? relayUrl)
+    {
+        if (string.IsNullOrWhiteSpace(relayUrl))
+            return true;
+
+        try
+        {
+            var uri = new Uri(relayUrl, UriKind.Absolute);
+            return string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(uri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(uri.Host, "::1", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private string GetMigrationRelayAddress()
+    {
+        var runningServerUrl = _relayServer?.ReachableWebSocketUrls
+            .FirstOrDefault(url => !IsLoopbackRelayUrl(url));
+        if (!string.IsNullOrWhiteSpace(runningServerUrl))
+            return runningServerUrl;
+
+        return RelayAddressHelper.GetReachableWebSocketUrls(ServerPort)
+            .FirstOrDefault(url => !IsLoopbackRelayUrl(url)) ?? string.Empty;
     }
 
     private void ForceDisconnect()
@@ -2890,6 +2944,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(groupId) || string.IsNullOrWhiteSpace(groupSecret))
             return;
 
+        var migrationRelayUrl = GetMigrationRelayAddress();
+        if (string.IsNullOrWhiteSpace(migrationRelayUrl))
+        {
+            OnNetworkLog("Server migration aborted: no reachable non-localhost relay URL available.");
+            ServerStatus = "Server migration aborted: relay URL is localhost-only.";
+            return;
+        }
+
         // Persist group info so the new server keeps the existing group ID/secret.
         _groupStore.SaveGroup(new GroupInfo
         {
@@ -2910,7 +2972,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             await StartNetworkAsync();
         }
 
-        var newServerUrl = PrimaryRelayAddress;
+        var newServerUrl = GetMigrationRelayAddress();
         if (_relayClient is not null && !string.IsNullOrWhiteSpace(newServerUrl))
         {
             await _relayClient.SendServerChangePrepareAsync(groupId, groupSecret, newServerUrl);
@@ -2923,6 +2985,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(newUrl) || string.IsNullOrWhiteSpace(newSecret))
             return;
 
+        var effectiveGroupId = !string.IsNullOrWhiteSpace(groupId)
+            ? groupId
+            : _relayServer?.Group?.GroupId ?? _groupStore.LoadGroup()?.GroupId;
+        if (!string.IsNullOrWhiteSpace(effectiveGroupId))
+            SaveGroupMembership(effectiveGroupId, newSecret, newUrl);
+
         StopNetwork("switch_to_client");
 
         ClearServerGroupFiles();
@@ -2930,9 +2998,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         RelayServerAddress = newUrl;
         GroupSecret = newSecret;
         SaveServerSettings();
-
-        if (!string.IsNullOrWhiteSpace(groupId))
-            SaveGroupMembership(groupId, newSecret, newUrl);
 
         await StartNetworkAsync();
     }
@@ -3735,9 +3800,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         // GET /api/standalone/info — return device info for phone connection
         if (path == "/api/standalone/info" && context.Request.HttpMethod == "GET")
         {
-            var wsUrl = _relayServer?.ReachableWebSocketUrls.FirstOrDefault() ?? "";
-            var httpUrl = wsUrl.Replace("ws://", "http://").Replace("wss://", "https://")
-                .TrimEnd('/').Replace("/ws", "");
+            var baseWsUrl = _relayServer?.ReachableWebSocketUrls.FirstOrDefault() ?? "";
+            var wsUrl = AppendOrReplaceTokenQuery(baseWsUrl, _relayServer?.AuthToken);
+            var httpUrl = BuildHttpUrlFromWebSocketUrl(baseWsUrl);
 
             await WriteStandaloneJsonAsync(context.Response, 200, new
             {

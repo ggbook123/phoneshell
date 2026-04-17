@@ -26,6 +26,12 @@ class DeviceConnection {
   ConnectionState get connectionState => _state;
   String get serverUrl => _url;
 
+  void updateServerUrl(String url) {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return;
+    _url = trimmed;
+  }
+
   int addOnMessage(void Function(String, Map<String, dynamic>) callback) {
     final id = _nextCallbackId++;
     _messageCallbacks[id] = callback;

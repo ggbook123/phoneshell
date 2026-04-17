@@ -815,6 +815,15 @@ class ConnectionManager {
       if (newSecret.isNotEmpty) {
         _groupSecret = newSecret;
         PreferencesUtil.setString(StorageKeys.groupSecret, newSecret);
+        final conn = _groupConnection;
+        if (conn != null) {
+          final reconnectUrl = _buildConnectUrlWithToken(
+            conn.serverUrl,
+            newSecret,
+          );
+          conn.updateServerUrl(reconnectUrl);
+          PreferencesUtil.setString(StorageKeys.groupRelayUrl, reconnectUrl);
+        }
       }
     } else if (type == 'group.dissolved' || type == 'device.kicked') {
       disconnectGroup();
@@ -957,6 +966,8 @@ class ConnectionManager {
     _singleConnections.remove(deviceId);
     _singleDeviceInfos.remove(deviceId);
 
+    final connectUrl = _buildConnectUrlWithToken(relayUrl, _groupSecret);
+    conn.updateServerUrl(connectUrl);
     _groupConnection = conn;
     _groupId = newGroupId;
     _currentMode = DeviceMode.group;
@@ -972,7 +983,7 @@ class ConnectionManager {
       _startGroupProbeMonitor();
     }
 
-    PreferencesUtil.setString(StorageKeys.groupRelayUrl, relayUrl);
+    PreferencesUtil.setString(StorageKeys.groupRelayUrl, connectUrl);
     PreferencesUtil.setString(StorageKeys.groupId, newGroupId);
     _emitModeChange(DeviceMode.group);
   }

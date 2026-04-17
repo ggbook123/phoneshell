@@ -15,6 +15,7 @@ export interface RelayServerCallbacks {
     }>;
     getLocalSessionList?: () => SessionInfo[];
     getLocalTerminalSnapshot?: (sessionId: string) => string;
+    onServerMigrationCommitted?: (newServerUrl: string, groupId: string, groupSecret: string) => void;
 }
 export declare class RelayServer {
     private readonly devices;

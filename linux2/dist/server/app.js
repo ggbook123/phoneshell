@@ -3,6 +3,7 @@ import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import os from 'node:os';
 import { URL, fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { RelayServer } from '../relay/relay-server.js';
@@ -121,6 +122,24 @@ function normalizeHostWithPort(host, port) {
         return trimmed;
     return `${trimmed}:${port}`;
 }
+function detectLanHost() {
+    const interfaces = os.networkInterfaces();
+    for (const name in interfaces) {
+        const entries = interfaces[name];
+        if (!entries)
+            continue;
+        for (const entry of entries) {
+            const family = typeof entry.family === 'string' ? entry.family : String(entry.family);
+            if (entry.internal || family !== 'IPv4')
+                continue;
+            const address = (entry.address || '').trim();
+            if (address && net.isIP(address) === 4 && !isLocalHost(address)) {
+                return address;
+            }
+        }
+    }
+    return '';
+}
 function fetchText(url, timeoutMs) {
     return new Promise((resolve, reject) => {
         const req = https.get(url, { headers: { 'User-Agent': 'phoneshell' } }, (res) => {
@@ -210,6 +229,9 @@ export function createApp(config) {
         },
         getLocalSessionList: () => terminalManager.getSessionList(),
         getLocalTerminalSnapshot: (sessionId) => terminalManager.getSnapshot(sessionId),
+        onServerMigrationCommitted: (newServerUrl, groupId, groupSecret) => {
+            handleServerChangeCommit(newServerUrl, groupSecret, groupId);
+        },
     });
     // Wire terminal output: relay (standalone) vs client mode
     function wireTerminalOutputToRelay() {
@@ -249,6 +271,19 @@ export function createApp(config) {
     const wsScheme = (useTls) => (useTls ? 'wss' : 'ws');
     const httpScheme = (useTls) => (useTls ? 'https' : 'http');
     const buildWsUrl = (host, port, useTls) => `${wsScheme(useTls)}://${normalizeHostWithPort(host, port)}/ws/`;
+    function saveClientMembership(groupId, groupSecret, relayUrl) {
+        const normalizedGroupId = groupId.trim();
+        const normalizedGroupSecret = groupSecret.trim();
+        const normalizedRelayUrl = relayUrl.trim();
+        if (!normalizedGroupId || !normalizedGroupSecret || !normalizedRelayUrl)
+            return;
+        membershipStore.save({
+            groupId: normalizedGroupId,
+            groupSecret: normalizedGroupSecret,
+            relayUrl: normalizedRelayUrl,
+            updatedAtUtc: new Date().toISOString(),
+        });
+    }
     function startRelayServer(tokenOverride) {
         if (tokenOverride)
             effectiveToken = tokenOverride;
@@ -279,15 +314,8 @@ export function createApp(config) {
             onLocalTerminalOpen: async (_devId, shellId) => terminalManager.createSession(shellId),
             getLocalSessionList: () => terminalManager.getSessionList(),
             getLocalTerminalSnapshot: (sessionId) => terminalManager.getSnapshot(sessionId),
-            onGroupJoined: (groupId, newSecret) => {
-                if (!newSecret)
-                    return;
-                membershipStore.save({
-                    groupId,
-                    groupSecret: newSecret,
-                    relayUrl,
-                    updatedAtUtc: new Date().toISOString(),
-                });
+            onGroupJoined: (groupId, effectiveSecret) => {
+                saveClientMembership(groupId, effectiveSecret, relayUrl);
             },
             onKicked: (reason) => {
                 log(`Kicked from group: ${reason}`);
@@ -312,8 +340,8 @@ export function createApp(config) {
                     log(`Server migration: prepare sent (${newServerUrl})`);
                 }
             },
-            onServerChanged: (newUrl, newSecret) => {
-                handleServerChangeCommit(newUrl, newSecret);
+            onServerChanged: (newUrl, newSecret, newGroupId) => {
+                handleServerChangeCommit(newUrl, newSecret, newGroupId);
             },
         });
         if (!preserveServer) {
@@ -332,6 +360,47 @@ export function createApp(config) {
         }
         const port = tlsRuntime.enabled ? tlsPort : primaryPort;
         return buildWsUrl('localhost', port, tlsRuntime.enabled);
+    }
+    function buildHttpUrlFromWebSocketUrl(wsUrl) {
+        const withoutQuery = wsUrl.split('?', 1)[0] || wsUrl;
+        return withoutQuery.replace(/^ws/, 'http').replace(/\/ws\/?$/, '');
+    }
+    function appendOrReplaceTokenQuery(wsUrl, token) {
+        const trimmedUrl = wsUrl.trim();
+        const trimmedToken = token.trim();
+        if (!trimmedUrl || !trimmedToken)
+            return trimmedUrl;
+        const encodedToken = encodeURIComponent(trimmedToken);
+        if (/token=/i.test(trimmedUrl)) {
+            return trimmedUrl.replace(/token=[^&]*/i, `token=${encodedToken}`);
+        }
+        return trimmedUrl + (trimmedUrl.includes('?') ? '&' : '?') + `token=${encodedToken}`;
+    }
+    function isLocalRelayUrl(url) {
+        try {
+            const parsed = new URL(url);
+            const hostOnly = splitHostPort(parsed.host).host;
+            return !hostOnly || isLocalHost(hostOnly);
+        }
+        catch {
+            return true;
+        }
+    }
+    function buildRelayUrlForMigration() {
+        if (lastResolvedServerUrl && !isLocalRelayUrl(lastResolvedServerUrl)) {
+            return lastResolvedServerUrl;
+        }
+        const publicHost = getRuntimePublicHost();
+        if (publicHost) {
+            const port = tlsRuntime.enabled ? tlsPort : primaryPort;
+            return buildWsUrl(publicHost, port, tlsRuntime.enabled);
+        }
+        const lanHost = detectLanHost();
+        if (lanHost) {
+            const port = tlsRuntime.enabled ? tlsPort : primaryPort;
+            return buildWsUrl(lanHost, port, tlsRuntime.enabled);
+        }
+        return null;
     }
     function applyPublicHostToRelay(host) {
         const port = tlsRuntime.enabled ? tlsPort : primaryPort;
@@ -387,9 +456,10 @@ export function createApp(config) {
         return parts.join('; ');
     }
     function startRelayServerForMigration(groupId, groupSecret) {
-        const newServerUrl = lastResolvedServerUrl || buildRelayUrlFromConfig();
-        if (!config.publicHost && !resolvedPublicHost && !lastResolvedServerUrl) {
-            log('[mode] Server migration: publicHost not set, using localhost for new server URL');
+        const newServerUrl = buildRelayUrlForMigration();
+        if (!newServerUrl) {
+            log('[mode] Server migration aborted: no reachable non-localhost relay URL available. Configure publicHost or ensure a LAN address is available.');
+            return null;
         }
         pendingServerMigration = { groupId, groupSecret, newServerUrl };
         groupStore.saveGroup({
@@ -410,9 +480,11 @@ export function createApp(config) {
         }
         relay.stop();
         startRelayServer(groupSecret);
+        relay.setRelayUrl(newServerUrl);
+        lastResolvedServerUrl = newServerUrl;
         return newServerUrl;
     }
-    function handleServerChangeCommit(newUrl, newSecret) {
+    function handleServerChangeCommit(newUrl, newSecret, groupId) {
         if (!newUrl || !newSecret)
             return;
         if (pendingServerMigration && pendingServerMigration.newServerUrl === newUrl) {
@@ -422,9 +494,21 @@ export function createApp(config) {
             pendingServerMigration = null;
             return;
         }
+        const effectiveGroupId = (groupId || '').trim() ||
+            pendingServerMigration?.groupId ||
+            relay.getGroup()?.groupId ||
+            groupStore.loadGroup()?.groupId ||
+            membershipStore.load()?.groupId ||
+            '';
+        saveClientMembership(effectiveGroupId, newSecret, newUrl);
+        pendingServerMigration = null;
         if (modeManager.isRelay()) {
             groupStore.clearGroup();
             modeManager.transitionToClientFromRelay(newUrl);
+        }
+        else if (modeManager.isStandalone() && relay.getGroup()) {
+            groupStore.clearGroup();
+            modeManager.transitionToClient(newUrl, '');
         }
         startRelayClient(newUrl, '', newSecret);
     }
@@ -575,8 +659,9 @@ export function createApp(config) {
         }
         // --- Standalone QR code endpoint ---
         if (pathname === '/api/standalone/qr.png') {
-            const serverUrl = resolveServerUrl(req);
-            const httpUrl = serverUrl.replace(/^ws/, 'http').replace(/\/ws\/?$/, '');
+            const baseServerUrl = resolveServerUrl(req);
+            const serverUrl = appendOrReplaceTokenQuery(baseServerUrl, effectiveToken);
+            const httpUrl = buildHttpUrlFromWebSocketUrl(baseServerUrl);
             const qrPayload = buildStandalonePayload(httpUrl, serverUrl, deviceId, displayName);
             try {
                 const png = await generateQrPng(qrPayload);
@@ -590,8 +675,9 @@ export function createApp(config) {
         }
         // --- Standalone device info ---
         if (pathname === '/api/standalone/info') {
-            const serverUrl = resolveServerUrl(req);
-            const httpUrl = serverUrl.replace(/^ws/, 'http').replace(/\/ws\/?$/, '');
+            const baseServerUrl = resolveServerUrl(req);
+            const serverUrl = appendOrReplaceTokenQuery(baseServerUrl, effectiveToken);
+            const httpUrl = buildHttpUrlFromWebSocketUrl(baseServerUrl);
             writeJson(res, 200, {
                 deviceId,
                 displayName,

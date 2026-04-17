@@ -54,6 +54,7 @@ export interface RelayServerCallbacks {
   onLocalTerminalOpen?: (deviceId: string, shellId: string) => Promise<{ sessionId: string; cols: number; rows: number }>;
   getLocalSessionList?: () => SessionInfo[];
   getLocalTerminalSnapshot?: (sessionId: string) => string;
+  onServerMigrationCommitted?: (newServerUrl: string, groupId: string, groupSecret: string) => void;
 }
 
 export class RelayServer {
@@ -1049,13 +1050,38 @@ export class RelayServer {
     this.log(`Server migration: sent prepare to ${req.newServerDeviceId}`);
   }
 
-  private async handleServerChangePrepare(_client: ClientConnection, prepare: GroupServerChangePrepareMessage): Promise<void> {
+  private async handleServerChangePrepare(client: ClientConnection, prepare: GroupServerChangePrepareMessage): Promise<void> {
     if (!this.group || !prepare.newServerUrl) return;
+    const nextGroupId = (prepare.groupId || '').trim();
+    const nextGroupSecret = (prepare.groupSecret || '').trim();
+    if (!nextGroupId || !nextGroupSecret) return;
+
+    const isExternalMigration =
+      nextGroupId !== this.group.groupId ||
+      !this.tokenManager.tokensEqual(nextGroupSecret, this.group.groupSecret);
+
+    if (isExternalMigration && client.memberRole !== 'Mobile') {
+      await this.send(client, serialize({
+        type: 'error' as const,
+        code: 'permission_denied',
+        message: 'Only the bound mobile can migrate to another group.',
+      }));
+      return;
+    }
+
+    if (isExternalMigration) {
+      this.group.groupId = nextGroupId;
+      this.group.groupSecret = nextGroupSecret;
+      this.authToken = nextGroupSecret;
+      this.groupStore?.saveGroup(this.group);
+    }
+
     this.broadcastToAll(serialize({
       type: 'group.server.change.commit' as const,
       newServerUrl: prepare.newServerUrl, groupId: this.group.groupId, groupSecret: this.group.groupSecret,
     }));
     this.log(`Server migration: commit broadcast, new server=${prepare.newServerUrl}`);
+    this.callbacks.onServerMigrationCommitted?.(prepare.newServerUrl, this.group.groupId, this.group.groupSecret);
   }
 
   private async handleSecretRotateRequest(client: ClientConnection, _req: GroupSecretRotateRequestMessage): Promise<void> {

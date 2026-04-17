@@ -14,9 +14,9 @@ export interface RelayClientCallbacks {
   onTerminalOutput?: (deviceId: string, sessionId: string, data: string) => void;
   onKicked?: (reason: string) => void;
   onGroupDissolved?: (reason: string) => void;
-  onGroupJoined?: (groupId: string, groupSecret?: string) => void;
+  onGroupJoined?: (groupId: string, groupSecret: string) => void;
   onServerChangeRequested?: (groupId: string, groupSecret: string) => void;
-  onServerChanged?: (newUrl: string, groupSecret: string) => void;
+  onServerChanged?: (newUrl: string, groupSecret: string, groupId: string) => void;
 }
 
 export class RelayClient {
@@ -162,11 +162,12 @@ export class RelayClient {
       case 'group.join.accepted':
         {
           const accepted = message as { groupId: string; groupSecret?: string };
-          if (accepted.groupSecret) {
-            this.groupSecret = accepted.groupSecret;
+          const acceptedSecret = (accepted.groupSecret || '').trim();
+          if (acceptedSecret) {
+            this.groupSecret = acceptedSecret;
             this.inviteCode = '';
           }
-          this.callbacks.onGroupJoined?.(accepted.groupId, accepted.groupSecret);
+          this.callbacks.onGroupJoined?.(accepted.groupId, this.groupSecret);
           this.log('Joined group successfully');
         }
         break;
@@ -188,14 +189,15 @@ export class RelayClient {
         break;
       }
       case 'group.server.change.commit': {
-        const commit = message as { newServerUrl?: string; groupSecret?: string };
+        const commit = message as { newServerUrl?: string; groupSecret?: string; groupId?: string };
         const newUrl = (commit.newServerUrl || '').trim();
         const newSecret = (commit.groupSecret || '').trim();
+        const newGroupId = (commit.groupId || '').trim();
         if (newSecret) {
           this.groupSecret = newSecret;
         }
         if (newUrl && newSecret) {
-          this.callbacks.onServerChanged?.(newUrl, newSecret);
+          this.callbacks.onServerChanged?.(newUrl, newSecret, newGroupId);
         } else {
           this.log('Server change commit missing new server info');
         }

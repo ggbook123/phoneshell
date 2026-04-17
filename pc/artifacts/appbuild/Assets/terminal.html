@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  :root {
+    --surface-0: #0A0E14;
+    --surface-1: #0F1319;
+    --terminal-bg: #0A0E14;
+    --accent: #00D4AA;
+    --accent-subtle: rgba(0, 212, 170, 0.06);
+    --border: #1E2530;
+    --glow: rgba(0, 212, 170, 0.08);
+    --shadow-1: rgba(0, 0, 0, 0.3);
+    --shadow-2: rgba(0, 0, 0, 0.15);
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    background: var(--surface-1);
+  }
+
+  #terminalHost {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: stretch;
+    justify-content: stretch;
+    overflow: hidden;
+    box-sizing: border-box;
+    padding: 8px;
+    background: var(--surface-1);
+  }
+
+  #terminalHost.geometry-locked {
+    align-items: center;
+    justify-content: center;
+  }
+
+  #terminalHost.geometry-locked.geometry-overflowing {
+    align-items: flex-start;
+    justify-content: flex-start;
+    overflow: auto;
+  }
+
+  #terminal {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    box-sizing: border-box;
+    overflow: hidden;
+    background: var(--terminal-bg);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    box-shadow:
+      0 0 0 1px var(--border),
+      0 8px 32px var(--shadow-1),
+      0 2px 8px var(--shadow-2),
+      inset 0 1px 0 rgba(255, 255, 255, 0.02);
+    position: relative;
+  }
+
+  /* Subtle accent glow on the top edge */
+  #terminal::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 20%;
+    right: 20%;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      var(--accent-subtle),
+      var(--glow),
+      var(--accent-subtle),
+      transparent
+    );
+    z-index: 1;
+    pointer-events: none;
+    border-radius: 0 0 50% 50%;
+  }
+
+  #terminalHost.geometry-locked #terminal {
+    flex: 0 0 auto;
+  }
+
+  #terminalHost:not(.geometry-locked) #terminal {
+    flex: 1 1 auto;
+  }
+
+  /* xterm overrides for seamless look */
+  .xterm {
+    padding: 12px 4px 8px 12px;
+  }
+
+  #terminalHost.geometry-locked .xterm {
+    padding: 10px 0 8px 8px;
+  }
+
+  .xterm,
+  .xterm .xterm-viewport {
+    background-color: var(--terminal-bg) !important;
+  }
+
+  #terminalHost.geometry-locked .xterm .xterm-viewport {
+    scrollbar-width: none;
+  }
+
+  .xterm .xterm-viewport::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  #terminalHost.geometry-locked .xterm .xterm-viewport::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  .xterm .xterm-viewport::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 3px;
+  }
+
+  .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
+  }
+
+  /* Selection color matching accent */
+  .xterm .xterm-selection div {
+    background: rgba(0, 212, 170, 0.2) !important;
+  }
+</style>
+<link rel="stylesheet" href="xterm.min.css" />
+<script src="xterm.min.js"></script>
+<script src="addon-fit.min.js"></script>
+</head>
+<body>
+<div id="terminalHost">
+  <div id="terminal"></div>
+</div>
+<script>
+  var terminalHost = document.getElementById('terminalHost');
+  var terminalElement = document.getElementById('terminal');
+  var defaultScrollback = 80000;
+  var hostTerminalConfig = window.__HOST_TERMINAL_CONFIG__ || null;
+  var initialWindowsPty = {
+    backend: 'conpty'
+  };
+
+  if (hostTerminalConfig &&
+      hostTerminalConfig.windowsPty &&
+      typeof hostTerminalConfig.windowsPty === 'object') {
+    if (typeof hostTerminalConfig.windowsPty.backend === 'string' &&
+        hostTerminalConfig.windowsPty.backend) {
+      initialWindowsPty.backend = hostTerminalConfig.windowsPty.backend;
+    }
+
+    if (typeof hostTerminalConfig.windowsPty.buildNumber === 'number' &&
+        hostTerminalConfig.windowsPty.buildNumber > 0) {
+      initialWindowsPty.buildNumber = hostTerminalConfig.windowsPty.buildNumber;
+    }
+  }
+
+  var term = new Terminal({
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    cursorWidth: 2,
+    fontSize: 14,
+    fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace",
+    fontWeight: '400',
+    fontWeightBold: '600',
+    letterSpacing: 0.3,
+    lineHeight: 1.25,
+    scrollback: defaultScrollback,
+    windowsPty: initialWindowsPty,
+    theme: {
+      background: '#0A0E14',
+      foreground: '#CBD3E0',
+      cursor: '#00D4AA',
+      cursorAccent: '#0A0E14',
+      selectionBackground: 'rgba(0, 212, 170, 0.2)',
+      selectionForeground: '#FFFFFF',
+      /* ANSI colors - refined dark palette */
+      black: '#1A2029',
+      red: '#FF4757',
+      green: '#00D4AA',
+      yellow: '#FFBE0B',
+      blue: '#4DA6FF',
+      magenta: '#C084FC',
+      cyan: '#22D3EE',
+      white: '#CBD3E0',
+      brightBlack: '#3A4452',
+      brightRed: '#FF6B7A',
+      brightGreen: '#3DFFCF',
+      brightYellow: '#FFD060',
+      brightBlue: '#7CC4FF',
+      brightMagenta: '#D8A9FF',
+      brightCyan: '#5EE8F7',
+      brightWhite: '#F0F4F8'
+    }
+  });
+
+  var fitAddon = new FitAddon.FitAddon();
+  var manualGeometryLock = false;
+  var lockedGeometryCols = 0;
+  var lockedGeometryRows = 0;
+  var baseFontSize = 14;
+  var minimumLockedFontSize = 6;
+  var lastReportedCols = 0;
+  var lastReportedRows = 0;
+  var clipboardReadRequestSeq = 0;
+  var clipboardReadRequests = {};
+  var clipboardReadFallbackTimeoutMs = 1000;
+  var pendingFullRefresh = false;
+  var nativeShortcutPasteInProgress = false;
+
+  term.loadAddon(fitAddon);
+  term.open(terminalElement);
+  fitAddon.fit();
+
+  window.addEventListener('keyup', function(event) {
+    var key = (event.key || '').toLowerCase();
+    if (key === 'v' || key === 'control' || key === 'shift' || key === 'alt') {
+      nativeShortcutPasteInProgress = false;
+    }
+  }, true);
+
+  window.addEventListener('blur', function() {
+    nativeShortcutPasteInProgress = false;
+  });
+
+  function syncHostLayout() {
+    if (manualGeometryLock) {
+      terminalHost.classList.add('geometry-locked');
+      if (term.options.scrollback !== defaultScrollback) {
+        term.options.scrollback = defaultScrollback;
+      }
+      return;
+    }
+
+    terminalHost.classList.remove('geometry-locked');
+    terminalHost.classList.remove('geometry-overflowing');
+    if (term.options.scrollback !== defaultScrollback) {
+      term.options.scrollback = defaultScrollback;
+    }
+  }
+
+  function stabilizeViewport() {
+    if (typeof term.clearTextureAtlas === 'function') {
+      term.clearTextureAtlas();
+    }
+
+    term.scrollToBottom();
+    term.refresh(0, Math.max(0, term.rows - 1));
+  }
+
+  function scheduleFullRefresh() {
+    if (pendingFullRefresh) {
+      return;
+    }
+
+    pendingFullRefresh = true;
+    window.requestAnimationFrame(function() {
+      pendingFullRefresh = false;
+      term.refresh(0, Math.max(0, term.rows - 1));
+    });
+  }
+
+  function needsAnsiRefresh(data) {
+    if (!data || typeof data !== 'string') {
+      return false;
+    }
+
+    return data.indexOf('\r') >= 0 || data.indexOf('\x1b') >= 0;
+  }
+
+  function applyHostTerminalConfig(config) {
+    if (!config || !config.windowsPty) {
+      return;
+    }
+
+    var nextWindowsPty = {
+      backend: config.windowsPty.backend || 'conpty'
+    };
+
+    if (typeof config.windowsPty.buildNumber === 'number' && config.windowsPty.buildNumber > 0) {
+      nextWindowsPty.buildNumber = config.windowsPty.buildNumber;
+    }
+
+    term.options.windowsPty = nextWindowsPty;
+    stabilizeViewport();
+  }
+
+  function postResize(cols, rows, force) {
+    if (!(window.chrome && window.chrome.webview)) {
+      return;
+    }
+
+    if (!force && cols === lastReportedCols && rows === lastReportedRows) {
+      return;
+    }
+
+    lastReportedCols = cols;
+    lastReportedRows = rows;
+    window.chrome.webview.postMessage(JSON.stringify({
+      type: 'resize', cols: cols, rows: rows
+    }));
+  }
+
+  function fitAndNotify(force) {
+    if (manualGeometryLock) {
+      applyManualGeometryLayout();
+      return;
+    }
+
+    syncHostLayout();
+    terminalElement.style.width = '100%';
+    terminalElement.style.height = '100%';
+    fitAddon.fit();
+    stabilizeViewport();
+
+    if (term.cols > 0 && term.rows > 0) {
+      postResize(term.cols, term.rows, force === true);
+    }
+  }
+
+  function getCellMetrics() {
+    if (!term._core || !term._core._renderService || !term._core._renderService.dimensions) {
+      return null;
+    }
+
+    var cell = term._core._renderService.dimensions.css.cell;
+    if (!cell || !cell.width || !cell.height) {
+      return null;
+    }
+
+    return cell;
+  }
+
+  function getTerminalChromeSize() {
+    var terminalComputed = window.getComputedStyle(terminalElement);
+    var xtermComputed = term.element
+      ? window.getComputedStyle(term.element)
+      : terminalComputed;
+
+    return {
+      paddingX:
+        parseInt(xtermComputed.getPropertyValue('padding-left') || '0', 10) +
+        parseInt(xtermComputed.getPropertyValue('padding-right') || '0', 10),
+      paddingY:
+        parseInt(xtermComputed.getPropertyValue('padding-top') || '0', 10) +
+        parseInt(xtermComputed.getPropertyValue('padding-bottom') || '0', 10),
+      borderX:
+        parseInt(terminalComputed.getPropertyValue('border-left-width') || '0', 10) +
+        parseInt(terminalComputed.getPropertyValue('border-right-width') || '0', 10),
+      borderY:
+        parseInt(terminalComputed.getPropertyValue('border-top-width') || '0', 10) +
+        parseInt(terminalComputed.getPropertyValue('border-bottom-width') || '0', 10)
+    };
+  }
+
+  function measureLockedGeometrySize(cols, rows) {
+    var cell = getCellMetrics();
+    if (!cell) {
+      return null;
+    }
+
+    var chrome = getTerminalChromeSize();
+    return {
+      width: Math.ceil(cols * cell.width + chrome.paddingX + chrome.borderX),
+      height: Math.ceil(rows * cell.height + chrome.paddingY + chrome.borderY)
+    };
+  }
+
+  function applyManualGeometryLayout() {
+    if (!manualGeometryLock || lockedGeometryCols <= 0 || lockedGeometryRows <= 0) {
+      return;
+    }
+
+    if (term.options.fontSize !== baseFontSize) {
+      term.options.fontSize = baseFontSize;
+    }
+
+    var measured = measureLockedGeometrySize(lockedGeometryCols, lockedGeometryRows);
+    if (!measured) {
+      return;
+    }
+
+    var hostWidth = Math.max(1, terminalHost.clientWidth);
+    var hostHeight = Math.max(1, terminalHost.clientHeight);
+    var scale = Math.min(hostWidth / measured.width, hostHeight / measured.height);
+
+    if (!Number.isFinite(scale) || scale <= 0) {
+      scale = 1;
+    }
+
+    var targetFontSize = baseFontSize;
+    if (scale < 1) {
+      targetFontSize = Math.max(minimumLockedFontSize, Math.floor(baseFontSize * scale * 100) / 100);
+    }
+
+    if (Math.abs(term.options.fontSize - targetFontSize) > 0.01) {
+      term.options.fontSize = targetFontSize;
+      measured = measureLockedGeometrySize(lockedGeometryCols, lockedGeometryRows) || measured;
+    }
+
+    var isOverflowing = measured.width > hostWidth || measured.height > hostHeight;
+    if (isOverflowing) {
+      terminalHost.classList.add('geometry-overflowing');
+    } else {
+      terminalHost.classList.remove('geometry-overflowing');
+    }
+
+    terminalElement.style.width = measured.width + 'px';
+    terminalElement.style.height = measured.height + 'px';
+    stabilizeViewport();
+  }
+
+  function setManualGeometry(cols, rows) {
+    manualGeometryLock = true;
+    lockedGeometryCols = cols;
+    lockedGeometryRows = rows;
+    syncHostLayout();
+
+    if (term.cols !== cols || term.rows !== rows) {
+      term.resize(cols, rows);
+    }
+
+    lastReportedCols = cols;
+    lastReportedRows = rows;
+    applyManualGeometryLayout();
+  }
+
+  function resolveClipboardReadRequest(requestId, text) {
+    var resolver = clipboardReadRequests[requestId];
+    if (!resolver) {
+      return;
+    }
+
+    delete clipboardReadRequests[requestId];
+    resolver(text || '');
+  }
+
+  function requestClipboardReadFromHost() {
+    if (!(window.chrome && window.chrome.webview)) {
+      return Promise.resolve('');
+    }
+
+    return new Promise(function(resolve) {
+      var requestId = 'clip-' + (++clipboardReadRequestSeq);
+      clipboardReadRequests[requestId] = resolve;
+
+      window.chrome.webview.postMessage(JSON.stringify({
+        type: 'clipboard.read',
+        requestId: requestId
+      }));
+
+      setTimeout(function() {
+        resolveClipboardReadRequest(requestId, '');
+      }, clipboardReadFallbackTimeoutMs);
+    });
+  }
+
+  async function readClipboardText() {
+    if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+      try {
+        return await navigator.clipboard.readText();
+      } catch (error) {
+      }
+    }
+
+    return requestClipboardReadFromHost();
+  }
+
+  function writeClipboardTextViaExecCommand(text) {
+    try {
+      var helper = document.createElement('textarea');
+      helper.value = text;
+      helper.setAttribute('readonly', '');
+      helper.style.position = 'fixed';
+      helper.style.opacity = '0';
+      helper.style.left = '-10000px';
+      helper.style.top = '-10000px';
+      document.body.appendChild(helper);
+      helper.focus();
+      helper.select();
+      var copied = document.execCommand && document.execCommand('copy');
+      document.body.removeChild(helper);
+      return !!copied;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async function writeClipboardText(text) {
+    if (text === null || text === undefined || text === '') {
+      return false;
+    }
+
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (error) {
+      }
+    }
+
+    if (window.chrome && window.chrome.webview) {
+      window.chrome.webview.postMessage(JSON.stringify({
+        type: 'clipboard.write',
+        text: text
+      }));
+      return true;
+    }
+
+    return writeClipboardTextViaExecCommand(text);
+  }
+
+  function copyTerminalSelection() {
+    var selection = term.getSelection();
+    if (!selection) {
+      return;
+    }
+
+    writeClipboardText(selection);
+  }
+
+  async function pasteClipboardToTerminal() {
+    var text = await readClipboardText();
+    if (!text) {
+      return;
+    }
+
+    term.focus();
+    term.paste(text);
+  }
+
+  function selectAllTerminalText() {
+    term.selectAll();
+  }
+
+  function consumeTerminalShortcut(event, action) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof action === 'function') {
+      action();
+    }
+    return false;
+  }
+
+  function handleTerminalShortcutKeydown(event) {
+    var key = (event.key || '').toLowerCase();
+    var isInsert = event.key === 'Insert';
+    var hasCtrl = event.ctrlKey;
+    var hasShift = event.shiftKey;
+    var hasAlt = event.altKey;
+
+    // Keep right-click menu unchanged; only handle explicit keyboard shortcuts.
+    if (hasCtrl && hasShift && !hasAlt && key === 'c') {
+      if (event.repeat) {
+        return consumeTerminalShortcut(event);
+      }
+      return consumeTerminalShortcut(event, copyTerminalSelection);
+    }
+
+    if (hasCtrl && hasShift && !hasAlt && key === 'v') {
+      if (event.repeat || nativeShortcutPasteInProgress) {
+        return consumeTerminalShortcut(event);
+      }
+
+      nativeShortcutPasteInProgress = true;
+      return true;
+    }
+
+    if (hasCtrl && !hasShift && !hasAlt && isInsert) {
+      if (event.repeat) {
+        return consumeTerminalShortcut(event);
+      }
+      return consumeTerminalShortcut(event, copyTerminalSelection);
+    }
+
+    if (hasCtrl && hasShift && !hasAlt && key === 'a') {
+      if (event.repeat) {
+        return consumeTerminalShortcut(event);
+      }
+      return consumeTerminalShortcut(event, selectAllTerminalText);
+    }
+
+    return true;
+  }
+
+  window.handleHostClipboardReadResult = function(requestId, text) {
+    resolveClipboardReadRequest(requestId, text);
+  };
+
+  term.attachCustomKeyEventHandler(handleTerminalShortcutKeydown);
+
+  window.writeTerminal = function(data) {
+    term.write(data, function() {
+      if (manualGeometryLock) {
+        stabilizeViewport();
+      } else if (needsAnsiRefresh(data)) {
+        scheduleFullRefresh();
+      }
+    });
+  };
+
+  window.resetTerminal = function() {
+    term.reset();
+  };
+
+  window.replaceTerminalBuffer = function(data) {
+    term.reset();
+    if (!data) {
+      scheduleFullRefresh();
+      return;
+    }
+    term.write(data, function() {
+      if (manualGeometryLock) {
+        stabilizeViewport();
+      } else {
+        scheduleFullRefresh();
+      }
+    });
+  };
+
+  window.setTerminalGeometry = function(cols, rows) {
+    if (cols > 0 && rows > 0) {
+      setManualGeometry(cols, rows);
+    }
+  };
+
+  window.fitTerminalToContainer = function() {
+    manualGeometryLock = false;
+    lockedGeometryCols = 0;
+    lockedGeometryRows = 0;
+    if (term.options.fontSize !== baseFontSize) {
+      term.options.fontSize = baseFontSize;
+    }
+    syncHostLayout();
+    fitAndNotify(true);
+  };
+
+  window.configureHostTerminal = function(config) {
+    hostTerminalConfig = config || null;
+    applyHostTerminalConfig(hostTerminalConfig);
+  };
+
+  window.getScreenSnapshot = function() {
+    var buf = term.buffer.active;
+    var lines = [];
+    var startLine = buf.baseY;
+    for (var i = 0; i < term.rows; i++) {
+      var line = buf.getLine(startLine + i);
+      lines.push(line ? line.translateToString(true) : '');
+    }
+    while (lines.length > 0 && lines[lines.length - 1] === '') {
+      lines.pop();
+    }
+    // Detect buffer type: prefer buf.type, fallback to identity check
+    var bufType = buf.type;
+    if (!bufType) {
+      bufType = (buf === term.buffer.alternate) ? 'alternate' : 'normal';
+    }
+    return JSON.stringify({
+      type: bufType,
+      cursorX: buf.cursorX,
+      cursorY: buf.cursorY,
+      cols: term.cols,
+      rows: term.rows,
+      lines: lines
+    });
+  };
+
+  if (window.chrome && window.chrome.webview) {
+    term.onData(function(data) {
+      window.chrome.webview.postMessage(JSON.stringify({ type: 'input', data: data }));
+    });
+
+    new ResizeObserver(function() {
+      if (manualGeometryLock) {
+        applyManualGeometryLayout();
+      } else {
+        fitAndNotify(false);
+      }
+    }).observe(terminalHost);
+
+    setTimeout(function() {
+      fitAndNotify(true);
+    }, 200);
+  }
+
+  applyHostTerminalConfig(hostTerminalConfig);
+  syncHostLayout();
+</script>
+</body>
+</html>

@@ -621,6 +621,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     final server = params['server'] ?? '';
     final groupId = params['groupId'] ?? '';
     final groupSecret = params['groupSecret'] ?? '';
+    final serverDeviceId = params['serverDeviceId'] ?? '';
 
     if (server.isEmpty || groupSecret.isEmpty) {
       setState(() {
@@ -640,15 +641,24 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
         });
         return;
       }
+      final httpUrl = _wsUrlToHttpUrl(server);
+      if (httpUrl.isEmpty) {
+        setState(() {
+          parseError = _t(
+            '无法解析设备HTTP地址',
+            'Unable to parse device HTTP address',
+          );
+        });
+        return;
+      }
       setState(() {
-        scanStatus = _t('正在切换到新服务器...', 'Switching to new server...');
+        inviteDeviceName = serverDeviceId.isNotEmpty
+            ? serverDeviceId
+            : _t('新设备', 'New Device');
+        scanInviteHttpUrl = httpUrl;
+        showInviteConfirmDialog = true;
         parseError = '';
       });
-      ConnectionManager.instance.requestGroupServerChangeExternal(
-        server,
-        groupId,
-        groupSecret,
-      );
       return;
     }
 

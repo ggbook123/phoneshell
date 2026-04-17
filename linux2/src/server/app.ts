@@ -3,6 +3,7 @@ import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import os from 'node:os';
 import { URL, fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import type { AppConfig } from '../config/config.js';
@@ -127,6 +128,23 @@ function normalizeHostWithPort(host: string, port: number): string {
   return `${trimmed}:${port}`;
 }
 
+function detectLanHost(): string {
+  const interfaces = os.networkInterfaces();
+  for (const name in interfaces) {
+    const entries = interfaces[name] as any[] | undefined;
+    if (!entries) continue;
+    for (const entry of entries) {
+      const family = typeof entry.family === 'string' ? entry.family : String(entry.family);
+      if (entry.internal || family !== 'IPv4') continue;
+      const address = (entry.address || '').trim();
+      if (address && net.isIP(address) === 4 && !isLocalHost(address)) {
+        return address;
+      }
+    }
+  }
+  return '';
+}
+
 function fetchText(url: string, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers: { 'User-Agent': 'phoneshell' } }, (res) => {
@@ -222,6 +240,9 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     },
     getLocalSessionList: () => terminalManager.getSessionList(),
     getLocalTerminalSnapshot: (sessionId) => terminalManager.getSnapshot(sessionId),
+    onServerMigrationCommitted: (newServerUrl, groupId, groupSecret) => {
+      handleServerChangeCommit(newServerUrl, groupSecret, groupId);
+    },
   });
 
   // Wire terminal output: relay (standalone) vs client mode
@@ -269,6 +290,19 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
   const buildWsUrl = (host: string, port: number, useTls: boolean) =>
     `${wsScheme(useTls)}://${normalizeHostWithPort(host, port)}/ws/`;
 
+  function saveClientMembership(groupId: string, groupSecret: string, relayUrl: string): void {
+    const normalizedGroupId = groupId.trim();
+    const normalizedGroupSecret = groupSecret.trim();
+    const normalizedRelayUrl = relayUrl.trim();
+    if (!normalizedGroupId || !normalizedGroupSecret || !normalizedRelayUrl) return;
+    membershipStore.save({
+      groupId: normalizedGroupId,
+      groupSecret: normalizedGroupSecret,
+      relayUrl: normalizedRelayUrl,
+      updatedAtUtc: new Date().toISOString(),
+    });
+  }
+
   function startRelayServer(tokenOverride?: string): void {
     if (tokenOverride) effectiveToken = tokenOverride;
     relay.setAuthToken(effectiveToken);
@@ -305,14 +339,8 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
       onLocalTerminalOpen: async (_devId, shellId) => terminalManager.createSession(shellId),
       getLocalSessionList: () => terminalManager.getSessionList(),
       getLocalTerminalSnapshot: (sessionId) => terminalManager.getSnapshot(sessionId),
-      onGroupJoined: (groupId, newSecret) => {
-        if (!newSecret) return;
-        membershipStore.save({
-          groupId,
-          groupSecret: newSecret,
-          relayUrl,
-          updatedAtUtc: new Date().toISOString(),
-        });
+      onGroupJoined: (groupId, effectiveSecret) => {
+        saveClientMembership(groupId, effectiveSecret, relayUrl);
       },
       onKicked: (reason) => {
         log(`Kicked from group: ${reason}`);
@@ -337,8 +365,8 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
           log(`Server migration: prepare sent (${newServerUrl})`);
         }
       },
-      onServerChanged: (newUrl, newSecret) => {
-        handleServerChangeCommit(newUrl, newSecret);
+      onServerChanged: (newUrl, newSecret, newGroupId) => {
+        handleServerChangeCommit(newUrl, newSecret, newGroupId);
       },
     });
 
@@ -360,6 +388,52 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     }
     const port = tlsRuntime.enabled ? tlsPort : primaryPort;
     return buildWsUrl('localhost', port, tlsRuntime.enabled);
+  }
+
+  function buildHttpUrlFromWebSocketUrl(wsUrl: string): string {
+    const withoutQuery = wsUrl.split('?', 1)[0] || wsUrl;
+    return withoutQuery.replace(/^ws/, 'http').replace(/\/ws\/?$/, '');
+  }
+
+  function appendOrReplaceTokenQuery(wsUrl: string, token: string): string {
+    const trimmedUrl = wsUrl.trim();
+    const trimmedToken = token.trim();
+    if (!trimmedUrl || !trimmedToken) return trimmedUrl;
+    const encodedToken = encodeURIComponent(trimmedToken);
+    if (/token=/i.test(trimmedUrl)) {
+      return trimmedUrl.replace(/token=[^&]*/i, `token=${encodedToken}`);
+    }
+    return trimmedUrl + (trimmedUrl.includes('?') ? '&' : '?') + `token=${encodedToken}`;
+  }
+
+  function isLocalRelayUrl(url: string): boolean {
+    try {
+      const parsed = new URL(url);
+      const hostOnly = splitHostPort(parsed.host).host;
+      return !hostOnly || isLocalHost(hostOnly);
+    } catch {
+      return true;
+    }
+  }
+
+  function buildRelayUrlForMigration(): string | null {
+    if (lastResolvedServerUrl && !isLocalRelayUrl(lastResolvedServerUrl)) {
+      return lastResolvedServerUrl;
+    }
+
+    const publicHost = getRuntimePublicHost();
+    if (publicHost) {
+      const port = tlsRuntime.enabled ? tlsPort : primaryPort;
+      return buildWsUrl(publicHost, port, tlsRuntime.enabled);
+    }
+
+    const lanHost = detectLanHost();
+    if (lanHost) {
+      const port = tlsRuntime.enabled ? tlsPort : primaryPort;
+      return buildWsUrl(lanHost, port, tlsRuntime.enabled);
+    }
+
+    return null;
   }
 
   function applyPublicHostToRelay(host: string): void {
@@ -414,10 +488,11 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     return parts.join('; ');
   }
 
-  function startRelayServerForMigration(groupId: string, groupSecret: string): string {
-    const newServerUrl = lastResolvedServerUrl || buildRelayUrlFromConfig();
-    if (!config.publicHost && !resolvedPublicHost && !lastResolvedServerUrl) {
-      log('[mode] Server migration: publicHost not set, using localhost for new server URL');
+  function startRelayServerForMigration(groupId: string, groupSecret: string): string | null {
+    const newServerUrl = buildRelayUrlForMigration();
+    if (!newServerUrl) {
+      log('[mode] Server migration aborted: no reachable non-localhost relay URL available. Configure publicHost or ensure a LAN address is available.');
+      return null;
     }
     pendingServerMigration = { groupId, groupSecret, newServerUrl };
 
@@ -440,10 +515,12 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
     relay.stop();
     startRelayServer(groupSecret);
+    relay.setRelayUrl(newServerUrl);
+    lastResolvedServerUrl = newServerUrl;
     return newServerUrl;
   }
 
-  function handleServerChangeCommit(newUrl: string, newSecret: string): void {
+  function handleServerChangeCommit(newUrl: string, newSecret: string, groupId?: string): void {
     if (!newUrl || !newSecret) return;
 
     if (pendingServerMigration && pendingServerMigration.newServerUrl === newUrl) {
@@ -454,9 +531,22 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
       return;
     }
 
+    const effectiveGroupId =
+      (groupId || '').trim() ||
+      pendingServerMigration?.groupId ||
+      relay.getGroup()?.groupId ||
+      groupStore.loadGroup()?.groupId ||
+      membershipStore.load()?.groupId ||
+      '';
+    saveClientMembership(effectiveGroupId, newSecret, newUrl);
+    pendingServerMigration = null;
+
     if (modeManager.isRelay()) {
       groupStore.clearGroup();
       modeManager.transitionToClientFromRelay(newUrl);
+    } else if (modeManager.isStandalone() && relay.getGroup()) {
+      groupStore.clearGroup();
+      modeManager.transitionToClient(newUrl, '');
     }
 
     startRelayClient(newUrl, '', newSecret);
@@ -616,8 +706,9 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
     // --- Standalone QR code endpoint ---
     if (pathname === '/api/standalone/qr.png') {
-      const serverUrl = resolveServerUrl(req);
-      const httpUrl = serverUrl.replace(/^ws/, 'http').replace(/\/ws\/?$/, '');
+      const baseServerUrl = resolveServerUrl(req);
+      const serverUrl = appendOrReplaceTokenQuery(baseServerUrl, effectiveToken);
+      const httpUrl = buildHttpUrlFromWebSocketUrl(baseServerUrl);
       const qrPayload = buildStandalonePayload(httpUrl, serverUrl, deviceId, displayName);
       try {
         const png = await generateQrPng(qrPayload);
@@ -631,8 +722,9 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
     // --- Standalone device info ---
     if (pathname === '/api/standalone/info') {
-      const serverUrl = resolveServerUrl(req);
-      const httpUrl = serverUrl.replace(/^ws/, 'http').replace(/\/ws\/?$/, '');
+      const baseServerUrl = resolveServerUrl(req);
+      const serverUrl = appendOrReplaceTokenQuery(baseServerUrl, effectiveToken);
+      const httpUrl = buildHttpUrlFromWebSocketUrl(baseServerUrl);
       writeJson(res, 200, {
         deviceId,
         displayName,
