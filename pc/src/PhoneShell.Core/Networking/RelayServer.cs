@@ -42,6 +42,7 @@ public sealed class RelayServer : IDisposable
     public event Action<List<GroupMemberInfo>>? GroupMemberListChanged;
     public Func<string, Task<string>>? LocalTerminalSnapshotProvider { get; set; } // sessionId -> snapshot
     public Func<string, (int Cols, int Rows)>? LocalTerminalSizeProvider { get; set; } // sessionId -> size
+    public Func<ProbeSnapshot>? LocalProbeSnapshotProvider { get; set; }
 
     /// <summary>
     /// Custom HTTP request handler. Return true if the request was handled.
@@ -371,6 +372,11 @@ public sealed class RelayServer : IDisposable
     public event Action<string, List<SessionInfo>>? RemoteSessionListReceived; // deviceId, sessions
 
     /// <summary>
+    /// Event raised when a device probe snapshot is returned to the server PC.
+    /// </summary>
+    public event Action<string, ProbeSnapshot>? RemoteProbeSnapshotReceived; // requestId, snapshot
+
+    /// <summary>
     /// Event raised when a remote device sends terminal output back.
     /// Used by server-mode PC to display remote terminal output.
     /// </summary>
@@ -467,6 +473,36 @@ public sealed class RelayServer : IDisposable
         });
         await SendAsync(client, msg);
         Log?.Invoke($"Requested session list from device {deviceId}");
+    }
+
+    public async Task RequestProbeSnapshotFromDeviceAsync(string deviceId, string requestId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(requestId))
+            return;
+
+        if (!_devices.TryGetValue(deviceId, out var device))
+            return;
+
+        if (device.IsLocal)
+        {
+            var snapshot = LocalProbeSnapshotProvider?.Invoke();
+            if (snapshot is not null)
+                RemoteProbeSnapshotReceived?.Invoke(requestId, snapshot);
+            return;
+        }
+
+        if (device.ClientId is null)
+            return;
+        if (!_clients.TryGetValue(device.ClientId, out var client))
+            return;
+
+        var msg = MessageSerializer.Serialize(new ProbeSnapshotRequestMessage
+        {
+            DeviceId = deviceId,
+            RequestId = requestId
+        });
+        await SendAsync(client, msg);
+        Log?.Invoke($"Requested probe snapshot from device {deviceId}");
     }
 
     public List<DeviceInfo> GetDeviceList()
@@ -849,6 +885,46 @@ public sealed class RelayServer : IDisposable
                         await SendAsync(renameClient, json);
                     }
                 }
+                break;
+
+            case ProbeSnapshotRequestMessage probeReq:
+                if (_devices.TryGetValue(probeReq.DeviceId, out var probeDevice))
+                {
+                    client.SubscribedDeviceId = probeReq.DeviceId;
+
+                    if (probeDevice.IsLocal)
+                    {
+                        var snapshot = LocalProbeSnapshotProvider?.Invoke();
+                        if (snapshot is not null)
+                        {
+                            var response = new ProbeSnapshotResponseMessage
+                            {
+                                DeviceId = probeReq.DeviceId,
+                                RequestId = probeReq.RequestId,
+                                Snapshot = snapshot
+                            };
+                            await SendAsync(client, MessageSerializer.Serialize(response));
+                        }
+                    }
+                    else if (probeDevice.ClientId is not null &&
+                             _clients.TryGetValue(probeDevice.ClientId, out var probeClient))
+                    {
+                        await SendAsync(probeClient, json);
+                    }
+                }
+                break;
+
+            case ProbeSnapshotResponseMessage probeResponse:
+                foreach (var c in _clients.Values)
+                {
+                    if (c.ClientId != client.ClientId &&
+                        string.Equals(c.SubscribedDeviceId, probeResponse.DeviceId, StringComparison.Ordinal))
+                    {
+                        await SendAsync(c, json);
+                    }
+                }
+
+                RemoteProbeSnapshotReceived?.Invoke(probeResponse.RequestId, probeResponse.Snapshot);
                 break;
 
             case QuickPanelSyncRequestMessage syncReq:

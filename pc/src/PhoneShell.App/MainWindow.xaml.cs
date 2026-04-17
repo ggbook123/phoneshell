@@ -57,6 +57,7 @@ public partial class MainWindow : Window
     private WinForms.ToolStripMenuItem? _trayExitMenuItem;
     private System.Drawing.Icon? _trayAppIcon;
     private bool _allowWindowClose;
+    private ProbeWindow? _probeWindow;
     private const string TrayLogoAssetPath = "Assets/phoneshell.png";
     private const string TrayFallbackIconAssetPath = "Assets/phoneshell.ico";
 
@@ -859,6 +860,45 @@ public partial class MainWindow : Window
         }
     }
 
+    private void WelcomeProbeButton_Click(object sender, RoutedEventArgs e)
+    {
+        OpenProbeWindowForCurrentTarget();
+    }
+
+    private void OpenProbeWindowForCurrentTarget()
+    {
+        var target = _viewModel.GetCurrentProbeTargetDescriptor();
+        if (_probeWindow is null)
+        {
+            var probeViewModel = new ProbeWindowViewModel(
+                deviceId => _viewModel.ResolveProbeTargetDescriptor(deviceId),
+                (deviceId, cancellationToken) => _viewModel.GetProbeSnapshotAsync(deviceId, cancellationToken));
+
+            _probeWindow = new ProbeWindow(probeViewModel)
+            {
+                Owner = this,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner
+            };
+            _probeWindow.Closed += ProbeWindow_Closed;
+        }
+
+        _probeWindow.Configure(target, _viewModel.IsEnglishUi);
+
+        if (!_probeWindow.IsVisible)
+            _probeWindow.Show();
+        else
+            _probeWindow.Activate();
+    }
+
+    private void ProbeWindow_Closed(object? sender, EventArgs e)
+    {
+        if (_probeWindow is null)
+            return;
+
+        _probeWindow.Closed -= ProbeWindow_Closed;
+        _probeWindow = null;
+    }
+
     private void ChatInput_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter && e.IsRepeat)
@@ -888,6 +928,13 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        if (_probeWindow is not null)
+        {
+            _probeWindow.Closed -= ProbeWindow_Closed;
+            _probeWindow.Close();
+            _probeWindow = null;
+        }
+
         _viewModel.TerminalOutputForwarded -= OnTerminalOutputForwarded;
         _viewModel.TerminalBufferReplaceRequested -= OnTerminalBufferReplaceRequested;
         _viewModel.ActiveTabChanged -= OnActiveTabChanged;
@@ -2206,6 +2253,9 @@ public partial class MainWindow : Window
     {
         if (isEnglish)
         {
+            if (WelcomeTitleText is not null) WelcomeTitleText.Text = "Welcome to PhoneShell";
+            if (WelcomeSubtitleText is not null) WelcomeSubtitleText.Text = "Select a shell type and create a new session to get started.";
+            if (WelcomeProbeButton is not null) WelcomeProbeButton.Content = "Probe";
             if (LanguageExpander is not null) LanguageExpander.Header = "Language / 语言";
             if (ServerSettingsExpander is not null) ServerSettingsExpander.Header = "Server Settings";
             if (AutoModeCheckBox is not null) AutoModeCheckBox.Content = "Auto Mode (choose server/client)";
@@ -2257,9 +2307,13 @@ public partial class MainWindow : Window
             if (RecentInputClearButton is not null) RecentInputClearButton.Content = "Clear";
             UpdateToolsToggleToolTip();
             UpdateTrayMenuLanguage(true);
+            _probeWindow?.RefreshLanguage(true);
         }
         else
         {
+            if (WelcomeTitleText is not null) WelcomeTitleText.Text = "欢迎使用 PhoneShell";
+            if (WelcomeSubtitleText is not null) WelcomeSubtitleText.Text = "选择一个终端类型，然后创建新会话开始使用。";
+            if (WelcomeProbeButton is not null) WelcomeProbeButton.Content = "探针";
             if (LanguageExpander is not null) LanguageExpander.Header = "语言 / Language";
             if (ServerSettingsExpander is not null) ServerSettingsExpander.Header = "连接设置";
             if (AutoModeCheckBox is not null) AutoModeCheckBox.Content = "自动模式（自动选择服务端/客户端）";
@@ -2311,6 +2365,7 @@ public partial class MainWindow : Window
             if (RecentInputClearButton is not null) RecentInputClearButton.Content = "清空";
             UpdateToolsToggleToolTip();
             UpdateTrayMenuLanguage(false);
+            _probeWindow?.RefreshLanguage(false);
         }
 
         _viewModel.SetUiLanguage(isEnglish);

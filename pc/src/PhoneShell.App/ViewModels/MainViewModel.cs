@@ -751,6 +751,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        CancelPendingProbeRequests();
         _autoExecCts?.Cancel();
         _autoExecCts?.Dispose();
         _aiChatService.Dispose();
@@ -1912,10 +1913,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _relayServer.LocalTerminalSnapshotProvider = CaptureTabTerminalViewAsync;
                 _relayServer.LocalTerminalSizeProvider = GetTabTerminalSize;
                 _relayServer.LocalSessionListProvider = GetLocalSessionList;
+                _relayServer.LocalProbeSnapshotProvider = CaptureLocalProbeSnapshot;
                 _relayServer.LocalQuickPanelSyncProvider = BuildQuickPanelSyncSnapshot;
                 _relayServer.LocalRecentInputAppendRequested += AppendRecentInputFromMobile;
                 _relayServer.GroupMemberListChanged += OnGroupMemberListChanged;
                 _relayServer.RemoteSessionListReceived += OnRemoteSessionListReceived;
+                _relayServer.RemoteProbeSnapshotReceived += OnProbeSnapshotReceived;
                 _relayServer.RemoteTerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
                 _relayServer.RemoteTerminalOutputReceived += OnRemoteTerminalOutputReceived;
                 _relayServer.RemoteTerminalClosedReceived += OnRemoteTerminalClosedReceived;
@@ -1990,6 +1993,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     AvailableShells = AvailableShells.Select(s => s.Id).ToList(),
                     GroupSecret = GroupSecret,
                     LocalSessionListProvider = GetLocalSessionList,
+                    LocalProbeSnapshotProvider = CaptureLocalProbeSnapshot,
                     LocalQuickPanelSyncProvider = BuildQuickPanelSyncSnapshot,
                     LocalRecentInputAppendRequested = AppendRecentInputFromMobile
                 };
@@ -2005,6 +2009,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _relayClient.GroupMemberChanged += OnGroupMemberListChanged;
                 _relayClient.SessionListReceived += OnRemoteSessionListReceived;
                 _relayClient.SessionRenameRequested += OnSessionRenameRequested;
+                _relayClient.ProbeSnapshotReceived += OnProbeSnapshotReceived;
                 _relayClient.ServerChanged += OnServerChanged;
                 _relayClient.ServerChangeRequested += OnServerChangeRequested;
                 _relayClient.GroupSecretRotated += OnGroupSecretRotated;
@@ -2063,10 +2068,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _relayServer.LocalTerminalSnapshotProvider = CaptureTabTerminalViewAsync;
                 _relayServer.LocalTerminalSizeProvider = GetTabTerminalSize;
                 _relayServer.LocalSessionListProvider = GetLocalSessionList;
+                _relayServer.LocalProbeSnapshotProvider = CaptureLocalProbeSnapshot;
                 _relayServer.LocalQuickPanelSyncProvider = BuildQuickPanelSyncSnapshot;
                 _relayServer.LocalRecentInputAppendRequested += AppendRecentInputFromMobile;
                 _relayServer.GroupMemberListChanged += OnGroupMemberListChanged;
                 _relayServer.RemoteSessionListReceived += OnRemoteSessionListReceived;
+                _relayServer.RemoteProbeSnapshotReceived += OnProbeSnapshotReceived;
                 _relayServer.RemoteTerminalOpenedReceived += OnRemoteTerminalOpenedReceived;
                 _relayServer.RemoteTerminalOutputReceived += OnRemoteTerminalOutputReceived;
                 _relayServer.RemoteTerminalClosedReceived += OnRemoteTerminalClosedReceived;
@@ -2166,6 +2173,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void StopNetwork(string reason)
     {
         OnNetworkLog($"StopNetwork: {reason}");
+        CancelPendingProbeRequests();
         if (_relayServer is not null)
         {
             _relayServer.Log -= OnNetworkLog;
@@ -2178,10 +2186,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _relayServer.LocalTerminalSnapshotProvider = null;
             _relayServer.LocalTerminalSizeProvider = null;
             _relayServer.LocalSessionListProvider = null;
+            _relayServer.LocalProbeSnapshotProvider = null;
             _relayServer.LocalQuickPanelSyncProvider = null;
             _relayServer.LocalRecentInputAppendRequested -= AppendRecentInputFromMobile;
             _relayServer.GroupMemberListChanged -= OnGroupMemberListChanged;
             _relayServer.RemoteSessionListReceived -= OnRemoteSessionListReceived;
+            _relayServer.RemoteProbeSnapshotReceived -= OnProbeSnapshotReceived;
             _relayServer.RemoteTerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
             _relayServer.RemoteTerminalOutputReceived -= OnRemoteTerminalOutputReceived;
             _relayServer.RemoteTerminalClosedReceived -= OnRemoteTerminalClosedReceived;
@@ -2204,6 +2214,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _relayClient.GroupMemberChanged -= OnGroupMemberListChanged;
             _relayClient.SessionListReceived -= OnRemoteSessionListReceived;
             _relayClient.SessionRenameRequested -= OnSessionRenameRequested;
+            _relayClient.ProbeSnapshotReceived -= OnProbeSnapshotReceived;
             _relayClient.ServerChanged -= OnServerChanged;
             _relayClient.ServerChangeRequested -= OnServerChangeRequested;
             _relayClient.GroupSecretRotated -= OnGroupSecretRotated;
@@ -3790,9 +3801,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 _relayServer.LocalTerminalSnapshotProvider = null;
                 _relayServer.LocalTerminalSizeProvider = null;
                 _relayServer.LocalSessionListProvider = null;
+                _relayServer.LocalProbeSnapshotProvider = null;
                 _relayServer.LocalQuickPanelSyncProvider = null;
                 _relayServer.LocalRecentInputAppendRequested -= AppendRecentInputFromMobile;
                 _relayServer.GroupMemberListChanged -= OnGroupMemberListChanged;
+                _relayServer.RemoteProbeSnapshotReceived -= OnProbeSnapshotReceived;
                 _relayServer.RemoteTerminalOpenedReceived -= OnRemoteTerminalOpenedReceived;
                 _relayServer.RemoteTerminalOutputReceived -= OnRemoteTerminalOutputReceived;
                 _relayServer.RemoteTerminalClosedReceived -= OnRemoteTerminalClosedReceived;
@@ -3815,6 +3828,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 AvailableShells = AvailableShells.Select(s => s.Id).ToList(),
                 InviteCode = inviteCode,
                 LocalSessionListProvider = GetLocalSessionList,
+                LocalProbeSnapshotProvider = CaptureLocalProbeSnapshot,
                 LocalQuickPanelSyncProvider = BuildQuickPanelSyncSnapshot,
                 LocalRecentInputAppendRequested = AppendRecentInputFromMobile
             };
@@ -3830,6 +3844,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _relayClient.GroupMemberChanged += OnGroupMemberListChanged;
             _relayClient.SessionListReceived += OnRemoteSessionListReceived;
             _relayClient.SessionRenameRequested += OnSessionRenameRequested;
+            _relayClient.ProbeSnapshotReceived += OnProbeSnapshotReceived;
             _relayClient.ServerChanged += OnServerChanged;
             _relayClient.ServerChangeRequested += OnServerChangeRequested;
             _relayClient.GroupSecretRotated += OnGroupSecretRotated;
@@ -3910,6 +3925,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public void SetUiLanguage(bool isEnglish)
     {
+        IsEnglishUi = isEnglish;
         var nextLabel = isEnglish ? DefaultLocalSessionTargetEn : DefaultLocalSessionTargetZh;
         if (string.Equals(_localSessionTargetLabel, nextLabel, StringComparison.Ordinal))
             return;

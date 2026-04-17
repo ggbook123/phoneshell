@@ -1,3 +1,5 @@
+using PhoneShell.Core.Models;
+
 namespace PhoneShell.Core.Protocol;
 
 /// <summary>
@@ -71,6 +73,21 @@ public sealed class SessionRenameMessage
     public string DeviceId { get; init; } = string.Empty;
     public string SessionId { get; init; } = string.Empty;
     public string Title { get; init; } = string.Empty;
+}
+
+public sealed class ProbeSnapshotRequestMessage
+{
+    public string Type => "probe.snapshot.request";
+    public string DeviceId { get; init; } = string.Empty;
+    public string RequestId { get; init; } = string.Empty;
+}
+
+public sealed class ProbeSnapshotResponseMessage
+{
+    public string Type => "probe.snapshot.response";
+    public string DeviceId { get; init; } = string.Empty;
+    public string RequestId { get; init; } = string.Empty;
+    public ProbeSnapshot Snapshot { get; init; } = new();
 }
 
 // --- Quick panel sync ---

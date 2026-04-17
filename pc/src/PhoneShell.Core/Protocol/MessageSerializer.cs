@@ -54,6 +54,8 @@ public static class MessageSerializer
             "session.list.request" => Deserialize<SessionListRequestMessage>(json),
             "session.list" => Deserialize<SessionListMessage>(json),
             "session.rename" => Deserialize<SessionRenameMessage>(json),
+            "probe.snapshot.request" => Deserialize<ProbeSnapshotRequestMessage>(json),
+            "probe.snapshot.response" => Deserialize<ProbeSnapshotResponseMessage>(json),
             "quickpanel.sync.request" => Deserialize<QuickPanelSyncRequestMessage>(json),
             "quickpanel.sync" => Deserialize<QuickPanelSyncMessage>(json),
             "quickpanel.recent.append" => Deserialize<QuickPanelRecentAppendMessage>(json),

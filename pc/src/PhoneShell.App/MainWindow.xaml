@@ -1374,10 +1374,10 @@
                                                SnapsToDevicePixels="True" />
                                     </Border>
 
-                                    <TextBlock Text="Welcome to PhoneShell" FontSize="26" FontWeight="SemiBold"
+                                    <TextBlock x:Name="WelcomeTitleText" Text="Welcome to PhoneShell" FontSize="26" FontWeight="SemiBold"
                                                HorizontalAlignment="Center" Foreground="{StaticResource Text1Brush}"
                                                Margin="0,0,0,8" FontFamily="{StaticResource DisplayFont}" />
-                                    <TextBlock Text="Select a shell type and create a new session to get started."
+                                    <TextBlock x:Name="WelcomeSubtitleText" Text="Select a shell type and create a new session to get started."
                                                FontSize="13" Foreground="{StaticResource Text3Brush}"
                                                HorizontalAlignment="Center" Margin="0,0,0,32"
                                                TextWrapping="Wrap" TextAlignment="Center" MaxWidth="420"
@@ -1423,12 +1423,20 @@
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
 
-                                    <!-- New Session button -->
-                                    <Button x:Name="WelcomeNewSessionButton" Content="{Binding NewSessionTargetButtonText}" FontSize="14" Padding="24,11"
-                                            HorizontalAlignment="Center"
-                                            Style="{StaticResource AccentButton}"
-                                            FontFamily="{StaticResource BodyFont}"
-                                            Command="{Binding NewSessionCommand}" />
+                                    <StackPanel Orientation="Horizontal"
+                                                HorizontalAlignment="Center">
+                                        <Button x:Name="WelcomeNewSessionButton" Content="{Binding NewSessionTargetButtonText}" FontSize="14" Padding="24,11"
+                                                HorizontalAlignment="Center"
+                                                Margin="0,0,12,0"
+                                                Style="{StaticResource AccentButton}"
+                                                FontFamily="{StaticResource BodyFont}"
+                                                Command="{Binding NewSessionCommand}" />
+                                        <Button x:Name="WelcomeProbeButton" Content="探针" FontSize="14" Padding="24,11"
+                                                HorizontalAlignment="Center"
+                                                Style="{StaticResource GhostButton}"
+                                                FontFamily="{StaticResource BodyFont}"
+                                                Click="WelcomeProbeButton_Click" />
+                                    </StackPanel>
                                 </StackPanel>
 
                             </Grid>

@@ -77,6 +77,9 @@ public sealed class RelayClient : IDisposable
     /// <summary>Raised when the server requests a local session rename.</summary>
     public event Action<string, string, string>? SessionRenameRequested; // deviceId, sessionId, title
 
+    /// <summary>Raised when a probe snapshot is received from a target device.</summary>
+    public event Action<string, ProbeSnapshot>? ProbeSnapshotReceived; // requestId, snapshot
+
     /// <summary>Raised when terminal output is received from a remote device.</summary>
     public event Action<string, string, string, long>? TerminalOutputReceived; // deviceId, sessionId, data, outputSeq
 
@@ -118,6 +121,9 @@ public sealed class RelayClient : IDisposable
 
     /// <summary>Provides local session list when a remote client requests it.</summary>
     public Func<List<SessionInfo>>? LocalSessionListProvider { get; set; }
+
+    /// <summary>Provides a local probe snapshot when a remote client requests it.</summary>
+    public Func<ProbeSnapshot>? LocalProbeSnapshotProvider { get; set; }
 
     /// <summary>Provides quick panel snapshot when a remote client requests it.</summary>
     public Func<string, QuickPanelSyncMessage>? LocalQuickPanelSyncProvider { get; set; }
@@ -299,6 +305,21 @@ public sealed class RelayClient : IDisposable
             DeviceId = deviceId,
             SessionId = sessionId,
             Title = trimmedTitle
+        });
+        await SendAsync(msg);
+    }
+
+    /// <summary>Request a probe snapshot from a target device.</summary>
+    public async Task SendProbeSnapshotRequestAsync(string deviceId, string requestId)
+    {
+        if (_ws?.State != WebSocketState.Open) return;
+        if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(requestId))
+            return;
+
+        var msg = MessageSerializer.Serialize(new ProbeSnapshotRequestMessage
+        {
+            DeviceId = deviceId,
+            RequestId = requestId
         });
         await SendAsync(msg);
     }
@@ -580,6 +601,27 @@ public sealed class RelayClient : IDisposable
 
             case SessionRenameMessage rename:
                 SessionRenameRequested?.Invoke(rename.DeviceId, rename.SessionId, rename.Title);
+                break;
+
+            case ProbeSnapshotRequestMessage probeReq:
+                if (string.Equals(probeReq.DeviceId, DeviceId, StringComparison.Ordinal))
+                {
+                    var snapshot = LocalProbeSnapshotProvider?.Invoke();
+                    if (snapshot is not null)
+                    {
+                        var response = new ProbeSnapshotResponseMessage
+                        {
+                            DeviceId = DeviceId,
+                            RequestId = probeReq.RequestId,
+                            Snapshot = snapshot
+                        };
+                        _ = SendAsync(MessageSerializer.Serialize(response));
+                    }
+                }
+                break;
+
+            case ProbeSnapshotResponseMessage probeResponse:
+                ProbeSnapshotReceived?.Invoke(probeResponse.RequestId, probeResponse.Snapshot);
                 break;
 
             case SessionListRequestMessage sessionReq:
