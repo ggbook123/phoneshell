@@ -1,4 +1,4 @@
-import type { SessionInfo } from '../protocol/messages.js';
+import type { SessionInfo, Message } from '../protocol/messages.js';
 type LogFn = (msg: string) => void;
 export interface RelayClientCallbacks {
     onLocalTerminalInput?: (sessionId: string, data: string) => void;
@@ -17,6 +17,7 @@ export interface RelayClientCallbacks {
     onGroupJoined?: (groupId: string, groupSecret: string) => void;
     onServerChangeRequested?: (groupId: string, groupSecret: string) => void;
     onServerChanged?: (newUrl: string, groupSecret: string, groupId: string) => void;
+    onMessage?: (message: Message) => void;
 }
 export declare class RelayClient {
     private ws;

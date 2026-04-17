@@ -5,7 +5,7 @@ import path from 'node:path';
 import net from 'node:net';
 import os from 'node:os';
 import { URL, fileURLToPath } from 'node:url';
-import { WebSocketServer } from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import { RelayServer } from '../relay/relay-server.js';
 import { RelayClient } from '../relay/relay-client.js';
 import { ModeManager } from '../relay/mode-manager.js';
@@ -258,8 +258,8 @@ export function createApp(config) {
             cleanupOutputChain(sessionId);
         };
     }
-    // Set auth token (server mode only)
-    let effectiveToken = config.groupSecret || config.relayAuthToken;
+    const defaultAuthToken = (config.groupSecret || config.relayAuthToken || '').trim();
+    let effectiveToken = defaultAuthToken;
     // Mode manager for standalone ↔ client transitions
     const modeManager = new ModeManager();
     modeManager.setLogger((msg) => log(`[mode] ${msg}`));
@@ -268,15 +268,264 @@ export function createApp(config) {
     let resolvedPublicHost = '';
     let panelAccessCache = panelAccessDefault;
     let panelAccessCacheAt = 0;
+    let clientDevicesCache = [];
+    let clientGroupCache = null;
+    const clientPanelSockets = new Set();
     const wsScheme = (useTls) => (useTls ? 'wss' : 'ws');
     const httpScheme = (useTls) => (useTls ? 'https' : 'http');
     const buildWsUrl = (host, port, useTls) => `${wsScheme(useTls)}://${normalizeHostWithPort(host, port)}/ws/`;
+    function cloneDeviceInfo(device) {
+        return {
+            deviceId: device.deviceId,
+            displayName: device.displayName,
+            os: device.os,
+            isOnline: !!device.isOnline,
+            availableShells: Array.isArray(device.availableShells) ? [...device.availableShells] : [],
+        };
+    }
+    function cloneGroupMemberInfo(member) {
+        return {
+            deviceId: member.deviceId,
+            displayName: member.displayName,
+            os: member.os,
+            role: member.role,
+            isOnline: !!member.isOnline,
+            availableShells: Array.isArray(member.availableShells) ? [...member.availableShells] : [],
+        };
+    }
+    function syncLocalAuthToken(token) {
+        effectiveToken = token.trim();
+        relay.setAuthToken(effectiveToken);
+    }
+    function resetLocalAuthToken() {
+        syncLocalAuthToken(defaultAuthToken);
+    }
+    function clearClientCaches() {
+        clientDevicesCache = [];
+        clientGroupCache = null;
+    }
+    function closeClientPanelSockets() {
+        for (const ws of clientPanelSockets) {
+            try {
+                ws.close();
+            }
+            catch { }
+        }
+        clientPanelSockets.clear();
+    }
+    function getSavedMembership() {
+        return membershipStore.load();
+    }
+    function getClientMembership() {
+        if (!modeManager.isClient())
+            return null;
+        const membership = getSavedMembership();
+        if (!membership)
+            return null;
+        const groupSecret = membership.groupSecret.trim();
+        if (!groupSecret)
+            return null;
+        return membership;
+    }
+    function ensureClientGroupCache(groupId = '') {
+        const membership = getSavedMembership();
+        const effectiveGroupId = groupId.trim() || clientGroupCache?.groupId || membership?.groupId || '';
+        if (!clientGroupCache) {
+            clientGroupCache = {
+                groupId: effectiveGroupId,
+                serverDeviceId: '',
+                boundMobileId: null,
+                createdAt: membership?.updatedAtUtc || new Date().toISOString(),
+                members: [],
+            };
+            return clientGroupCache;
+        }
+        if (effectiveGroupId && !clientGroupCache.groupId) {
+            clientGroupCache.groupId = effectiveGroupId;
+        }
+        return clientGroupCache;
+    }
+    function mergeClientMemberWithDevice(member) {
+        const device = clientDevicesCache.find((item) => item.deviceId === member.deviceId);
+        return {
+            deviceId: member.deviceId,
+            displayName: device?.displayName || member.displayName,
+            os: device?.os || member.os,
+            role: member.role,
+            isOnline: device?.isOnline ?? member.isOnline,
+            availableShells: device?.availableShells ? [...device.availableShells] : [...(member.availableShells || [])],
+        };
+    }
+    function syncClientGroupMembersWithDevices() {
+        if (!clientGroupCache || clientDevicesCache.length === 0)
+            return;
+        const deviceMap = new Map(clientDevicesCache.map((device) => [device.deviceId, device]));
+        clientGroupCache.members = clientGroupCache.members
+            .filter((member) => deviceMap.has(member.deviceId))
+            .map((member) => mergeClientMemberWithDevice(member));
+        if (!clientGroupCache.boundMobileId) {
+            clientGroupCache.boundMobileId = clientGroupCache.members.find((member) => member.role === 'Mobile')?.deviceId || null;
+        }
+        if (!clientGroupCache.serverDeviceId) {
+            clientGroupCache.serverDeviceId = clientGroupCache.members.find((member) => member.role === 'Server')?.deviceId || '';
+        }
+    }
+    function updateClientDevicesCache(devices) {
+        clientDevicesCache = devices.map((device) => cloneDeviceInfo(device));
+        syncClientGroupMembersWithDevices();
+    }
+    function setClientGroupMembers(members, groupId = '') {
+        const cache = ensureClientGroupCache(groupId);
+        cache.members = members.map((member) => mergeClientMemberWithDevice(cloneGroupMemberInfo(member)));
+        cache.boundMobileId = cache.members.find((member) => member.role === 'Mobile')?.deviceId || cache.boundMobileId || null;
+        cache.serverDeviceId = cache.members.find((member) => member.role === 'Server')?.deviceId || cache.serverDeviceId;
+        syncClientGroupMembersWithDevices();
+    }
+    function upsertClientGroupMember(member) {
+        const cache = ensureClientGroupCache();
+        const nextMember = mergeClientMemberWithDevice(cloneGroupMemberInfo(member));
+        const index = cache.members.findIndex((item) => item.deviceId === nextMember.deviceId);
+        if (index >= 0) {
+            cache.members[index] = nextMember;
+        }
+        else {
+            cache.members.push(nextMember);
+        }
+        if (nextMember.role === 'Mobile') {
+            cache.boundMobileId = nextMember.deviceId;
+        }
+        if (nextMember.role === 'Server') {
+            cache.serverDeviceId = nextMember.deviceId;
+        }
+    }
+    function markClientGroupMemberOffline(deviceIdToUpdate) {
+        if (!clientGroupCache)
+            return;
+        const member = clientGroupCache.members.find((item) => item.deviceId === deviceIdToUpdate);
+        if (!member)
+            return;
+        member.isOnline = false;
+    }
+    function updateClientGroupFromJoinAccepted(message) {
+        const cache = ensureClientGroupCache((message.groupId || '').trim());
+        if (message.serverDeviceId) {
+            cache.serverDeviceId = message.serverDeviceId;
+        }
+        if (message.boundMobileId !== undefined) {
+            cache.boundMobileId = message.boundMobileId || null;
+        }
+        setClientGroupMembers(Array.isArray(message.members) ? message.members : [], cache.groupId);
+    }
+    function buildClientDeviceList() {
+        if (clientDevicesCache.length > 0) {
+            return clientDevicesCache.map((device) => cloneDeviceInfo(device));
+        }
+        if (clientGroupCache?.members.length) {
+            return clientGroupCache.members.map((member) => ({
+                deviceId: member.deviceId,
+                displayName: member.displayName,
+                os: member.os,
+                isOnline: member.isOnline,
+                availableShells: [...member.availableShells],
+            }));
+        }
+        return [];
+    }
+    function buildClientGroupPayload() {
+        const membership = getSavedMembership();
+        const cache = clientGroupCache || (membership
+            ? {
+                groupId: membership.groupId,
+                serverDeviceId: '',
+                boundMobileId: null,
+                createdAt: membership.updatedAtUtc,
+                members: [],
+            }
+            : null);
+        if (!cache)
+            return null;
+        return {
+            groupId: cache.groupId,
+            serverDeviceId: cache.serverDeviceId,
+            boundMobileId: cache.boundMobileId,
+            createdAt: cache.createdAt,
+            members: cache.members.map((member) => cloneGroupMemberInfo(member)),
+        };
+    }
+    function broadcastClientPanelMessage(message) {
+        if (clientPanelSockets.size === 0)
+            return;
+        const json = serialize(message);
+        for (const ws of clientPanelSockets) {
+            if (ws.readyState !== WebSocket.OPEN)
+                continue;
+            try {
+                ws.send(json);
+            }
+            catch { }
+        }
+    }
+    function sendInitialClientPanelSnapshot(ws) {
+        try {
+            const devices = buildClientDeviceList();
+            if (devices.length > 0) {
+                ws.send(serialize({ type: 'device.list', devices }));
+            }
+            const group = buildClientGroupPayload();
+            if (group?.members && group.members.length > 0) {
+                ws.send(serialize({ type: 'group.member.list', members: group.members }));
+            }
+        }
+        catch { }
+    }
+    function requestClientDeviceList() {
+        relayClient?.send(serialize({ type: 'device.list.request' }));
+    }
+    function handleRelayClientMessage(message) {
+        switch (message.type) {
+            case 'group.join.accepted': {
+                const accepted = message;
+                updateClientGroupFromJoinAccepted(accepted);
+                break;
+            }
+            case 'device.list': {
+                const list = message;
+                updateClientDevicesCache(Array.isArray(list.devices) ? list.devices : []);
+                break;
+            }
+            case 'group.member.list': {
+                const list = message;
+                setClientGroupMembers(Array.isArray(list.members) ? list.members : []);
+                break;
+            }
+            case 'group.member.joined': {
+                const joined = message;
+                if (joined.member) {
+                    upsertClientGroupMember(joined.member);
+                }
+                break;
+            }
+            case 'group.member.left': {
+                const left = message;
+                if (left.deviceId) {
+                    markClientGroupMemberOffline(left.deviceId);
+                }
+                break;
+            }
+            case 'group.dissolved':
+                clearClientCaches();
+                break;
+        }
+        broadcastClientPanelMessage(message);
+    }
     function saveClientMembership(groupId, groupSecret, relayUrl) {
         const normalizedGroupId = groupId.trim();
         const normalizedGroupSecret = groupSecret.trim();
         const normalizedRelayUrl = relayUrl.trim();
         if (!normalizedGroupId || !normalizedGroupSecret || !normalizedRelayUrl)
             return;
+        syncLocalAuthToken(normalizedGroupSecret);
+        ensureClientGroupCache(normalizedGroupId);
         membershipStore.save({
             groupId: normalizedGroupId,
             groupSecret: normalizedGroupSecret,
@@ -289,6 +538,11 @@ export function createApp(config) {
             effectiveToken = tokenOverride;
         relay.setAuthToken(effectiveToken);
         relay.initGroup(groupStore, deviceId, displayName, os, availableShells);
+        const group = relay.getGroup();
+        if (group?.groupSecret) {
+            effectiveToken = group.groupSecret;
+            relay.setAuthToken(group.groupSecret);
+        }
         relay.registerLocalDevice(deviceId, displayName, os, availableShells);
         relay.start();
         wireTerminalOutputToRelay();
@@ -314,8 +568,12 @@ export function createApp(config) {
             onLocalTerminalOpen: async (_devId, shellId) => terminalManager.createSession(shellId),
             getLocalSessionList: () => terminalManager.getSessionList(),
             getLocalTerminalSnapshot: (sessionId) => terminalManager.getSnapshot(sessionId),
+            onMessage: (message) => {
+                handleRelayClientMessage(message);
+            },
             onGroupJoined: (groupId, effectiveSecret) => {
                 saveClientMembership(groupId, effectiveSecret, relayUrl);
+                requestClientDeviceList();
             },
             onKicked: (reason) => {
                 log(`Kicked from group: ${reason}`);
@@ -346,6 +604,9 @@ export function createApp(config) {
         });
         if (!preserveServer) {
             wireTerminalOutputToClient();
+        }
+        if (groupSecret.trim()) {
+            syncLocalAuthToken(groupSecret);
         }
         relayClient.connect(relayUrl, deviceId, displayName, os, availableShells, inviteCode, groupSecret);
     }
@@ -474,6 +735,8 @@ export function createApp(config) {
             if (!modeManager.transitionToRelayFromClient()) {
                 log('[mode] Server migration: failed to switch to relay mode (already relay?)');
             }
+            closeClientPanelSockets();
+            clearClientCaches();
         }
         else if (modeManager.isStandalone()) {
             modeManager.transitionToRelay();
@@ -492,6 +755,8 @@ export function createApp(config) {
             relayClient?.disconnect();
             relayClient = null;
             pendingServerMigration = null;
+            closeClientPanelSockets();
+            clearClientCaches();
             return;
         }
         const effectiveGroupId = (groupId || '').trim() ||
@@ -512,12 +777,38 @@ export function createApp(config) {
         }
         startRelayClient(newUrl, '', newSecret);
     }
+    function transitionToClientFromInvite(relayUrl, inviteCode) {
+        const normalizedRelayUrl = relayUrl.trim();
+        const normalizedInviteCode = inviteCode.trim();
+        if (!normalizedRelayUrl || !normalizedInviteCode)
+            return;
+        log(`[invite] Transitioning to client mode: ${normalizedRelayUrl}`);
+        pendingServerMigration = null;
+        membershipStore.clear();
+        clearClientCaches();
+        if (modeManager.isStandalone()) {
+            groupStore.clearGroup();
+            if (!modeManager.transitionToClient(normalizedRelayUrl, normalizedInviteCode)) {
+                log('[invite] Failed to transition standalone -> client before joining invite.');
+            }
+        }
+        else if (modeManager.isRelay()) {
+            groupStore.clearGroup();
+            if (!modeManager.transitionToClientFromRelay(normalizedRelayUrl)) {
+                log('[invite] Failed to transition relay -> client before joining invite.');
+            }
+        }
+        startRelayClient(normalizedRelayUrl, normalizedInviteCode, '');
+    }
     function transitionBackToStandalone() {
         if (relayClient) {
             relayClient.disconnect();
             relayClient = null;
         }
         pendingServerMigration = null;
+        clearClientCaches();
+        closeClientPanelSockets();
+        resetLocalAuthToken();
         modeManager.transitionToStandalone();
         startRelayServer();
         log('Transitioned back to standalone mode');
@@ -526,6 +817,8 @@ export function createApp(config) {
     const shouldStartAsClient = config.mode === 'client' ||
         (config.mode === 'standalone' && !!savedMembership);
     if (shouldStartAsClient && savedMembership) {
+        syncLocalAuthToken(savedMembership.groupSecret);
+        ensureClientGroupCache(savedMembership.groupId);
         modeManager.initialize('client');
         startRelayClient(savedMembership.relayUrl, '', savedMembership.groupSecret);
     }
@@ -637,19 +930,27 @@ export function createApp(config) {
             req.on('end', () => {
                 try {
                     const invite = JSON.parse(body);
-                    if (!invite.relayUrl || !invite.inviteCode) {
+                    const relayUrl = (invite.relayUrl || '').trim();
+                    const inviteCode = (invite.inviteCode || '').trim();
+                    if (!relayUrl || !inviteCode) {
                         writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'relayUrl and inviteCode are required.' });
                         return;
                     }
-                    log(`[invite] Received invite: relay=${invite.relayUrl} code=${invite.inviteCode}`);
+                    log(`[invite] Received invite: relay=${relayUrl} code=${inviteCode}`);
                     if (modeManager.isClient()) {
-                        startRelayClient(invite.relayUrl, invite.inviteCode, '');
-                        writeJson(res, 200, { status: 'accepted', relayUrl: invite.relayUrl, mode: 'client' });
+                        startRelayClient(relayUrl, inviteCode, '');
+                        writeJson(res, 200, { status: 'accepted', relayUrl, mode: 'client' });
                         return;
                     }
-                    log('[invite] Keeping server mode; starting relay client in background');
-                    startRelayClient(invite.relayUrl, invite.inviteCode, '', { preserveServer: true });
-                    writeJson(res, 200, { status: 'accepted', relayUrl: invite.relayUrl, mode: 'relay' });
+                    writeJson(res, 200, { status: 'accepted', relayUrl, mode: 'client' });
+                    setImmediate(() => {
+                        try {
+                            transitionToClientFromInvite(relayUrl, inviteCode);
+                        }
+                        catch (err) {
+                            log(`[invite] Client transition failed: ${err.message}`);
+                        }
+                    });
                 }
                 catch {
                     writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'Invalid JSON body.' });
@@ -754,6 +1055,22 @@ export function createApp(config) {
                 writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Not found.' });
                 return;
             }
+            if (modeManager.isClient()) {
+                const membership = getClientMembership();
+                if (membership) {
+                    const group = buildClientGroupPayload();
+                    writeJson(res, 200, {
+                        requiresAuth: !!effectiveToken,
+                        hasGroup: true,
+                        groupId: group?.groupId || membership.groupId,
+                        serverUrl: membership.relayUrl,
+                        qrPayload: '',
+                        hasBoundMobile: true,
+                        boundMobileOnline: !!group?.boundMobileId,
+                    });
+                    return;
+                }
+            }
             const serverUrl = resolveServerUrl(req);
             writeJson(res, 200, relay.getPanelPairingPayload(serverUrl));
             return;
@@ -792,6 +1109,18 @@ export function createApp(config) {
             const serverUrl = resolveServerUrl(req);
             const requesterAddress = req.socket.remoteAddress;
             const payload = relay.startPanelLogin(requesterAddress, serverUrl);
+            const membership = getClientMembership();
+            if (membership) {
+                writeJson(res, 200, {
+                    requestId: payload.requestId,
+                    status: 'approved',
+                    message: 'Approved.',
+                    token: membership.groupSecret,
+                    expiresAtUtc: payload.expiresAtUtc,
+                    loginQrPayload: '',
+                });
+                return;
+            }
             writeJson(res, 200, payload);
             return;
         }
@@ -803,6 +1132,18 @@ export function createApp(config) {
             const requestId = pathname.slice('/api/panel/login/status/'.length);
             if (!requestId) {
                 writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'Request ID is required.' });
+                return;
+            }
+            const membership = getClientMembership();
+            if (membership) {
+                writeJson(res, 200, {
+                    requestId,
+                    status: 'approved',
+                    message: 'Approved.',
+                    token: membership.groupSecret,
+                    expiresAtUtc: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+                    loginQrPayload: '',
+                });
                 return;
             }
             const status = relay.getPanelLoginStatus(requestId);
@@ -841,14 +1182,40 @@ export function createApp(config) {
                 return;
             }
             if (pathname === '/api/status') {
+                if (modeManager.isClient()) {
+                    const membership = getClientMembership();
+                    writeJson(res, 200, {
+                        status: 'ok',
+                        mode: 'client',
+                        relayConnected: !!relayClient?.isConnected(),
+                        relayUrl: membership?.relayUrl || '',
+                        groupId: clientGroupCache?.groupId || membership?.groupId || '',
+                        registeredDeviceCount: buildClientDeviceList().length,
+                        devices: buildClientDeviceList(),
+                    });
+                    return;
+                }
                 writeJson(res, 200, relay.buildStatusPayload());
                 return;
             }
             if (pathname === '/api/devices') {
+                if (modeManager.isClient()) {
+                    writeJson(res, 200, buildClientDeviceList());
+                    return;
+                }
                 writeJson(res, 200, relay.getDeviceList());
                 return;
             }
             if (pathname === '/api/group') {
+                if (modeManager.isClient()) {
+                    const group = buildClientGroupPayload();
+                    if (!group) {
+                        writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Group not initialized.' });
+                        return;
+                    }
+                    writeJson(res, 200, group);
+                    return;
+                }
                 const group = relay.getGroup();
                 if (!group) {
                     writeJson(res, 404, { type: 'error', code: 'not_found', message: 'Group not initialized.' });
@@ -901,6 +1268,35 @@ export function createApp(config) {
     const panelServer = panelPort && webPanelEnabled ? createServer(tlsRuntime.enabled) : null;
     // WebSocket server
     const wss = new WebSocketServer({ noServer: true });
+    const panelBridgeWss = new WebSocketServer({ noServer: true });
+    panelBridgeWss.on('connection', (ws) => {
+        clientPanelSockets.add(ws);
+        sendInitialClientPanelSnapshot(ws);
+        requestClientDeviceList();
+        const pingInterval = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.ping();
+            }
+            else {
+                clearInterval(pingInterval);
+            }
+        }, 30000);
+        ws.on('message', (data) => {
+            try {
+                relayClient?.send(data.toString('utf-8'));
+            }
+            catch (err) {
+                log(`[panel-bridge] WS proxy error: ${err.message}`);
+            }
+        });
+        ws.on('close', () => {
+            clearInterval(pingInterval);
+            clientPanelSockets.delete(ws);
+        });
+        ws.on('error', (err) => {
+            log(`[panel-bridge] Client WS error: ${err.message}`);
+        });
+    });
     const handleUpgrade = (req, socket, head) => {
         const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
         const pathname = url.pathname.replace(/\/+$/, '') || '/';
@@ -908,10 +1304,16 @@ export function createApp(config) {
             socket.destroy();
             return;
         }
-        // Reject WS connections when not in standalone/relay mode
         if (modeManager.isClient()) {
-            socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
-            socket.destroy();
+            const token = extractToken(req) || url.searchParams.get('token') || undefined;
+            if (!relay.isAuthorized(token)) {
+                socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+                socket.destroy();
+                return;
+            }
+            panelBridgeWss.handleUpgrade(req, socket, head, (ws) => {
+                panelBridgeWss.emit('connection', ws, req);
+            });
             return;
         }
         const token = extractToken(req) || url.searchParams.get('token') || undefined;
@@ -1009,6 +1411,7 @@ export function createApp(config) {
             relay.stop();
             terminalManager.disposeAll();
             wss.close();
+            panelBridgeWss.close();
             server.close();
             tlsServer?.close();
             panelServer?.close();

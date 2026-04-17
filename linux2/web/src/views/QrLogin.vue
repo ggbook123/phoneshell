@@ -97,6 +97,11 @@ async function startLogin() {
     const loginData = await loginRes.json();
     loginRequestId = loginData.requestId;
 
+    if (loginData.status === 'approved' && loginData.token) {
+      emit('authenticated', loginData.token);
+      return;
+    }
+
     if (loginData.status === 'awaiting_mobile') {
       // No mobile bound yet — show bind QR, poll login status for auto-approve
       const pairingRes = await fetch('/api/panel/pairing');

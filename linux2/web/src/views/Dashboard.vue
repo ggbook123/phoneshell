@@ -124,6 +124,7 @@ const selectedDeviceId = ref<string | null>(null);
 const activeSessionId = ref<string | null>(null);
 const isCompact = ref(false);
 const logoUrl = `${import.meta.env.BASE_URL}phoneshell-128.png`;
+const memberRoles = ref<Record<string, string>>({});
 
 const { language, setLanguage } = useLanguage();
 const labels = computed(() => language.value === 'zh'
@@ -164,13 +165,61 @@ const selectedDevice = computed(() =>
   devices.value.find(d => d.deviceId === selectedDeviceId.value)
 );
 
+function applyMemberRoles(nextDevices: DeviceInfo[]): DeviceInfo[] {
+  return nextDevices.map((device) => ({
+    ...device,
+    role: memberRoles.value[device.deviceId] || device.role,
+  }));
+}
+
+function requestSelectedSessions() {
+  if (!selectedDeviceId.value) return;
+  ws.send({ type: 'session.list.request', deviceId: selectedDeviceId.value });
+}
+
+function syncDeviceSelection() {
+  if (selectedDeviceId.value && !devices.value.some((device) => device.deviceId === selectedDeviceId.value)) {
+    selectedDeviceId.value = null;
+    activeSessionId.value = null;
+    sessions.value = [];
+  }
+  if (!selectedDeviceId.value && devices.value.length > 0) {
+    selectDevice(devices.value[0].deviceId);
+  }
+}
+
+function setDevices(nextDevices: DeviceInfo[]) {
+  devices.value = applyMemberRoles(Array.isArray(nextDevices) ? nextDevices : []);
+  syncDeviceSelection();
+}
+
+function setMemberRoleList(members: Array<{ deviceId: string; role: string }>) {
+  const nextRoles: Record<string, string> = {};
+  for (const member of members) {
+    if (member?.deviceId) {
+      nextRoles[member.deviceId] = member.role;
+    }
+  }
+  memberRoles.value = nextRoles;
+  devices.value = applyMemberRoles(devices.value);
+}
+
+function upsertMemberRole(member: { deviceId: string; role: string } | null | undefined) {
+  if (!member?.deviceId) return;
+  memberRoles.value = {
+    ...memberRoles.value,
+    [member.deviceId]: member.role,
+  };
+  devices.value = applyMemberRoles(devices.value);
+}
+
 onMounted(async () => {
   // Fetch devices via REST
   try {
     const res = await fetch('/api/devices', {
       headers: { 'Authorization': `Bearer ${props.token}` },
     });
-    devices.value = await res.json();
+    setDevices(await res.json());
     // Fetch group info to get member roles
     try {
       const groupRes = await fetch('/api/group', {
@@ -179,36 +228,27 @@ onMounted(async () => {
       if (groupRes.ok) {
         const groupData = await groupRes.json();
         const members: Array<{deviceId: string; role: string}> = groupData.members || [];
-        for (const member of members) {
-          const device = devices.value.find(d => d.deviceId === member.deviceId);
-          if (device) device.role = member.role;
-        }
+        setMemberRoleList(members);
       }
     } catch {}
-    if (devices.value.length > 0) {
-      selectDevice(devices.value[0].deviceId);
-    }
+    syncDeviceSelection();
   } catch {}
 
   // WebSocket message handlers
   ws.on('device.list', (msg: any) => {
-    devices.value = msg.devices;
+    setDevices(msg.devices || []);
+    if (selectedDeviceId.value && sessions.value.length === 0) {
+      requestSelectedSessions();
+    }
   });
 
   ws.on('group.member.list', (msg: any) => {
     const members: Array<{deviceId: string; role: string}> = msg.members || [];
-    for (const member of members) {
-      const device = devices.value.find(d => d.deviceId === member.deviceId);
-      if (device) device.role = member.role;
-    }
+    setMemberRoleList(members);
   });
 
   ws.on('group.member.joined', (msg: any) => {
-    const member = msg.member;
-    if (member) {
-      const device = devices.value.find(d => d.deviceId === member.deviceId);
-      if (device) device.role = member.role;
-    }
+    upsertMemberRole(msg.member);
   });
 
   ws.on('session.list', (msg: any) => {
@@ -237,8 +277,7 @@ function selectDevice(deviceId: string) {
   selectedDeviceId.value = deviceId;
   activeSessionId.value = null;
   sessions.value = [];
-  // Request session list via WS
-  ws.send({ type: 'session.list.request', deviceId });
+  requestSelectedSessions();
 }
 
 function switchSession(sessionId: string) {

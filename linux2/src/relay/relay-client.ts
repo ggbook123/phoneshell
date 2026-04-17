@@ -17,6 +17,7 @@ export interface RelayClientCallbacks {
   onGroupJoined?: (groupId: string, groupSecret: string) => void;
   onServerChangeRequested?: (groupId: string, groupSecret: string) => void;
   onServerChanged?: (newUrl: string, groupSecret: string, groupId: string) => void;
+  onMessage?: (message: Message) => void;
 }
 
 export class RelayClient {
@@ -157,6 +158,7 @@ export class RelayClient {
     if (!message) return;
 
     this.log(`Relay → ${message.type}`);
+    this.callbacks.onMessage?.(message as Message);
 
     switch (message.type) {
       case 'group.join.accepted':

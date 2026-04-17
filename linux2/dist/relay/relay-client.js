@@ -120,6 +120,7 @@ export class RelayClient {
         if (!message)
             return;
         this.log(`Relay → ${message.type}`);
+        this.callbacks.onMessage?.(message);
         switch (message.type) {
             case 'group.join.accepted':
                 {
