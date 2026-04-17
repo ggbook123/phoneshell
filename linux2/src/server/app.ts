@@ -1069,13 +1069,13 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
           }
 
           writeJson(res, 200, { status: 'accepted', relayUrl, mode: 'client' });
-          setImmediate(() => {
+          setTimeout(() => {
             try {
               transitionToClientFromInvite(relayUrl, inviteCode);
             } catch (err) {
               log(`[invite] Client transition failed: ${(err as Error).message}`);
             }
-          });
+          }, 200);
         } catch {
           writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'Invalid JSON body.' });
         }

@@ -3761,7 +3761,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     status = "accepted", relayUrl = invite.RelayUrl
                 });
 
-                _ = Task.Run(() => _dispatcher.InvokeAsync(() => TransitionToClientAsync(relayUrl, inviteCode, groupId)));
+                _ = Task.Run(async () =>
+                {
+                    // Give HttpListener a brief window to flush the response before the
+                    // standalone listener is torn down during client transition.
+                    await Task.Delay(200);
+                    await _dispatcher.InvokeAsync(() => TransitionToClientAsync(relayUrl, inviteCode, groupId));
+                });
             }
             catch (Exception ex)
             {
