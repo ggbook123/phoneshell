@@ -60,6 +60,13 @@ struct SessionListPage {
     return I18n.t(I18n.getLanguage(), zhText, enText);
   }
 
+  private displayShellName(shellId: string): string {
+    if (shellId.toLowerCase() === 'pwsh') {
+      return 'powershell 7';
+    }
+    return shellId;
+  }
+
   private recordPendingRename(sessionId: string, title: string): void {
     if (sessionId.length === 0 || title.length === 0) {
       return;
@@ -485,7 +492,7 @@ struct SessionListPage {
         if (this.availableShells.length > 1) {
           Flex({ wrap: FlexWrap.Wrap, space: { main: new LengthMetrics(8), cross: new LengthMetrics(8) } }) {
             ForEach(this.availableShells, (shell: string) => {
-              Button(shell)
+              Button(this.displayShellName(shell))
                 .height(32)
                 .fontSize(12)
                 .fontColor(this.selectedShell === shell ? '#FFFFFF' : AppColors.ACCENT)
@@ -623,7 +630,7 @@ struct SessionListPage {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-          Text(session.shellId)
+          Text(this.displayShellName(session.shellId))
             .fontSize(AppSizes.FONT_SIZE_SMALL)
             .fontColor(AppColors.TEXT_SECONDARY)
             .margin({ top: 4 })

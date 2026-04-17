@@ -67,7 +67,7 @@ class _TerminalPageState extends State<TerminalPage> {
 
   final List<_ShortcutKey> _row2ShortcutKeys = const [
     _ShortcutKey(label: 'Ctrl+C', data: '\x03'),
-    _ShortcutKey(label: 'Ctrl+D', data: '\x04'),
+    _ShortcutKey(label: '/', data: '/'),
     _ShortcutKey(label: 'Esc', data: '\x1B'),
   ];
 

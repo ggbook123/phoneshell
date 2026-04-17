@@ -39,10 +39,18 @@
             </Border>
 
             <StackPanel Grid.Row="1" Margin="20,18,20,12">
-                <TextBlock Text="1. 在连接设置点击启动按钮"
+                <TextBlock Text="1、第一次运行请右键管理页打开，否则获取不到真实地址"
                            FontSize="12.5"
                            Foreground="{StaticResource Text1Brush}" />
-                <TextBlock Text="2. 手机扫码连接"
+                <TextBlock Text="2、在连接设置点击启动按钮"
+                           Margin="0,8,0,0"
+                           FontSize="12.5"
+                           Foreground="{StaticResource Text1Brush}" />
+                <TextBlock Text="3、防火墙里打开对应端口"
+                           Margin="0,8,0,0"
+                           FontSize="12.5"
+                           Foreground="{StaticResource Text1Brush}" />
+                <TextBlock Text="4、手机扫码连接"
                            Margin="0,8,0,0"
                            FontSize="12.5"
                            Foreground="{StaticResource Text1Brush}" />
@@ -56,12 +64,22 @@
                         <TextBlock Text="github 地址"
                                    FontSize="10.5"
                                    Foreground="{StaticResource Text3Brush}" />
-                        <TextBlock Text="https://github.com/ggbook123/phoneshell"
-                                   Margin="0,4,0,0"
+                        <TextBlock Margin="0,4,0,0"
                                    FontSize="11.5"
                                    Foreground="{StaticResource Text2Brush}"
                                    FontFamily="{StaticResource MonoFont}"
-                                   TextWrapping="Wrap" />
+                                   TextWrapping="Wrap">
+                            <Hyperlink NavigateUri="https://github.com/ggbook123/phoneshell"
+                                       RequestNavigate="Link_RequestNavigate">https://github.com/ggbook123/phoneshell</Hyperlink>
+                        </TextBlock>
+                        <TextBlock Margin="0,10,0,0"
+                                   FontSize="11.5"
+                                   Foreground="{StaticResource Text2Brush}"
+                                   FontFamily="{StaticResource MonoFont}"
+                                   TextWrapping="Wrap">
+                            官网地址：<Hyperlink NavigateUri="https://www.phoneshell.sbs"
+                                            RequestNavigate="Link_RequestNavigate">www.phoneshell.sbs</Hyperlink>
+                        </TextBlock>
                     </StackPanel>
                 </Border>
 

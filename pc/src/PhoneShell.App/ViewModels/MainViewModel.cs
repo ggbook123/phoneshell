@@ -278,6 +278,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     };
 
     private static readonly Regex KeyTokenRegex = new(@"\{([A-Za-z0-9+_]+)\}", RegexOptions.Compiled);
+    private const string WindowClosePreferenceAsk = "ask";
+    private const string WindowClosePreferenceMinimizeToTray = "minimize_to_tray";
+    private const string WindowClosePreferenceExit = "exit";
+    private const string DefaultLocalSessionTargetZh = "PC端";
+    private const string DefaultLocalSessionTargetEn = "This PC";
 
     private readonly DeviceIdentityStore _identityStore;
     private readonly QrCodeService _qrCodeService;
@@ -327,6 +332,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private bool _suppressRelayModeOverride;
     private int _serverPort = 9090;
     private string _relayServerAddress = string.Empty;
+    private string _windowClosePreference = WindowClosePreferenceAsk;
+    private string _localSessionTargetLabel = DefaultLocalSessionTargetZh;
     private bool _isServerRunning;
     private string _serverStatus = "Stopped";
     private string _primaryRelayAddress = string.Empty;
@@ -374,6 +381,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _serverPort = _serverSettings.Port;
         _relayServerAddress = _serverSettings.RelayServerAddress ?? string.Empty;
         _groupSecret = _serverSettings.GroupSecret ?? string.Empty;
+        _windowClosePreference = NormalizeWindowClosePreference(_serverSettings.WindowClosePreference);
 
         RefreshQrCommand = new RelayCommand(RefreshQr);
         ForceDisconnectCommand = new RelayCommand(ForceDisconnect, () => IsMobileConnected);
@@ -580,6 +588,26 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         set => SetProperty(ref _relayServerAddress, value);
     }
 
+    public string WindowClosePreference
+    {
+        get => _windowClosePreference;
+        set
+        {
+            var normalized = NormalizeWindowClosePreference(value);
+            if (!SetProperty(ref _windowClosePreference, normalized))
+                return;
+
+            _serverSettings.WindowClosePreference = normalized;
+            _serverSettingsStore.Save(_serverSettings);
+        }
+    }
+
+    public bool ShouldAskBeforeClose =>
+        string.Equals(_windowClosePreference, WindowClosePreferenceAsk, StringComparison.Ordinal);
+
+    public bool ShouldMinimizeToTrayOnClose =>
+        string.Equals(_windowClosePreference, WindowClosePreferenceMinimizeToTray, StringComparison.Ordinal);
+
     public bool IsServerRunning
     {
         get => _isServerRunning;
@@ -692,8 +720,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public string CurrentSessionTargetDeviceId => SelectedGroupDevice?.DeviceId ?? _identity.DeviceId;
     public string CurrentSessionTargetDisplayName =>
         SelectedGroupDevice?.DisplayName
-        ?? (!string.IsNullOrWhiteSpace(_identity.DisplayName) ? _identity.DisplayName : "PC");
-    public string NewSessionTargetButtonText => SelectedGroupDevice?.DisplayName ?? "PC端";
+        ?? (!string.IsNullOrWhiteSpace(_identity.DisplayName) ? _identity.DisplayName : _localSessionTargetLabel);
+    public string NewSessionTargetButtonText => SelectedGroupDevice?.DisplayName ?? _localSessionTargetLabel;
     public bool IsCurrentSessionTargetRemote =>
         !string.IsNullOrWhiteSpace(SelectedGroupDevice?.DeviceId) &&
         !string.Equals(SelectedGroupDevice.DeviceId, _identity.DeviceId, StringComparison.Ordinal);
@@ -1542,6 +1570,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void ForceDisconnect()
     {
+        // Reserved for a future "unbind current mobile without stopping relay" flow.
+        // The UI entry is intentionally hidden until protocol-side behavior is completed.
         RestoreDesktopTerminalViewport();
         IsMobileConnected = false;
         ControlOwner = ControlOwner.Pc;
@@ -1576,8 +1606,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _serverSettings.Port = ServerPort;
         _serverSettings.RelayServerAddress = string.IsNullOrWhiteSpace(RelayServerAddress) ? null : RelayServerAddress;
         _serverSettings.GroupSecret = string.IsNullOrWhiteSpace(GroupSecret) ? null : GroupSecret;
+        _serverSettings.WindowClosePreference = NormalizeWindowClosePreference(WindowClosePreference);
         _serverSettingsStore.Save(_serverSettings);
         UpdateRelayAddressPreview();
+    }
+
+    private static string NormalizeWindowClosePreference(string? value)
+    {
+        return value switch
+        {
+            WindowClosePreferenceMinimizeToTray => WindowClosePreferenceMinimizeToTray,
+            WindowClosePreferenceExit => WindowClosePreferenceExit,
+            _ => WindowClosePreferenceAsk
+        };
     }
 
     // --- Language Preference ---
@@ -1625,23 +1666,94 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ClearServerGroupFiles();
     }
 
-    private void SaveGroupMembership(string groupId, string groupSecret)
+    private void SaveGroupMembership(string groupId, string groupSecret, string? serverUrl = null)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(groupId) || string.IsNullOrWhiteSpace(groupSecret))
                 return;
 
+            var normalizedServerUrl = string.Empty;
+            var effectiveServerUrl = string.IsNullOrWhiteSpace(serverUrl) ? RelayServerAddress : serverUrl;
+            if (!string.IsNullOrWhiteSpace(effectiveServerUrl))
+            {
+                try
+                {
+                    normalizedServerUrl = RelayAddressHelper.NormalizeClientWebSocketUrl(effectiveServerUrl, ServerPort);
+                }
+                catch (Exception ex)
+                {
+                    OnNetworkLog($"Save membership skipped invalid relay address: {ex.Message}");
+                }
+            }
+
             _groupStore.SaveMembership(new GroupMembership
             {
                 GroupId = groupId,
-                GroupSecret = groupSecret
+                GroupSecret = groupSecret,
+                ServerUrl = normalizedServerUrl
             });
         }
         catch (Exception ex)
         {
             OnNetworkLog($"Save membership failed: {ex.Message}");
         }
+    }
+
+    private bool TryRestoreRelayAddressFromMembership(GroupMembership? membership)
+    {
+        var candidate = !string.IsNullOrWhiteSpace(RelayServerAddress)
+            ? RelayServerAddress
+            : membership?.ServerUrl;
+        if (string.IsNullOrWhiteSpace(candidate))
+            return false;
+
+        try
+        {
+            RelayServerAddress = RelayAddressHelper.NormalizeClientWebSocketUrl(candidate, ServerPort);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            OnNetworkLog($"[AutoMode] Ignoring invalid relay server address: {ex.Message}");
+            return false;
+        }
+    }
+
+    private bool CanStartStandaloneMode(GroupMembership? membership)
+    {
+        if (IsRelayServer || !string.IsNullOrWhiteSpace(RelayServerAddress))
+            return false;
+
+        return membership is null && string.IsNullOrWhiteSpace(GroupSecret);
+    }
+
+    private bool ShouldStartLocalServer(GroupMembership? membership)
+    {
+        if (IsRelayServer)
+            return true;
+
+        return CanStartStandaloneMode(membership);
+    }
+
+    private void ClearClientMembershipState(bool clearRelayAddress = true)
+    {
+        GroupId = string.Empty;
+        GroupSecret = string.Empty;
+
+        if (clearRelayAddress)
+            RelayServerAddress = string.Empty;
+
+        try
+        {
+            _groupStore.ClearMembership();
+        }
+        catch (Exception ex)
+        {
+            OnNetworkLog($"Clear membership failed: {ex.Message}");
+        }
+
+        SaveServerSettings();
     }
 
     private void ClearServerGroupFiles()
@@ -1699,7 +1811,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             SetRelayServerMode(false);
             if (string.IsNullOrWhiteSpace(GroupSecret))
                 GroupSecret = membership.GroupSecret;
-            OnNetworkLog("[AutoMode] Detected membership file - starting as client");
+            var hasRelayAddress = TryRestoreRelayAddressFromMembership(membership);
+            OnNetworkLog(hasRelayAddress
+                ? "[AutoMode] Detected membership file - starting as client"
+                : "[AutoMode] Membership file found but relay server address is missing - waiting for invite or manual configuration");
             return;
         }
 
@@ -1754,7 +1869,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (IsAutoMode)
             ApplyAutoRelayMode();
 
-        if (ShouldStartLocalServer())
+        GroupMembership? clientMembership = null;
+        if (!IsRelayServer)
+        {
+            clientMembership = _groupStore.LoadMembership();
+            TryRestoreRelayAddressFromMembership(clientMembership);
+        }
+
+        if (ShouldStartLocalServer(clientMembership))
             TryRegisterUrlAcl(ServerPort);
 
         if (!IsRelayServer && !string.IsNullOrWhiteSpace(RelayServerAddress))
@@ -1905,6 +2027,26 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             }
             else
             {
+                if (!CanStartStandaloneMode(clientMembership))
+                {
+                    _isStandaloneMode = false;
+                    RefreshQr();
+                    if (clientMembership is not null)
+                    {
+                        ServerStatus = "Client membership found, but relay server address is missing.";
+                        ConnectionStatus = "Relay address required";
+                        OnNetworkLog("[StartNetwork] Client membership found without relay address - not entering standalone mode.");
+                    }
+                    else
+                    {
+                        ServerStatus = "Waiting for relay server invite or manual address.";
+                        ConnectionStatus = "Waiting for relay invite";
+                        OnNetworkLog("[StartNetwork] Group secret present without relay address - waiting for invite or manual configuration.");
+                    }
+
+                    return;
+                }
+
                 // No relay server address configured - start in standalone mode
                 // Standalone mode: start local WS server without group secret, show connect QR
                 _isStandaloneMode = true;
@@ -1956,14 +2098,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             ServerStatus = $"Error: {ex.Message}";
             OnNetworkLog($"Start error: {ex.Message}");
         }
-    }
-
-    private bool ShouldStartLocalServer()
-    {
-        if (IsRelayServer)
-            return true;
-
-        return string.IsNullOrWhiteSpace(RelayServerAddress);
     }
 
     private void TryRegisterUrlAcl(int port)
@@ -2207,7 +2341,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             UpdateGroupMembers(accepted.Members);
 
-            SaveGroupMembership(accepted.GroupId, GroupSecret);
+            SaveGroupMembership(accepted.GroupId, GroupSecret, RelayServerAddress);
         });
     }
 
@@ -2299,6 +2433,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             GroupSecret = newSecret;
             _serverSettings.GroupSecret = newSecret;
             _serverSettingsStore.Save(_serverSettings);
+
+            if (!string.IsNullOrWhiteSpace(GroupId))
+                SaveGroupMembership(GroupId, newSecret, RelayServerAddress);
         });
     }
 
@@ -2393,8 +2530,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             OnNetworkLog($"Kicked from group: {reason}");
             StopNetwork("device_kicked");
+            ClearClientMembershipState();
             GroupStatus = $"Kicked: {reason}";
-            ServerStatus = "Kicked from group. Returning to standalone.";
+            ServerStatus = "Kicked from group. Client state cleared.";
         });
     }
 
@@ -2404,8 +2542,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             OnNetworkLog($"Group dissolved: {reason}");
             StopNetwork("group_dissolved");
+            ClearClientMembershipState();
             GroupStatus = $"Group dissolved: {reason}";
-            ServerStatus = "Group dissolved. Returning to standalone.";
+            ServerStatus = "Group dissolved. Client state cleared.";
         });
     }
 
@@ -2793,7 +2932,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         SaveServerSettings();
 
         if (!string.IsNullOrWhiteSpace(groupId))
-            SaveGroupMembership(groupId, newSecret);
+            SaveGroupMembership(groupId, newSecret, newUrl);
 
         await StartNetworkAsync();
     }
@@ -3747,12 +3886,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             OnNetworkLog($"[standalone] Kicked from group: {reason}");
             StopNetwork("standalone_client_kicked");
+            ClearClientMembershipState();
             GroupStatus = $"Kicked: {reason}";
             ServerStatus = "Kicked from group. Restarting standalone...";
-            // Restart in standalone mode
-            RelayServerAddress = string.Empty;
             SetRelayServerMode(false);
-            SaveServerSettings();
             await StartNetworkAsync();
         });
     }
@@ -3763,14 +3900,23 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             OnNetworkLog($"[standalone] Group dissolved: {reason}");
             StopNetwork("standalone_client_dissolved");
+            ClearClientMembershipState();
             GroupStatus = $"Group dissolved: {reason}";
             ServerStatus = "Group dissolved. Restarting standalone...";
-            // Restart in standalone mode
-            RelayServerAddress = string.Empty;
             SetRelayServerMode(false);
-            SaveServerSettings();
             await StartNetworkAsync();
         });
+    }
+
+    public void SetUiLanguage(bool isEnglish)
+    {
+        var nextLabel = isEnglish ? DefaultLocalSessionTargetEn : DefaultLocalSessionTargetZh;
+        if (string.Equals(_localSessionTargetLabel, nextLabel, StringComparison.Ordinal))
+            return;
+
+        _localSessionTargetLabel = nextLabel;
+        OnPropertyChanged(nameof(CurrentSessionTargetDisplayName));
+        OnPropertyChanged(nameof(NewSessionTargetButtonText));
     }
 
     private static List<string> ParseCommandBlocks(string response)

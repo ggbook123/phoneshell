@@ -97,7 +97,13 @@ public partial class App : Application
 
         try
         {
-            Shutdown(-1);
+            Dispatcher.Invoke(() =>
+            {
+                if (MainWindow is MainWindow mainWindow)
+                    mainWindow.AllowApplicationClose();
+
+                Shutdown(-1);
+            });
         }
         catch
         {

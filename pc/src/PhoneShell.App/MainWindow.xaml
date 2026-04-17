@@ -404,10 +404,26 @@
                                           Style="{StaticResource DarkCheckBox}" Margin="0,0,0,10" />
 
                                 <TextBlock x:Name="ServerPortLabel" Text="PORT" Style="{StaticResource SectionLabel}" />
-                                <TextBox Text="{Binding ServerPort, UpdateSourceTrigger=PropertyChanged}"
-                                         Style="{StaticResource DarkTextBox}"
-                                         Width="100" HorizontalAlignment="Left" Margin="0,0,0,10"
-                                         Padding="10,4" />
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="8" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="ServerPortTextBox"
+                                             Grid.Column="0"
+                                             Text="{Binding ServerPort, UpdateSourceTrigger=PropertyChanged}"
+                                             Style="{StaticResource DarkTextBox}"
+                                             Width="100"
+                                             Padding="10,4" />
+                                    <TextBlock x:Name="ServerPortHintText"
+                                               Grid.Column="2"
+                                               Text="需在防火墙打开此端口"
+                                               FontSize="10"
+                                               Foreground="{StaticResource Text3Brush}"
+                                               VerticalAlignment="Center"
+                                               TextWrapping="Wrap" />
+                                </Grid>
 
                                 <TextBlock x:Name="RelayServerAddressLabel" Text="RELAY SERVER ADDRESS" Style="{StaticResource SectionLabel}" />
                                 <TextBox Text="{Binding RelayServerAddress, UpdateSourceTrigger=PropertyChanged}"
@@ -420,7 +436,8 @@
                                          Style="{StaticResource DarkTextBox}" Margin="0,0,0,4"
                                          IsReadOnly="True" AcceptsReturn="True"
                                          TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
-                                         Height="48" Padding="10,4" />
+                                         Height="{Binding ElementName=ServerPortTextBox, Path=ActualHeight}"
+                                         Padding="10,4" />
                                 <TextBlock x:Name="RelayReachableHintText"
                                            Text="Use these addresses for phones on the same LAN"
                                            FontSize="10" Foreground="{StaticResource Text3Brush}"
@@ -579,6 +596,42 @@
                             </StackPanel>
                         </Expander>
 
+                        <!-- ===== QR Code ===== -->
+                        <Expander x:Name="QrCodeExpander" DockPanel.Dock="Top" Header="QR Code"
+                                  Style="{StaticResource SidebarExpander}" IsExpanded="False"
+                                  Expanded="SidebarExpander_Expanded">
+                            <StackPanel>
+                                <Border Background="{StaticResource Surface0Brush}"
+                                        CornerRadius="8" Padding="12" HorizontalAlignment="Left"
+                                        BorderBrush="{StaticResource Border2Brush}" BorderThickness="1"
+                                        Margin="0,0,0,10">
+                                    <Image Source="{Binding QrImage}" Width="180" Height="180" Stretch="Uniform" />
+                                </Border>
+                                <TextBlock Text="PAYLOAD" Style="{StaticResource SectionLabel}"
+                                           Visibility="Collapsed" />
+                                <TextBlock Text="{Binding QrPayload}" FontSize="10.5"
+                                           FontFamily="{StaticResource MonoFont}"
+                                           Foreground="{StaticResource Text3Brush}"
+                                           TextWrapping="Wrap" Margin="0,0,0,10"
+                                           Visibility="Collapsed" />
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                                    <Button x:Name="RefreshQrButton"
+                                            Content="刷新二维码"
+                                            Style="{StaticResource GhostButton}"
+                                            Width="100"
+                                            Margin="0,0,6,0"
+                                            Command="{Binding RefreshQrCommand}" />
+                                    <!-- Hidden for now: restore after wiring a real protocol-level mobile unbind flow. -->
+                                    <Button x:Name="ForceDisconnectButton"
+                                            Content="断开控制"
+                                            Style="{StaticResource DangerButton}"
+                                            Width="100"
+                                            Visibility="Collapsed"
+                                            Command="{Binding ForceDisconnectCommand}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Expander>
+
                         <!-- ===== Group Devices ===== -->
                         <Expander x:Name="GroupDevicesExpander" DockPanel.Dock="Top" Header="Group Devices"
                                   Style="{StaticResource SidebarExpander}" IsExpanded="False"
@@ -650,32 +703,22 @@
                             </ItemsControl>
                         </Expander>
 
-                        <!-- ===== QR Code ===== -->
-                        <Expander x:Name="QrCodeExpander" DockPanel.Dock="Top" Header="QR Code"
+                        <!-- ===== Personalization ===== -->
+                        <Expander x:Name="PersonalizationExpander" DockPanel.Dock="Top" Header="个性化设置"
                                   Style="{StaticResource SidebarExpander}" IsExpanded="False"
                                   Expanded="SidebarExpander_Expanded">
                             <StackPanel>
-                                <Border Background="{StaticResource Surface0Brush}"
-                                        CornerRadius="8" Padding="12" HorizontalAlignment="Left"
-                                        BorderBrush="{StaticResource Border2Brush}" BorderThickness="1"
-                                        Margin="0,0,0,10">
-                                    <Image Source="{Binding QrImage}" Width="180" Height="180" Stretch="Uniform" />
-                                </Border>
-                                <TextBlock Text="PAYLOAD" Style="{StaticResource SectionLabel}"
-                                           Visibility="Collapsed" />
-                                <TextBlock Text="{Binding QrPayload}" FontSize="10.5"
-                                           FontFamily="{StaticResource MonoFont}"
-                                           Foreground="{StaticResource Text3Brush}"
-                                           TextWrapping="Wrap" Margin="0,0,0,10"
-                                           Visibility="Collapsed" />
-                                <StackPanel Orientation="Horizontal">
-                                    <Button Content="Refresh QR" Style="{StaticResource GhostButton}"
-                                            Width="100" Margin="0,0,6,0"
-                                            Command="{Binding RefreshQrCommand}" />
-                                    <Button Content="Disconnect" Style="{StaticResource DangerButton}"
-                                            Width="100"
-                                            Command="{Binding ForceDisconnectCommand}" />
-                                </StackPanel>
+                                <TextBlock x:Name="WindowClosePreferenceLabel"
+                                           Text="窗口关闭偏好"
+                                           Style="{StaticResource FieldLabel}" />
+                                <ComboBox x:Name="WindowClosePreferenceComboBox"
+                                          Style="{StaticResource DarkComboBox}"
+                                          SelectedValuePath="Tag"
+                                          SelectedValue="{Binding WindowClosePreference, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                    <ComboBoxItem x:Name="ClosePrefMinimizeItem" Tag="minimize_to_tray" Content="最小化到托盘" />
+                                    <ComboBoxItem x:Name="ClosePrefAskItem" Tag="ask" Content="每次询问" />
+                                    <ComboBoxItem x:Name="ClosePrefExitItem" Tag="exit" Content="直接关闭" />
+                                </ComboBox>
                             </StackPanel>
                         </Expander>
 

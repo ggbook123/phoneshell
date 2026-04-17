@@ -220,10 +220,22 @@
   var clipboardReadRequests = {};
   var clipboardReadFallbackTimeoutMs = 1000;
   var pendingFullRefresh = false;
+  var nativeShortcutPasteInProgress = false;
 
   term.loadAddon(fitAddon);
   term.open(terminalElement);
   fitAddon.fit();
+
+  window.addEventListener('keyup', function(event) {
+    var key = (event.key || '').toLowerCase();
+    if (key === 'v' || key === 'control' || key === 'shift' || key === 'alt') {
+      nativeShortcutPasteInProgress = false;
+    }
+  }, true);
+
+  window.addEventListener('blur', function() {
+    nativeShortcutPasteInProgress = false;
+  });
 
   function syncHostLayout() {
     if (manualGeometryLock) {
@@ -538,7 +550,9 @@
   function consumeTerminalShortcut(event, action) {
     event.preventDefault();
     event.stopPropagation();
-    action();
+    if (typeof action === 'function') {
+      action();
+    }
     return false;
   }
 
@@ -551,20 +565,32 @@
 
     // Keep right-click menu unchanged; only handle explicit keyboard shortcuts.
     if (hasCtrl && hasShift && !hasAlt && key === 'c') {
+      if (event.repeat) {
+        return consumeTerminalShortcut(event);
+      }
       return consumeTerminalShortcut(event, copyTerminalSelection);
     }
 
     if (hasCtrl && hasShift && !hasAlt && key === 'v') {
-      return consumeTerminalShortcut(event, function() {
-        pasteClipboardToTerminal();
-      });
+      if (event.repeat || nativeShortcutPasteInProgress) {
+        return consumeTerminalShortcut(event);
+      }
+
+      nativeShortcutPasteInProgress = true;
+      return true;
     }
 
     if (hasCtrl && !hasShift && !hasAlt && isInsert) {
+      if (event.repeat) {
+        return consumeTerminalShortcut(event);
+      }
       return consumeTerminalShortcut(event, copyTerminalSelection);
     }
 
     if (hasCtrl && hasShift && !hasAlt && key === 'a') {
+      if (event.repeat) {
+        return consumeTerminalShortcut(event);
+      }
       return consumeTerminalShortcut(event, selectAllTerminalText);
     }
 

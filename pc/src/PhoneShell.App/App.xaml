@@ -332,6 +332,39 @@
             <!-- ============================================ -->
             <!-- COMBOBOX STYLE - Dark                        -->
             <!-- ============================================ -->
+            <Style x:Key="DarkComboBoxItem" TargetType="ComboBoxItem">
+                <Setter Property="Foreground" Value="{StaticResource Text1Brush}" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="Padding" Value="10,8" />
+                <Setter Property="FontFamily" Value="{StaticResource BodyFont}" />
+                <Setter Property="FontSize" Value="12.5" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ComboBoxItem">
+                            <Border x:Name="ItemBorder"
+                                    Background="{TemplateBinding Background}"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  VerticalAlignment="Center" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsHighlighted" Value="True">
+                                    <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource Surface4Brush}" />
+                                </Trigger>
+                                <Trigger Property="IsSelected" Value="True">
+                                    <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource AccentSubtleBrush}" />
+                                    <Setter Property="FontWeight" Value="SemiBold" />
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter TargetName="ItemBorder" Property="Opacity" Value="0.4" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
             <Style x:Key="DarkComboBox" TargetType="ComboBox">
                 <Setter Property="Background" Value="{StaticResource Surface0Brush}" />
                 <Setter Property="Foreground" Value="{StaticResource Text1Brush}" />
@@ -341,6 +374,98 @@
                 <Setter Property="BorderBrush" Value="{StaticResource Border2Brush}" />
                 <Setter Property="BorderThickness" Value="1" />
                 <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="MinHeight" Value="38" />
+                <Setter Property="MaxDropDownHeight" Value="280" />
+                <Setter Property="SnapsToDevicePixels" Value="True" />
+                <Setter Property="ItemContainerStyle" Value="{StaticResource DarkComboBoxItem}" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ComboBox">
+                            <Grid>
+                                <Border x:Name="ComboBorder"
+                                        Background="{TemplateBinding Background}"
+                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                        CornerRadius="6">
+                                    <Grid>
+                                        <ContentPresenter Margin="10,0,34,0"
+                                                          VerticalAlignment="Center"
+                                                          HorizontalAlignment="Left"
+                                                          Content="{TemplateBinding SelectionBoxItem}"
+                                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                          ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                                          IsHitTestVisible="False" />
+                                        <TextBlock x:Name="DropArrow"
+                                                   Margin="0,0,12,0"
+                                                   HorizontalAlignment="Right"
+                                                   VerticalAlignment="Center"
+                                                   FontSize="10"
+                                                   Foreground="{StaticResource Text3Brush}"
+                                                   Text="&#x25BE;" />
+                                    </Grid>
+                                </Border>
+
+                                <ToggleButton x:Name="DropDownToggle"
+                                              Background="Transparent"
+                                              BorderThickness="0"
+                                              Focusable="False"
+                                              IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                              ClickMode="Press">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border Background="Transparent" />
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+
+                                <Popup x:Name="Popup"
+                                       Placement="Bottom"
+                                       AllowsTransparency="True"
+                                       Focusable="False"
+                                       IsOpen="{TemplateBinding IsDropDownOpen}"
+                                       PopupAnimation="Fade">
+                                    <Border Margin="0,4,0,0"
+                                            MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                            Background="{StaticResource Surface1Brush}"
+                                            BorderBrush="{StaticResource Border2Brush}"
+                                            BorderThickness="1"
+                                            CornerRadius="6">
+                                        <Border.Effect>
+                                            <DropShadowEffect BlurRadius="18"
+                                                              ShadowDepth="0"
+                                                              Opacity="0.35"
+                                                              Color="#000000" />
+                                        </Border.Effect>
+                                        <ScrollViewer MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                                      Margin="2"
+                                                      CanContentScroll="True">
+                                            <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                                        </ScrollViewer>
+                                    </Border>
+                                </Popup>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="ComboBorder" Property="BorderBrush" Value="{StaticResource Text3Brush}" />
+                                </Trigger>
+                                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                    <Setter TargetName="ComboBorder" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                    <Setter TargetName="ComboBorder" Property="Background" Value="#0D1117" />
+                                </Trigger>
+                                <Trigger Property="IsDropDownOpen" Value="True">
+                                    <Setter TargetName="ComboBorder" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                    <Setter TargetName="DropArrow" Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                </Trigger>
+                                <Trigger Property="HasItems" Value="False">
+                                    <Setter TargetName="Popup" Property="MinHeight" Value="44" />
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter TargetName="ComboBorder" Property="Opacity" Value="0.4" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
             </Style>
 
             <!-- ============================================ -->

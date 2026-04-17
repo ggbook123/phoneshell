@@ -155,7 +155,7 @@ struct TerminalPage {
   ];
   private row2ShortcutKeys: Array<ShortcutKey> = [
     { label: 'Ctrl+C', data: '\x03' } as ShortcutKey,
-    { label: 'Ctrl+D', data: '\x04' } as ShortcutKey,
+    { label: '/', data: '/' } as ShortcutKey,
     { label: 'Esc', data: '\x1B' } as ShortcutKey
   ];
 

@@ -12,6 +12,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using WinForms = System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using PhoneShell.Core.Terminals;
 using PhoneShell.Core.Protocol;
@@ -51,6 +52,13 @@ public partial class MainWindow : Window
     private readonly MenuItem _folderContextDeleteMenuItem = new();
     private readonly MenuItem _commandContextEditMenuItem = new();
     private readonly MenuItem _commandContextDeleteMenuItem = new();
+    private WinForms.NotifyIcon? _trayIcon;
+    private WinForms.ToolStripMenuItem? _trayOpenMenuItem;
+    private WinForms.ToolStripMenuItem? _trayExitMenuItem;
+    private System.Drawing.Icon? _trayAppIcon;
+    private bool _allowWindowClose;
+    private const string TrayLogoAssetPath = "Assets/phoneshell.png";
+    private const string TrayFallbackIconAssetPath = "Assets/phoneshell.ico";
 
     private enum RightSidebarSection
     {
@@ -149,6 +157,64 @@ public partial class MainWindow : Window
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
         UnregisterWebViewDropTarget();
+        DisposeTrayIcon();
+    }
+
+    internal void AllowApplicationClose()
+    {
+        _allowWindowClose = true;
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (ShouldCancelWindowClose())
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        _allowWindowClose = true;
+        base.OnClosing(e);
+    }
+
+    private bool ShouldCancelWindowClose()
+    {
+        if (_allowWindowClose)
+            return false;
+
+        if (_viewModel.ShouldMinimizeToTrayOnClose)
+        {
+            MinimizeToTray();
+            return true;
+        }
+
+        return _viewModel.ShouldAskBeforeClose && !HandleCloseConfirmationDialog();
+    }
+
+    private bool HandleCloseConfirmationDialog()
+    {
+        var isEnglish = LangEnRadio?.IsChecked == true;
+        var dialog = new ConfirmDialog(
+            isEnglish ? "Confirm Exit" : "确认关闭",
+            isEnglish ? "Are you sure you want to close PhoneShell?" : "确认关闭 PhoneShell？",
+            isEnglish ? "Exit" : "退出",
+            isEnglish ? "Cancel" : "取消",
+            isEnglish ? "Minimize" : "最小化",
+            destructive: true)
+        {
+            Owner = this,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+
+        dialog.ShowDialog();
+
+        if (dialog.SelectedAction == ConfirmDialogAction.Alternate)
+        {
+            MinimizeToTray();
+            return false;
+        }
+
+        return dialog.SelectedAction == ConfirmDialogAction.Confirm;
     }
 
     private void TerminalWebView_Loaded(object sender, RoutedEventArgs e)
@@ -190,6 +256,138 @@ public partial class MainWindow : Window
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
         Close();
+    }
+
+    private void EnsureTrayIcon()
+    {
+        if (_trayIcon is not null)
+            return;
+
+        _trayOpenMenuItem = new WinForms.ToolStripMenuItem("打开主界面");
+        _trayOpenMenuItem.Click += (_, _) => RestoreFromTray();
+
+        _trayExitMenuItem = new WinForms.ToolStripMenuItem("退出");
+        _trayExitMenuItem.Click += (_, _) => ExitApplicationFromTray();
+
+        var menu = new WinForms.ContextMenuStrip();
+        menu.Items.Add(_trayOpenMenuItem);
+        menu.Items.Add(new WinForms.ToolStripSeparator());
+        menu.Items.Add(_trayExitMenuItem);
+
+        _trayIcon = new WinForms.NotifyIcon
+        {
+            Text = "PhoneShell",
+            ContextMenuStrip = menu,
+            Visible = false
+        };
+
+        _trayAppIcon ??= LoadTrayAppIcon();
+        _trayIcon.Icon = _trayAppIcon;
+
+        _trayIcon.MouseClick += TrayIcon_MouseClick;
+        UpdateTrayMenuLanguage(LangEnRadio?.IsChecked == true);
+    }
+
+    private void TrayIcon_MouseClick(object? sender, WinForms.MouseEventArgs e)
+    {
+        if (e.Button == WinForms.MouseButtons.Left)
+            RestoreFromTray();
+    }
+
+    private static System.Drawing.Icon LoadTrayAppIcon()
+    {
+        using var logoStream = OpenAppAssetStream(TrayLogoAssetPath);
+        if (logoStream is not null)
+        {
+            using var sourceBitmap = new System.Drawing.Bitmap(logoStream);
+            using var trayBitmap = new System.Drawing.Bitmap(sourceBitmap, new System.Drawing.Size(32, 32));
+            var hIcon = trayBitmap.GetHicon();
+            try
+            {
+                using var icon = System.Drawing.Icon.FromHandle(hIcon);
+                return (System.Drawing.Icon)icon.Clone();
+            }
+            finally
+            {
+                NativeIcon.DestroyIcon(hIcon);
+            }
+        }
+
+        using var fallbackIconStream = OpenAppAssetStream(TrayFallbackIconAssetPath);
+        return fallbackIconStream is not null
+            ? new System.Drawing.Icon(fallbackIconStream)
+            : (System.Drawing.Icon)System.Drawing.SystemIcons.Application.Clone();
+    }
+
+    private static Stream? OpenAppAssetStream(string relativeAssetPath)
+    {
+        var normalizedPath = relativeAssetPath.Replace('\\', '/').TrimStart('/');
+        var resourceInfo = Application.GetResourceStream(new Uri($"/{normalizedPath}", UriKind.Relative));
+        if (resourceInfo?.Stream is not null)
+            return resourceInfo.Stream;
+
+        var filePath = Path.Combine(
+            AppContext.BaseDirectory,
+            normalizedPath.Replace('/', Path.DirectorySeparatorChar));
+
+        return File.Exists(filePath) ? File.OpenRead(filePath) : null;
+    }
+
+    private void MinimizeToTray()
+    {
+        EnsureTrayIcon();
+
+        if (_trayIcon is not null)
+            _trayIcon.Visible = true;
+
+        ShowInTaskbar = false;
+        Hide();
+    }
+
+    private void RestoreFromTray()
+    {
+        ShowInTaskbar = true;
+        if (!IsVisible)
+            Show();
+
+        if (WindowState == WindowState.Minimized)
+            WindowState = WindowState.Normal;
+
+        Activate();
+    }
+
+    private void ExitApplicationFromTray()
+    {
+        _allowWindowClose = true;
+
+        if (_trayIcon is not null)
+            _trayIcon.Visible = false;
+
+        Close();
+    }
+
+    private void DisposeTrayIcon()
+    {
+        if (_trayIcon is null)
+            return;
+
+        _trayIcon.Visible = false;
+        _trayIcon.MouseClick -= TrayIcon_MouseClick;
+        _trayIcon.Dispose();
+        _trayIcon = null;
+        _trayOpenMenuItem = null;
+        _trayExitMenuItem = null;
+        _trayAppIcon?.Dispose();
+        _trayAppIcon = null;
+    }
+
+    private void UpdateTrayMenuLanguage(bool isEnglish)
+    {
+        if (_trayOpenMenuItem is not null)
+            _trayOpenMenuItem.Text = isEnglish ? "Open" : "打开主界面";
+
+        if (_trayExitMenuItem is not null)
+            _trayExitMenuItem.Text = isEnglish ? "Exit" : "退出";
     }
 
     private void InfoButton_Click(object sender, RoutedEventArgs e)
@@ -663,6 +861,12 @@ public partial class MainWindow : Window
 
     private void ChatInput_KeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Enter && e.IsRepeat)
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key == Key.Enter && _viewModel.SendMessageCommand.CanExecute(null))
         {
             _viewModel.SendMessageCommand.Execute(null);
@@ -706,7 +910,7 @@ public partial class MainWindow : Window
         Expander?[] expanders =
         {
             LanguageExpander, ServerSettingsExpander, ShellExpander,
-            DeviceInfoExpander, GroupDevicesExpander, QrCodeExpander,
+            DeviceInfoExpander, GroupDevicesExpander, PersonalizationExpander, QrCodeExpander,
             AiSettingsExpander, DebugLogExpander
         };
 
@@ -1285,6 +1489,12 @@ public partial class MainWindow : Window
         }
     }
 
+    private static class NativeIcon
+    {
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool DestroyIcon(IntPtr hIcon);
+    }
+
     // --- Explorer ---
 
     private void ExplorerRefreshButton_Click(object sender, RoutedEventArgs e)
@@ -1700,6 +1910,12 @@ public partial class MainWindow : Window
         if (sender is not FrameworkElement element || element.DataContext is not QuickCommandFolder folder)
             return;
 
+        if ((e.Key == Key.Enter || e.Key == Key.Escape) && e.IsRepeat)
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key == Key.Enter)
         {
             _viewModel.CommitInlineQuickCommandFolderEdit(folder);
@@ -1995,6 +2211,7 @@ public partial class MainWindow : Window
             if (AutoModeCheckBox is not null) AutoModeCheckBox.Content = "Auto Mode (choose server/client)";
             if (EnableRelayServerCheckBox is not null) EnableRelayServerCheckBox.Content = "Enable Relay Server (this PC as hub)";
             if (ServerPortLabel is not null) ServerPortLabel.Text = "PORT";
+            if (ServerPortHintText is not null) ServerPortHintText.Text = "Open this port in Windows Firewall";
             if (RelayServerAddressLabel is not null) RelayServerAddressLabel.Text = "RELAY SERVER ADDRESS";
             if (RelayReachableLabel is not null) RelayReachableLabel.Text = "LAN LISTEN ADDRESSES";
             if (RelayReachableHintText is not null) RelayReachableHintText.Text = "Use these addresses for phones on the same LAN";
@@ -2010,7 +2227,14 @@ public partial class MainWindow : Window
             if (ShellExpander is not null) ShellExpander.Header = "Shell";
             if (DeviceInfoExpander is not null) DeviceInfoExpander.Header = "Device Info";
             if (GroupDevicesExpander is not null) GroupDevicesExpander.Header = "Group Devices";
+            if (PersonalizationExpander is not null) PersonalizationExpander.Header = "Personalization";
+            if (WindowClosePreferenceLabel is not null) WindowClosePreferenceLabel.Text = "Window Close Preference";
+            if (ClosePrefMinimizeItem is not null) ClosePrefMinimizeItem.Content = "Minimize to tray";
+            if (ClosePrefAskItem is not null) ClosePrefAskItem.Content = "Ask every time";
+            if (ClosePrefExitItem is not null) ClosePrefExitItem.Content = "Close directly";
             if (QrCodeExpander is not null) QrCodeExpander.Header = "QR Code";
+            if (RefreshQrButton is not null) RefreshQrButton.Content = "Refresh QR";
+            if (ForceDisconnectButton is not null) ForceDisconnectButton.Content = "Disconnect";
             if (AiSettingsExpander is not null) AiSettingsExpander.Header = "AI Settings";
             if (DebugLogExpander is not null) DebugLogExpander.Header = "Debug Log";
             if (NewTabButtonInline is not null) NewTabButtonInline.ToolTip = "New Session";
@@ -2032,6 +2256,7 @@ public partial class MainWindow : Window
             if (RecentInputsHintText is not null) RecentInputsHintText.Text = "Keep the latest 18 commands and click an item to insert";
             if (RecentInputClearButton is not null) RecentInputClearButton.Content = "Clear";
             UpdateToolsToggleToolTip();
+            UpdateTrayMenuLanguage(true);
         }
         else
         {
@@ -2040,6 +2265,7 @@ public partial class MainWindow : Window
             if (AutoModeCheckBox is not null) AutoModeCheckBox.Content = "自动模式（自动选择服务端/客户端）";
             if (EnableRelayServerCheckBox is not null) EnableRelayServerCheckBox.Content = "本机设为服务器（局域网模式）";
             if (ServerPortLabel is not null) ServerPortLabel.Text = "端口";
+            if (ServerPortHintText is not null) ServerPortHintText.Text = "需在防火墙打开此端口";
             if (RelayServerAddressLabel is not null) RelayServerAddressLabel.Text = "中转服务器地址";
             if (RelayReachableLabel is not null) RelayReachableLabel.Text = "局域网监听地址";
             if (RelayReachableHintText is not null) RelayReachableHintText.Text = "同一局域网内手机可使用这些地址连接";
@@ -2055,7 +2281,14 @@ public partial class MainWindow : Window
             if (ShellExpander is not null) ShellExpander.Header = "终端选择";
             if (DeviceInfoExpander is not null) DeviceInfoExpander.Header = "设备信息";
             if (GroupDevicesExpander is not null) GroupDevicesExpander.Header = "群组设备";
+            if (PersonalizationExpander is not null) PersonalizationExpander.Header = "个性化设置";
+            if (WindowClosePreferenceLabel is not null) WindowClosePreferenceLabel.Text = "窗口关闭偏好";
+            if (ClosePrefMinimizeItem is not null) ClosePrefMinimizeItem.Content = "最小化到托盘";
+            if (ClosePrefAskItem is not null) ClosePrefAskItem.Content = "每次询问";
+            if (ClosePrefExitItem is not null) ClosePrefExitItem.Content = "直接关闭";
             if (QrCodeExpander is not null) QrCodeExpander.Header = "二维码";
+            if (RefreshQrButton is not null) RefreshQrButton.Content = "刷新二维码";
+            if (ForceDisconnectButton is not null) ForceDisconnectButton.Content = "断开控制";
             if (AiSettingsExpander is not null) AiSettingsExpander.Header = "AI 设置";
             if (DebugLogExpander is not null) DebugLogExpander.Header = "调试日志";
             if (NewTabButtonInline is not null) NewTabButtonInline.ToolTip = "新会话";
@@ -2077,7 +2310,10 @@ public partial class MainWindow : Window
             if (RecentInputsHintText is not null) RecentInputsHintText.Text = "保存最近18条输入，点击条目直接插入到当前会话";
             if (RecentInputClearButton is not null) RecentInputClearButton.Content = "清空";
             UpdateToolsToggleToolTip();
+            UpdateTrayMenuLanguage(false);
         }
+
+        _viewModel.SetUiLanguage(isEnglish);
 
         var desiredRoot = isEnglish ? ExplorerVirtualRootEn : ExplorerVirtualRootZh;
         if (IsExplorerVirtualRootPath(_viewModel.ExplorerRootPath) &&

@@ -12,4 +12,9 @@ public sealed class ServerSettings
 
     /// <summary>Group secret for joining an existing group (client mode) or initializing a new group (server mode).</summary>
     public string? GroupSecret { get; set; }
+
+    /// <summary>
+    /// Window close behavior: ask, minimize_to_tray, or exit.
+    /// </summary>
+    public string WindowClosePreference { get; set; } = "ask";
 }

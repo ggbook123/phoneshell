@@ -41,6 +41,13 @@ class _SessionListPageState extends State<SessionListPage> {
 
   String _t(String zh, String en) => I18n.tCurrent(zh, en);
 
+  String _displayShellName(String shellId) {
+    if (shellId.toLowerCase() == 'pwsh') {
+      return 'powershell 7';
+    }
+    return shellId;
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -469,7 +476,7 @@ class _SessionListPageState extends State<SessionListPage> {
                                   ),
                                 ),
                                 child: Text(
-                                  shell,
+                                  _displayShellName(shell),
                                   style: TextStyle(
                                     fontSize: 12,
                                     color: selected
@@ -574,7 +581,7 @@ class _SessionListPageState extends State<SessionListPage> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        session.shellId,
+                        _displayShellName(session.shellId),
                         style: const TextStyle(
                           fontSize: AppSizes.fontSizeSmall,
                           color: Color(AppColors.textSecondary),
