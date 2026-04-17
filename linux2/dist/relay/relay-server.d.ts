@@ -42,6 +42,9 @@ export declare class RelayServer {
     setPreserveTerminalHistoryOnClose(preserve: boolean): void;
     getGroup(): GroupInfo | null;
     getInviteManager(): InviteManager;
+    private getBoundMobileId;
+    private isBoundMobileOnline;
+    private replaceStaleBoundMobile;
     private send;
     initGroup(groupStore: GroupStore, deviceId: string, displayName: string, os: string, availableShells: string[]): void;
     registerLocalDevice(deviceId: string, displayName: string, os: string, availableShells: string[]): void;

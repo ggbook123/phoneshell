@@ -137,8 +137,48 @@ function normalizeHostWithPort(host: string, port: number): string {
   return `${trimmed}:${port}`;
 }
 
+function isPrivateIpv4(address: string): boolean {
+  const parts = address.split('.').map((part) => parseInt(part, 10));
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  if (parts[0] === 10) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  return false;
+}
+
+function isLinkLocalIpv4(address: string): boolean {
+  return address.startsWith('169.254.');
+}
+
+function isBenchmarkIpv4(address: string): boolean {
+  const parts = address.split('.').map((part) => parseInt(part, 10));
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part))) return false;
+  return parts[0] === 198 && (parts[1] === 18 || parts[1] === 19);
+}
+
+function scoreLanCandidate(interfaceName: string, address: string): number {
+  const name = interfaceName.trim().toLowerCase();
+  let score = 0;
+
+  if (isPrivateIpv4(address)) score += 100;
+  if (!isLinkLocalIpv4(address) && !isBenchmarkIpv4(address)) score += 25;
+  if (name.startsWith('eth') || name.startsWith('en') || name.startsWith('wl') || name.startsWith('wlan')) {
+    score += 35;
+  }
+  if (/(docker|podman|cni|flannel|veth|virbr|br-|lxcbr|vmnet|vbox|tailscale|utun|tun|tap|wg|zerotier|vethernet)/i.test(name)) {
+    score -= 120;
+  }
+  if (isLinkLocalIpv4(address)) score -= 120;
+  if (isBenchmarkIpv4(address)) score -= 160;
+
+  return score;
+}
+
 function detectLanHost(): string {
   const interfaces = os.networkInterfaces();
+  const candidates: Array<{ name: string; address: string; score: number }> = [];
   for (const name in interfaces) {
     const entries = interfaces[name] as any[] | undefined;
     if (!entries) continue;
@@ -147,11 +187,15 @@ function detectLanHost(): string {
       if (entry.internal || family !== 'IPv4') continue;
       const address = (entry.address || '').trim();
       if (address && net.isIP(address) === 4 && !isLocalHost(address)) {
-        return address;
+        const score = scoreLanCandidate(name, address);
+        candidates.push({ name, address, score });
       }
     }
   }
-  return '';
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  if (!best || best.score < 0) return '';
+  return best.address;
 }
 
 function fetchText(url: string, timeoutMs: number): Promise<string> {
@@ -929,13 +973,18 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     const portForHost = wsSchemeValue === 'wss'
       ? (tlsRuntime.enabled ? tlsPort : primaryPort)
       : primaryPort;
+    const lanHost = detectLanHost();
     if (host) {
       const { host: hostOnly } = splitHostPort(host);
       if (hostOnly && isLocalHost(hostOnly) && publicHost) {
         host = normalizeHostWithPort(publicHost, portForHost);
+      } else if (hostOnly && isLocalHost(hostOnly) && lanHost) {
+        host = normalizeHostWithPort(lanHost, portForHost);
       }
     } else if (publicHost) {
       host = normalizeHostWithPort(publicHost, portForHost);
+    } else if (lanHost) {
+      host = normalizeHostWithPort(lanHost, portForHost);
     }
     if (!host) {
       const serverUrl = buildRelayUrlFromConfig();

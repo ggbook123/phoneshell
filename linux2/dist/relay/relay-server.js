@@ -32,6 +32,25 @@ export class RelayServer {
     setPreserveTerminalHistoryOnClose(preserve) { this.preserveTerminalHistoryOnClose = preserve; }
     getGroup() { return this.group; }
     getInviteManager() { return this.inviteManager; }
+    getBoundMobileId() {
+        return (this.group?.boundMobileId || '').trim();
+    }
+    isBoundMobileOnline() {
+        const boundMobileId = this.getBoundMobileId();
+        if (!boundMobileId)
+            return false;
+        return !!this.findClientByDeviceId(boundMobileId);
+    }
+    replaceStaleBoundMobile(nextMobileDeviceId) {
+        if (!this.group)
+            return;
+        const currentBoundMobileId = this.getBoundMobileId();
+        if (!currentBoundMobileId || currentBoundMobileId === nextMobileDeviceId)
+            return;
+        this.group.members = this.group.members.filter((member) => member.deviceId !== currentBoundMobileId);
+        this.devices.delete(currentBoundMobileId);
+        this.log(`Replacing stale bound mobile: ${currentBoundMobileId} -> ${nextMobileDeviceId}`);
+    }
     // Wrapper for sendToClient with logging
     async send(client, message) {
         return sendToClient(client, message, this.log);
@@ -682,9 +701,15 @@ export class RelayServer {
         });
         client.registeredDeviceId = req.deviceId;
         client.memberRole = role;
-        // Auto-bind mobile
-        const autoBindMobile = !this.group.boundMobileId && this.isLikelyMobileOs(req.os);
+        const currentBoundMobileId = this.getBoundMobileId();
+        const boundMobileOnline = this.isBoundMobileOnline();
+        // Auto-bind mobile. If an old bound mobile is offline, allow the new mobile to take over.
+        const autoBindMobile = this.isLikelyMobileOs(req.os) &&
+            (!currentBoundMobileId || currentBoundMobileId === req.deviceId || !boundMobileOnline);
         if (autoBindMobile) {
+            if (currentBoundMobileId && currentBoundMobileId !== req.deviceId && !boundMobileOnline) {
+                this.replaceStaleBoundMobile(req.deviceId);
+            }
             this.group.boundMobileId = req.deviceId;
             const member = this.group.members.find(m => m.deviceId === req.deviceId);
             if (member)
@@ -784,9 +809,14 @@ export class RelayServer {
     async handleMobileBindRequest(client, req) {
         if (!this.group)
             return;
-        if (this.group.boundMobileId && this.group.boundMobileId !== req.mobileDeviceId) {
+        const currentBoundMobileId = this.getBoundMobileId();
+        const boundMobileOnline = this.isBoundMobileOnline();
+        if (currentBoundMobileId && currentBoundMobileId !== req.mobileDeviceId && boundMobileOnline) {
             await this.send(client, serialize({ type: 'mobile.bind.rejected', reason: 'Another mobile device is already bound to this group.' }));
             return;
+        }
+        if (currentBoundMobileId && currentBoundMobileId !== req.mobileDeviceId && !boundMobileOnline) {
+            this.replaceStaleBoundMobile(req.mobileDeviceId);
         }
         this.group.boundMobileId = req.mobileDeviceId;
         const mobileMember = this.group.members.find(m => m.deviceId === req.mobileDeviceId);
@@ -948,7 +978,7 @@ export class RelayServer {
     }
     // --- Panel login flow ---
     startPanelLogin(requesterAddress, serverUrl) {
-        const hasBoundMobile = !!this.group?.boundMobileId;
+        const hasBoundMobile = this.isBoundMobileOnline();
         const session = this.tokenManager.createLoginSession(requesterAddress, serverUrl);
         if (hasBoundMobile) {
             session.status = 'awaiting_scan';
@@ -995,11 +1025,8 @@ export class RelayServer {
         };
     }
     getPanelPairingPayload(serverUrl) {
-        const hasBoundMobile = !!this.group?.boundMobileId;
-        let boundMobileOnline = false;
-        if (hasBoundMobile && this.group?.boundMobileId) {
-            boundMobileOnline = !!this.findClientByDeviceId(this.group.boundMobileId);
-        }
+        const boundMobileOnline = this.isBoundMobileOnline();
+        const hasBoundMobile = boundMobileOnline;
         const qrPayload = hasBoundMobile ? '' : this.getBindQrPayload(serverUrl);
         return {
             requiresAuth: !!this.authToken,
@@ -1111,7 +1138,7 @@ export class RelayServer {
     async handleRelayDesignate(client) {
         // Allow designation from the bound mobile. If no mobile is bound yet (single mode),
         // allow the current client to designate so the phone can join the group.
-        const hasBoundMobile = !!this.group?.boundMobileId;
+        const hasBoundMobile = this.isBoundMobileOnline();
         if (hasBoundMobile && client.memberRole !== 'Mobile') {
             await this.send(client, serialize({ type: 'error', code: 'permission_denied', message: 'Only the bound mobile can designate a relay.' }));
             return;
