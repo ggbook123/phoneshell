@@ -3692,6 +3692,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         public string RelayUrl { get; set; } = string.Empty;
         public string InviteCode { get; set; } = string.Empty;
         public string? GroupId { get; set; }
+        public string? GroupSecret { get; set; }
     }
 
     /// <summary>
@@ -3738,13 +3739,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 var body = await reader.ReadToEndAsync();
                 var invite = System.Text.Json.JsonSerializer.Deserialize<InvitePayload>(body, _standaloneJsonOptions);
 
+                var inviteCode = invite?.InviteCode?.Trim() ?? string.Empty;
+                var groupSecret = invite?.GroupSecret?.Trim() ?? string.Empty;
                 if (invite is null || string.IsNullOrWhiteSpace(invite.RelayUrl) ||
-                    string.IsNullOrWhiteSpace(invite.InviteCode))
+                    (string.IsNullOrWhiteSpace(inviteCode) && string.IsNullOrWhiteSpace(groupSecret)))
                 {
                     await WriteStandaloneJsonAsync(context.Response, 400, new
                     {
                         type = "error", code = "bad_request",
-                        message = "relayUrl and inviteCode are required."
+                        message = "relayUrl and (inviteCode or groupSecret) are required."
                     });
                     return true;
                 }
@@ -3752,8 +3755,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 OnNetworkLog($"[invite] Received invite: relay={invite.RelayUrl} code={invite.InviteCode}");
 
                 var relayUrl = invite.RelayUrl;
-                var inviteCode = invite.InviteCode;
                 var groupId = invite.GroupId ?? "";
+                var effectiveSecret = groupSecret;
+                var effectiveInvite = string.IsNullOrWhiteSpace(effectiveSecret) ? inviteCode : string.Empty;
 
                 // Send response first, then transition (transition disposes the HTTP listener)
                 await WriteStandaloneJsonAsync(context.Response, 200, new
@@ -3761,7 +3765,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     status = "accepted", relayUrl = invite.RelayUrl
                 });
 
-                _ = Task.Run(() => _dispatcher.InvokeAsync(() => TransitionToClientAsync(relayUrl, inviteCode, groupId)));
+                _ = Task.Run(async () =>
+                {
+                    // Give HttpListener a brief window to flush the response before the
+                    // standalone listener is torn down during client transition.
+                    await Task.Delay(200);
+                    await _dispatcher.InvokeAsync(() => TransitionToClientAsync(relayUrl, effectiveInvite, groupId, effectiveSecret));
+                });
             }
             catch (Exception ex)
             {
@@ -3836,11 +3846,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     /// Stops the local RelayServer and connects as a RelayClient to the specified relay.
     /// Must be called on the UI thread.
     /// </summary>
-    private async Task TransitionToClientAsync(string relayUrl, string inviteCode, string groupId)
+    private async Task TransitionToClientAsync(string relayUrl, string inviteCode, string groupId, string groupSecret = "")
     {
         try
         {
             OnNetworkLog($"[standalone] Transitioning to client mode: {relayUrl}");
+            var normalizedSecret = groupSecret?.Trim() ?? string.Empty;
+            var normalizedInvite = inviteCode?.Trim() ?? string.Empty;
 
             // Stop current relay server (partial StopNetwork — keep UI running)
             if (_relayServer is not null)
@@ -3878,7 +3890,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 DisplayName = _identity.DisplayName,
                 Os = "Windows",
                 AvailableShells = AvailableShells.Select(s => s.Id).ToList(),
-                InviteCode = inviteCode,
+                InviteCode = string.IsNullOrWhiteSpace(normalizedSecret) ? normalizedInvite : string.Empty,
+                GroupSecret = normalizedSecret,
                 LocalSessionListProvider = GetLocalSessionList,
                 LocalQuickPanelSyncProvider = BuildQuickPanelSyncSnapshot,
                 LocalRecentInputAppendRequested = AppendRecentInputFromMobile

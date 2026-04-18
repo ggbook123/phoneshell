@@ -608,7 +608,63 @@ struct DeviceManagePage {
     return url;
   }
 
-  private async executeBindQr(server: string, groupId: string, groupSecret: string): Promise<void> {
+  private normalizeHttpUrl(httpUrl: string): string {
+    let normalized: string = httpUrl.trim();
+    while (normalized.endsWith('/')) {
+      normalized = normalized.substring(0, normalized.length - 1);
+    }
+    return normalized.toLowerCase();
+  }
+
+  private autoInviteLegacyRelay(previousRelayHttp: string): void {
+    const targetHttp: string = this.normalizeHttpUrl(previousRelayHttp);
+    if (targetHttp.length === 0) return;
+
+    this.scanStatus = this.t('已连接新群组，正在自动迁移旧群组设备...', 'Connected to the new group. Migrating previous group devices...');
+    this.cleanupScanListeners();
+    this.scanMessageListenerId = ConnectionManager.addOnMessage((type: string, data: Record<string, Object>) => {
+      if (type === 'invite.create.response') {
+        const inviteCode: string = (data['inviteCode'] ?? '') as string;
+        const relayUrlFromServer: string = (data['relayUrl'] ?? '') as string;
+        const relayUrl: string = ConnectionManager.getCurrentGroupRelayUrl();
+        const effectiveRelayUrl: string = relayUrl.length > 0 ? relayUrl : relayUrlFromServer;
+        if (inviteCode.length === 0 || effectiveRelayUrl.length === 0) {
+          this.parseError = this.t('旧群组迁移失败：缺少邀请码或中继地址', 'Previous group migration failed: missing invite code or relay URL');
+          this.scanStatus = this.t('旧群组迁移失败', 'Previous group migration failed');
+          this.cleanupScanListeners();
+          return;
+        }
+        ConnectionManager.inviteToGroup(
+          targetHttp,
+          inviteCode,
+          effectiveRelayUrl,
+          (success: boolean, message: string) => {
+            if (success) {
+              this.scanStatus = this.t(
+                '已发送旧群组迁移邀请，等待设备加入...',
+                'Migration invite sent. Waiting for previous group device to join...'
+              );
+              this.parseError = '';
+              this.cleanupScanListeners();
+            } else {
+              this.parseError = this.t(`旧群组迁移失败: ${message}`, `Previous group migration failed: ${message}`);
+              this.scanStatus = this.t('旧群组迁移失败', 'Previous group migration failed');
+              this.cleanupScanListeners();
+            }
+          },
+          ConnectionManager.getCurrentGroupSecret()
+        );
+      } else if (type === 'error') {
+        const message: string = (data['message'] ?? '') as string;
+        this.parseError = this.t(`旧群组迁移失败: ${message}`, `Previous group migration failed: ${message}`);
+        this.scanStatus = this.t('旧群组迁移失败', 'Previous group migration failed');
+        this.cleanupScanListeners();
+      }
+    });
+    ConnectionManager.requestInviteCode();
+  }
+
+  private async executeBindQr(server: string, groupId: string, groupSecret: string, previousRelayHttp: string = ''): Promise<void> {
     // Save settings
     await PreferencesUtil.setLastServerUrl(server);
     await PreferencesUtil.setString(StorageKeys.GROUP_SECRET, groupSecret);

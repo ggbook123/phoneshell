@@ -259,9 +259,9 @@ class ConnectionManager {
     String httpUrl,
     String inviteCode,
     String relayUrl,
-    void Function(bool success, String message)? onResult, {
-    String groupSecret = '',
-  }) async {
+    void Function(bool success, String message)? onResult,
+    {String groupSecret = ''}
+  ) async {
     if (httpUrl.isEmpty || inviteCode.isEmpty || relayUrl.isEmpty) {
       onResult?.call(false, 'Missing parameters');
       return;
@@ -269,16 +269,16 @@ class ConnectionManager {
     final inviteUrl = httpUrl.endsWith('/')
         ? '${httpUrl}api/invite'
         : '$httpUrl/api/invite';
-    final payload = <String, dynamic>{
+    final bodyMap = <String, dynamic>{
       'relayUrl': relayUrl,
       'inviteCode': inviteCode,
       'groupId': _groupId,
     };
     final normalizedSecret = groupSecret.trim();
     if (normalizedSecret.isNotEmpty) {
-      payload['groupSecret'] = normalizedSecret;
+      bodyMap['groupSecret'] = normalizedSecret;
     }
-    final body = jsonEncode(payload);
+    final body = jsonEncode(bodyMap);
 
     try {
       final resp = await http.post(
@@ -613,6 +613,12 @@ class ConnectionManager {
       List<GroupMemberInfo>.from(_groupMembers);
 
   String getGroupId() => _groupId;
+  String getCurrentGroupSecret() => _groupSecret;
+  String getCurrentGroupRelayUrl() {
+    final conn = _groupConnection;
+    if (conn == null) return '';
+    return _stripRelayAuthQuery(conn.serverUrl);
+  }
 
   String getCurrentGroupSecret() => _groupSecret;
 
@@ -1350,5 +1356,24 @@ class ConnectionManager {
     }
     if (baseUrl.contains('?')) return '$baseUrl&token=$token';
     return '$baseUrl?token=$token';
+  }
+
+  String _stripRelayAuthQuery(String wsUrl) {
+    var sanitized = wsUrl.trim();
+    if (sanitized.isEmpty) return '';
+    sanitized = sanitized.replaceAllMapped(
+      RegExp(r'([?&])(token|invite)=[^&]*', caseSensitive: false),
+      (match) => match.group(1) == '?' ? '?' : '',
+    );
+    while (sanitized.contains('?&')) {
+      sanitized = sanitized.replaceAll('?&', '?');
+    }
+    while (sanitized.contains('&&')) {
+      sanitized = sanitized.replaceAll('&&', '&');
+    }
+    while (sanitized.endsWith('?') || sanitized.endsWith('&')) {
+      sanitized = sanitized.substring(0, sanitized.length - 1);
+    }
+    return sanitized;
   }
 }

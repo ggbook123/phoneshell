@@ -987,13 +987,11 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     startRelayClient(newUrl, '', newSecret);
   }
 
-  function transitionToClientFromInvite(relayUrl: string, inviteCode: string, groupSecret = ''): boolean {
-    const normalizedRelayUrl = sanitizeRelayUrl(relayUrl);
+  function transitionToClientFromInvite(relayUrl: string, inviteCode: string, groupSecret: string = ''): void {
+    const normalizedRelayUrl = relayUrl.trim();
     const normalizedInviteCode = inviteCode.trim();
     const normalizedGroupSecret = groupSecret.trim();
-    if (!normalizedRelayUrl || (!normalizedInviteCode && !normalizedGroupSecret)) {
-      return false;
-    }
+    if (!normalizedRelayUrl || (!normalizedInviteCode && !normalizedGroupSecret)) return;
 
     log(`[invite] Transitioning to client mode: ${normalizedRelayUrl}`);
     pendingServerMigration = null;
@@ -1015,7 +1013,6 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     }
 
     startRelayClient(normalizedRelayUrl, normalizedInviteCode, normalizedGroupSecret);
-    return true;
   }
 
   function transitionBackToStandalone(): void {
@@ -1163,14 +1160,14 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
             groupId?: string;
             groupSecret?: string;
           };
-          const relayUrl = sanitizeRelayUrl(invite.relayUrl || '');
+          const relayUrl = (invite.relayUrl || '').trim();
           const inviteCode = (invite.inviteCode || '').trim();
           const groupSecret = (invite.groupSecret || '').trim();
           if (!relayUrl || (!inviteCode && !groupSecret)) {
             writeJson(res, 400, {
               type: 'error',
               code: 'bad_request',
-              message: 'relayUrl and inviteCode/groupSecret are required.',
+              message: 'relayUrl and (inviteCode or groupSecret) are required.'
             });
             return;
           }
@@ -1184,37 +1181,20 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
           }
           log(`[invite] Received invite: relay=${relayUrl} code=${inviteCode || '-'} secret=${groupSecret ? 'yes' : 'no'}`);
 
-          const waitJoin = beginPendingInviteJoin(10000);
-          const started = modeManager.isClient()
-            ? (startRelayClient(relayUrl, inviteCode, groupSecret), true)
-            : transitionToClientFromInvite(relayUrl, inviteCode, groupSecret);
-
-          if (!started) {
-            resolvePendingInviteJoin({ ok: false, reason: 'Unable to transition to client mode.' });
-            writeJson(res, 409, {
-              type: 'error',
-              code: 'mode_transition_failed',
-              message: 'Unable to transition to client mode for invite.',
-            });
+          if (modeManager.isClient()) {
+            startRelayClient(relayUrl, inviteCode, groupSecret);
+            writeJson(res, 200, { status: 'accepted', relayUrl, mode: 'client' });
             return;
           }
 
-          const joinResult = await waitJoin;
-          if (!joinResult.ok) {
-            writeJson(res, 502, {
-              type: 'error',
-              code: 'invite_join_failed',
-              message: joinResult.reason || 'Invite accepted but join confirmation not received.',
-            });
-            return;
-          }
-
-          writeJson(res, 200, {
-            status: 'accepted',
-            relayUrl,
-            mode: 'client',
-            groupId: joinResult.groupId || '',
-          });
+          writeJson(res, 200, { status: 'accepted', relayUrl, mode: 'client' });
+          setTimeout(() => {
+            try {
+              transitionToClientFromInvite(relayUrl, inviteCode, groupSecret);
+            } catch (err) {
+              log(`[invite] Client transition failed: ${(err as Error).message}`);
+            }
+          }, 200);
         } catch {
           writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'Invalid JSON body.' });
         }

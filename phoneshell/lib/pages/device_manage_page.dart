@@ -705,6 +705,91 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     return url;
   }
 
+  String _normalizeHttpUrl(String url) {
+    var normalized = url.trim();
+    while (normalized.endsWith('/')) {
+      normalized = normalized.substring(0, normalized.length - 1);
+    }
+    return normalized.toLowerCase();
+  }
+
+  void _autoInvitePreviousRelay(String previousRelayHttp) {
+    final targetHttp = _normalizeHttpUrl(previousRelayHttp);
+    if (targetHttp.isEmpty) return;
+
+    setState(() {
+      scanStatus = _t(
+        '已连接新群组，正在自动迁移旧群组设备...',
+        'Connected to the new group. Migrating previous group devices...',
+      );
+    });
+
+    _cleanupScanListeners();
+    scanMessageListenerId = ConnectionManager.instance.addOnMessage((type, data) {
+      if (type == 'invite.create.response') {
+        final inviteCode = (data['inviteCode'] ?? '') as String;
+        final relayUrlFromServer = (data['relayUrl'] ?? '') as String;
+        final relayUrl = ConnectionManager.instance.getCurrentGroupRelayUrl();
+        final effectiveRelayUrl = relayUrl.isNotEmpty
+            ? relayUrl
+            : relayUrlFromServer;
+        if (inviteCode.isEmpty || effectiveRelayUrl.isEmpty) {
+          if (!mounted) return;
+          setState(() {
+            parseError = _t(
+              '旧群组迁移失败：缺少邀请码或中继地址',
+              'Previous group migration failed: missing invite code or relay URL',
+            );
+            scanStatus = _t('旧群组迁移失败', 'Previous group migration failed');
+          });
+          _cleanupScanListeners();
+          return;
+        }
+
+        ConnectionManager.instance.inviteToGroup(
+          targetHttp,
+          inviteCode,
+          effectiveRelayUrl,
+          (success, message) {
+            if (!mounted) return;
+            if (success) {
+              setState(() {
+                scanStatus = _t(
+                  '已发送旧群组迁移邀请，等待设备加入...',
+                  'Migration invite sent. Waiting for previous group device to join...',
+                );
+                parseError = '';
+              });
+            } else {
+              setState(() {
+                parseError = _t(
+                  '旧群组迁移失败: $message',
+                  'Previous group migration failed: $message',
+                );
+                scanStatus = _t('旧群组迁移失败', 'Previous group migration failed');
+              });
+            }
+            _cleanupScanListeners();
+          },
+          groupSecret: ConnectionManager.instance.getCurrentGroupSecret(),
+        );
+      } else if (type == 'error') {
+        final message = (data['message'] ?? '') as String;
+        if (!mounted) return;
+        setState(() {
+          parseError = _t(
+            '旧群组迁移失败: $message',
+            'Previous group migration failed: $message',
+          );
+          scanStatus = _t('旧群组迁移失败', 'Previous group migration failed');
+        });
+        _cleanupScanListeners();
+      }
+    });
+
+    ConnectionManager.instance.requestInviteCode();
+  }
+
   Future<void> _executeBindQr(
     String server,
     String groupId,
