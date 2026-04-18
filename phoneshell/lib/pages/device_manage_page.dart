@@ -621,7 +621,6 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     final server = params['server'] ?? '';
     final groupId = params['groupId'] ?? '';
     final groupSecret = params['groupSecret'] ?? '';
-    final serverDeviceId = params['serverDeviceId'] ?? '';
 
     if (server.isEmpty || groupSecret.isEmpty) {
       setState(() {
@@ -641,24 +640,21 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
         });
         return;
       }
-      final httpUrl = _wsUrlToHttpUrl(server);
-      if (httpUrl.isEmpty) {
-        setState(() {
-          parseError = _t(
-            '无法解析设备HTTP地址',
-            'Unable to parse device HTTP address',
-          );
-        });
-        return;
-      }
+      final previousRelayUrl = ConnectionManager.instance.getCurrentGroupRelayUrl();
+      final previousRelayHttp = _wsUrlToHttpUrl(previousRelayUrl);
       setState(() {
-        inviteDeviceName = serverDeviceId.isNotEmpty
-            ? serverDeviceId
-            : _t('新设备', 'New Device');
-        scanInviteHttpUrl = httpUrl;
-        showInviteConfirmDialog = true;
+        scanStatus = _t(
+          '检测到新群组，正在自动切换并迁移旧群组设备...',
+          'Detected a new group. Switching and migrating previous group devices...',
+        );
         parseError = '';
       });
+      await _executeBindQr(
+        server,
+        groupId,
+        groupSecret,
+        previousRelayHttp: previousRelayHttp,
+      );
       return;
     }
 
@@ -685,10 +681,96 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     return url;
   }
 
+  String _normalizeHttpUrl(String url) {
+    var normalized = url.trim();
+    while (normalized.endsWith('/')) {
+      normalized = normalized.substring(0, normalized.length - 1);
+    }
+    return normalized.toLowerCase();
+  }
+
+  void _autoInvitePreviousRelay(String previousRelayHttp) {
+    final targetHttp = _normalizeHttpUrl(previousRelayHttp);
+    if (targetHttp.isEmpty) return;
+
+    setState(() {
+      scanStatus = _t(
+        '已连接新群组，正在自动迁移旧群组设备...',
+        'Connected to the new group. Migrating previous group devices...',
+      );
+    });
+
+    _cleanupScanListeners();
+    scanMessageListenerId = ConnectionManager.instance.addOnMessage((type, data) {
+      if (type == 'invite.create.response') {
+        final inviteCode = (data['inviteCode'] ?? '') as String;
+        final relayUrlFromServer = (data['relayUrl'] ?? '') as String;
+        final relayUrl = ConnectionManager.instance.getCurrentGroupRelayUrl();
+        final effectiveRelayUrl = relayUrl.isNotEmpty
+            ? relayUrl
+            : relayUrlFromServer;
+        if (inviteCode.isEmpty || effectiveRelayUrl.isEmpty) {
+          if (!mounted) return;
+          setState(() {
+            parseError = _t(
+              '旧群组迁移失败：缺少邀请码或中继地址',
+              'Previous group migration failed: missing invite code or relay URL',
+            );
+            scanStatus = _t('旧群组迁移失败', 'Previous group migration failed');
+          });
+          _cleanupScanListeners();
+          return;
+        }
+
+        ConnectionManager.instance.inviteToGroup(
+          targetHttp,
+          inviteCode,
+          effectiveRelayUrl,
+          (success, message) {
+            if (!mounted) return;
+            if (success) {
+              setState(() {
+                scanStatus = _t(
+                  '已连接新群组，并已触发旧群组自动迁移',
+                  'Connected to the new group and triggered migration of the previous group',
+                );
+                parseError = '';
+              });
+            } else {
+              setState(() {
+                parseError = _t(
+                  '旧群组迁移失败: $message',
+                  'Previous group migration failed: $message',
+                );
+                scanStatus = _t('旧群组迁移失败', 'Previous group migration failed');
+              });
+            }
+            _cleanupScanListeners();
+          },
+          groupSecret: ConnectionManager.instance.getCurrentGroupSecret(),
+        );
+      } else if (type == 'error') {
+        final message = (data['message'] ?? '') as String;
+        if (!mounted) return;
+        setState(() {
+          parseError = _t(
+            '旧群组迁移失败: $message',
+            'Previous group migration failed: $message',
+          );
+          scanStatus = _t('旧群组迁移失败', 'Previous group migration failed');
+        });
+        _cleanupScanListeners();
+      }
+    });
+
+    ConnectionManager.instance.requestInviteCode();
+  }
+
   Future<void> _executeBindQr(
     String server,
     String groupId,
     String groupSecret,
+    {String previousRelayHttp = ''},
   ) async {
     await PreferencesUtil.setLastServerUrl(server);
     await PreferencesUtil.setString(StorageKeys.groupSecret, groupSecret);
@@ -718,12 +800,20 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
           _syncDeviceLists();
           isInGroup = true;
           currentMode = DeviceMode.group;
-          this.groupId = groupId.isNotEmpty
+          final effectiveGroupId = groupId.isNotEmpty
               ? groupId
               : ConnectionManager.instance.getGroupId();
+          this.groupId = effectiveGroupId;
         });
-        ConnectionManager.instance.sendMobileBindRequest(groupId);
+        ConnectionManager.instance.sendMobileBindRequest(
+          groupId.isNotEmpty ? groupId : ConnectionManager.instance.getGroupId(),
+        );
         ConnectionManager.instance.requestDeviceList();
+        final legacyHttp = _normalizeHttpUrl(previousRelayHttp);
+        final currentHttp = _normalizeHttpUrl(_wsUrlToHttpUrl(server));
+        if (legacyHttp.isNotEmpty && legacyHttp != currentHttp) {
+          _autoInvitePreviousRelay(previousRelayHttp);
+        }
       } else if (type == 'group.join.rejected') {
         _cleanupScanListeners();
         setState(() {

@@ -513,7 +513,7 @@ class ConnectionManagerClass {
   // --- Invite another device to group via HTTP POST ---
 
   inviteToGroup(httpUrl: string, inviteCode: string, relayUrl: string,
-    onResult?: (success: boolean, message: string) => void): void {
+    onResult?: (success: boolean, message: string) => void, groupSecret: string = ''): void {
     if (httpUrl.length === 0 || inviteCode.length === 0 || relayUrl.length === 0) {
       if (onResult !== undefined) onResult(false, 'Missing parameters');
       return;
@@ -527,6 +527,10 @@ class ConnectionManagerClass {
     body['relayUrl'] = relayUrl;
     body['inviteCode'] = inviteCode;
     body['groupId'] = this.groupId;
+    const normalizedSecret: string = groupSecret.trim();
+    if (normalizedSecret.length > 0) {
+      body['groupSecret'] = normalizedSecret;
+    }
 
     const httpRequest: http.HttpRequest = http.createHttp();
     httpRequest.request(inviteUrl, {
@@ -855,6 +859,11 @@ class ConnectionManagerClass {
   }
 
   getGroupId(): string { return this.groupId; }
+  getCurrentGroupSecret(): string { return this.groupSecret; }
+  getCurrentGroupRelayUrl(): string {
+    if (this.groupConnection === null) return '';
+    return this.stripRelayAuthQuery(this.groupConnection.serverUrl);
+  }
   isInGroup(): boolean { return this.isGroupJoined; }
 
   getConnectionStateForDevice(deviceId: string): ConnectionState {
@@ -1599,6 +1608,24 @@ class ConnectionManagerClass {
     }
     if (baseUrl.indexOf('?') >= 0) return baseUrl + '&token=' + token;
     return baseUrl + '?token=' + token;
+  }
+
+  private stripRelayAuthQuery(wsUrl: string): string {
+    let sanitized: string = wsUrl.trim();
+    if (sanitized.length === 0) return '';
+    sanitized = sanitized.replace(/([?&])(token|invite)=[^&]*/gi, (_full: string, sep: string) => {
+      return sep === '?' ? '?' : '';
+    });
+    while (sanitized.indexOf('?&') >= 0) {
+      sanitized = sanitized.replace('?&', '?');
+    }
+    while (sanitized.indexOf('&&') >= 0) {
+      sanitized = sanitized.replace('&&', '&');
+    }
+    while (sanitized.endsWith('?') || sanitized.endsWith('&')) {
+      sanitized = sanitized.substring(0, sanitized.length - 1);
+    }
+    return sanitized;
   }
 }
 

@@ -156,7 +156,13 @@ struct DeviceManagePage {
             const httpUrl: string = this.pendingInviteHttpUrl;
             this.pendingInviteDeviceId = '';
             this.pendingInviteHttpUrl = '';
-            ConnectionManager.inviteToGroup(httpUrl, inviteCode, relayUrl);
+            ConnectionManager.inviteToGroup(
+              httpUrl,
+              inviteCode,
+              relayUrl,
+              undefined,
+              ConnectionManager.getCurrentGroupSecret()
+            );
           }
         } else if (type === 'device.list') {
           this.syncDeviceLists();
@@ -531,7 +537,7 @@ struct DeviceManagePage {
                 this.scanStatus = this.t('邀请失败', 'Invite failed');
                 this.cleanupScanListeners();
               }
-            });
+            }, ConnectionManager.getCurrentGroupSecret());
         }
       } else if (type === 'error') {
         const message: string = (data['message'] ?? '') as string;
@@ -559,7 +565,7 @@ struct DeviceManagePage {
       return;
     }
 
-    // If already in a group, invite this device into the current group
+    // If already in a group, switch to scanned group and then migrate old relay automatically
     if (ConnectionManager.isInGroup()) {
       const currentGroupId: string = ConnectionManager.getGroupId();
       if (currentGroupId === groupId) {
@@ -567,16 +573,11 @@ struct DeviceManagePage {
         this.scanStatus = this.t('已在该群组中', 'Already in this group');
         return;
       }
-      // Different server's bind QR — invite that device into our group
-      const httpUrl: string = this.wsUrlToHttpUrl(server);
-      if (httpUrl.length === 0) {
-        this.parseError = this.t('无法解析设备HTTP地址', 'Unable to parse device HTTP address');
-        return;
-      }
-      hilog.info(DOMAIN, PAGE_TAG, 'Already in group, inviting bind-QR device to current group, httpUrl=%{public}s', httpUrl);
-      this.inviteDeviceName = params.get('serverDeviceId') ?? this.t('新设备', 'New Device');
-      this.scanInviteHttpUrl = httpUrl;
-      this.showInviteConfirmDialog = true;
+      const previousRelayUrl: string = ConnectionManager.getCurrentGroupRelayUrl();
+      const previousRelayHttp: string = this.wsUrlToHttpUrl(previousRelayUrl);
+      this.scanStatus = this.t('检测到新群组，正在自动切换并迁移旧群组设备...', 'Detected a new group. Switching and migrating previous group devices...');
+      this.parseError = '';
+      await this.executeBindQr(server, groupId, groupSecret, previousRelayHttp);
       return;
     }
 
@@ -608,7 +609,60 @@ struct DeviceManagePage {
     return url;
   }
 
-  private async executeBindQr(server: string, groupId: string, groupSecret: string): Promise<void> {
+  private normalizeHttpUrl(httpUrl: string): string {
+    let normalized: string = httpUrl.trim();
+    while (normalized.endsWith('/')) {
+      normalized = normalized.substring(0, normalized.length - 1);
+    }
+    return normalized.toLowerCase();
+  }
+
+  private autoInviteLegacyRelay(previousRelayHttp: string): void {
+    const targetHttp: string = this.normalizeHttpUrl(previousRelayHttp);
+    if (targetHttp.length === 0) return;
+
+    this.scanStatus = this.t('已连接新群组，正在自动迁移旧群组设备...', 'Connected to the new group. Migrating previous group devices...');
+    this.cleanupScanListeners();
+    this.scanMessageListenerId = ConnectionManager.addOnMessage((type: string, data: Record<string, Object>) => {
+      if (type === 'invite.create.response') {
+        const inviteCode: string = (data['inviteCode'] ?? '') as string;
+        const relayUrlFromServer: string = (data['relayUrl'] ?? '') as string;
+        const relayUrl: string = ConnectionManager.getCurrentGroupRelayUrl();
+        const effectiveRelayUrl: string = relayUrl.length > 0 ? relayUrl : relayUrlFromServer;
+        if (inviteCode.length === 0 || effectiveRelayUrl.length === 0) {
+          this.parseError = this.t('旧群组迁移失败：缺少邀请码或中继地址', 'Previous group migration failed: missing invite code or relay URL');
+          this.scanStatus = this.t('旧群组迁移失败', 'Previous group migration failed');
+          this.cleanupScanListeners();
+          return;
+        }
+        ConnectionManager.inviteToGroup(
+          targetHttp,
+          inviteCode,
+          effectiveRelayUrl,
+          (success: boolean, message: string) => {
+            if (success) {
+              this.scanStatus = this.t('已连接新群组，并已触发旧群组自动迁移', 'Connected to the new group and triggered migration of the previous group');
+              this.parseError = '';
+              this.cleanupScanListeners();
+            } else {
+              this.parseError = this.t(`旧群组迁移失败: ${message}`, `Previous group migration failed: ${message}`);
+              this.scanStatus = this.t('旧群组迁移失败', 'Previous group migration failed');
+              this.cleanupScanListeners();
+            }
+          },
+          ConnectionManager.getCurrentGroupSecret()
+        );
+      } else if (type === 'error') {
+        const message: string = (data['message'] ?? '') as string;
+        this.parseError = this.t(`旧群组迁移失败: ${message}`, `Previous group migration failed: ${message}`);
+        this.scanStatus = this.t('旧群组迁移失败', 'Previous group migration failed');
+        this.cleanupScanListeners();
+      }
+    });
+    ConnectionManager.requestInviteCode();
+  }
+
+  private async executeBindQr(server: string, groupId: string, groupSecret: string, previousRelayHttp: string = ''): Promise<void> {
     // Save settings
     await PreferencesUtil.setLastServerUrl(server);
     await PreferencesUtil.setString(StorageKeys.GROUP_SECRET, groupSecret);
@@ -633,10 +687,16 @@ struct DeviceManagePage {
         this.syncDeviceLists();
         this.isInGroup = true;
         this.currentMode = DeviceMode.GROUP;
-        this.groupId = groupId.length > 0 ? groupId : ConnectionManager.getGroupId();
+        const effectiveGroupId: string = groupId.length > 0 ? groupId : ConnectionManager.getGroupId();
+        this.groupId = effectiveGroupId;
         // Bind mobile
-        ConnectionManager.sendMobileBindRequest(groupId);
+        ConnectionManager.sendMobileBindRequest(effectiveGroupId);
         ConnectionManager.requestDeviceList();
+        const legacyHttp: string = this.normalizeHttpUrl(previousRelayHttp);
+        const currentHttp: string = this.normalizeHttpUrl(this.wsUrlToHttpUrl(server));
+        if (legacyHttp.length > 0 && legacyHttp !== currentHttp) {
+          this.autoInviteLegacyRelay(previousRelayHttp);
+        }
       } else if (type === 'group.join.rejected') {
         this.cleanupScanListeners();
         this.parseError = this.t('加入群组被拒绝', 'Group join was rejected');
