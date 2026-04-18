@@ -259,8 +259,9 @@ class ConnectionManager {
     String httpUrl,
     String inviteCode,
     String relayUrl,
-    void Function(bool success, String message)? onResult,
-  ) async {
+    void Function(bool success, String message)? onResult, {
+    String groupSecret = '',
+  }) async {
     if (httpUrl.isEmpty || inviteCode.isEmpty || relayUrl.isEmpty) {
       onResult?.call(false, 'Missing parameters');
       return;
@@ -268,11 +269,16 @@ class ConnectionManager {
     final inviteUrl = httpUrl.endsWith('/')
         ? '${httpUrl}api/invite'
         : '$httpUrl/api/invite';
-    final body = jsonEncode({
+    final payload = <String, dynamic>{
       'relayUrl': relayUrl,
       'inviteCode': inviteCode,
       'groupId': _groupId,
-    });
+    };
+    final normalizedSecret = groupSecret.trim();
+    if (normalizedSecret.isNotEmpty) {
+      payload['groupSecret'] = normalizedSecret;
+    }
+    final body = jsonEncode(payload);
 
     try {
       final resp = await http.post(
@@ -283,7 +289,22 @@ class ConnectionManager {
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
         onResult?.call(true, '');
       } else {
-        onResult?.call(false, 'HTTP ${resp.statusCode}');
+        var message = 'HTTP ${resp.statusCode}';
+        try {
+          final decoded = jsonDecode(resp.body);
+          if (decoded is Map<String, dynamic>) {
+            final rawDetail = decoded['message'];
+            final detail = rawDetail is String
+                ? rawDetail.trim()
+                : (rawDetail?.toString().trim() ?? '');
+            if (detail.isNotEmpty) {
+              message = '$message: $detail';
+            }
+          }
+        } catch (_) {
+          // Ignore non-JSON error bodies.
+        }
+        onResult?.call(false, message);
       }
     } catch (e) {
       onResult?.call(false, e.toString());
@@ -593,6 +614,8 @@ class ConnectionManager {
 
   String getGroupId() => _groupId;
 
+  String getCurrentGroupSecret() => _groupSecret;
+
   bool isInGroup() => _isGroupJoined;
 
   ConnectionState getConnectionStateForDevice(String deviceId) {
@@ -611,6 +634,36 @@ class ConnectionManager {
     record.wsUrl = conn.serverUrl;
     record.httpUrl = _singleDeviceHttpUrls[deviceId] ?? '';
     return record;
+  }
+
+  String getCurrentGroupRelayUrl() {
+    final conn = _groupConnection;
+    if (conn == null) return '';
+    return _stripRelayAuthQuery(conn.serverUrl);
+  }
+
+  String _stripRelayAuthQuery(String wsUrl) {
+    final trimmed = wsUrl.trim();
+    if (trimmed.isEmpty) return '';
+    try {
+      final uri = Uri.parse(trimmed);
+      final query = Map<String, String>.from(uri.queryParameters);
+      query.remove('token');
+      query.remove('invite');
+      return uri
+          .replace(queryParameters: query.isEmpty ? null : query)
+          .toString();
+    } catch (_) {
+      var sanitized = trimmed.replaceAllMapped(
+        RegExp(r'([?&])(token|invite)=[^&]*'),
+        (match) => match.group(1) == '?' ? '?' : '',
+      );
+      sanitized = sanitized.replaceAll('?&', '?').replaceAll('&&', '&');
+      while (sanitized.endsWith('?') || sanitized.endsWith('&')) {
+        sanitized = sanitized.substring(0, sanitized.length - 1);
+      }
+      return sanitized;
+    }
   }
 
   void sendGroupJoinRequest(String groupSecret, {String inviteCode = ''}) {
