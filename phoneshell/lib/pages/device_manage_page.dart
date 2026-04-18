@@ -143,7 +143,11 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
       messageCallbackId = ConnectionManager.instance.addOnMessage((type, data) {
         if (type == 'invite.create.response') {
           final inviteCode = (data['inviteCode'] ?? '') as String;
-          final relayUrl = (data['relayUrl'] ?? '') as String;
+          final relayUrlFromServer = (data['relayUrl'] ?? '') as String;
+          final relayUrl = ConnectionManager.instance.getCurrentGroupRelayUrl();
+          final effectiveRelayUrl = relayUrl.isNotEmpty
+              ? relayUrl
+              : relayUrlFromServer;
           if (pendingInviteDeviceId.isNotEmpty &&
               pendingInviteHttpUrl.isNotEmpty) {
             final httpUrl = pendingInviteHttpUrl;
@@ -152,8 +156,9 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
             ConnectionManager.instance.inviteToGroup(
               httpUrl,
               inviteCode,
-              relayUrl,
+              effectiveRelayUrl,
               null,
+              groupSecret: ConnectionManager.instance.getCurrentGroupSecret(),
             );
           }
         } else if (type == 'group.join.accepted') {
@@ -561,8 +566,12 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     ) {
       if (type == 'invite.create.response') {
         final inviteCode = (data['inviteCode'] ?? '') as String;
-        final relayUrl = (data['relayUrl'] ?? '') as String;
-        if (inviteCode.isNotEmpty && relayUrl.isNotEmpty) {
+        final relayUrlFromServer = (data['relayUrl'] ?? '') as String;
+        final relayUrl = ConnectionManager.instance.getCurrentGroupRelayUrl();
+        final effectiveRelayUrl = relayUrl.isNotEmpty
+            ? relayUrl
+            : relayUrlFromServer;
+        if (inviteCode.isNotEmpty && effectiveRelayUrl.isNotEmpty) {
           setState(() {
             scanStatus = _t(
               '正在发送邀请给 $deviceName...',
@@ -572,7 +581,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
           ConnectionManager.instance.inviteToGroup(
             httpUrl,
             inviteCode,
-            relayUrl,
+            effectiveRelayUrl,
             (success, message) {
               if (!mounted) return;
               if (success) {
@@ -601,7 +610,18 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
                 _cleanupScanListeners();
               }
             },
+            groupSecret: ConnectionManager.instance.getCurrentGroupSecret(),
           );
+        } else {
+          setState(() {
+            parseError = _t(
+              '邀请失败: 缺少 inviteCode 或 relayUrl',
+              'Invite failed: missing inviteCode or relayUrl',
+            );
+            scanStatus = _t('邀请失败', 'Invite failed');
+          });
+          scanInviteDeviceId = '';
+          _cleanupScanListeners();
         }
       } else if (type == 'error') {
         final message = (data['message'] ?? '') as String;
