@@ -321,8 +321,8 @@ export class RelayClient {
                     url.searchParams.set('token', this.groupSecret);
                 }
             }
-            else if (this.inviteCode) {
-                if (!url.searchParams.get('invite') && !url.searchParams.get('token')) {
+            if (this.inviteCode) {
+                if (!url.searchParams.get('invite')) {
                     url.searchParams.set('invite', this.inviteCode);
                 }
             }
@@ -335,7 +335,9 @@ export class RelayClient {
             const hasQuery = this.relayUrl.includes('?');
             const tokenParam = this.groupSecret ? `token=${encodeURIComponent(this.groupSecret)}` : '';
             const inviteParam = this.inviteCode ? `invite=${encodeURIComponent(this.inviteCode)}` : '';
-            const param = tokenParam || inviteParam;
+            const param = [tokenParam, inviteParam].filter((item) => item.length > 0).join('&');
+            if (!param)
+                return this.relayUrl;
             return this.relayUrl + (hasQuery ? '&' : '?') + param;
         }
     }
