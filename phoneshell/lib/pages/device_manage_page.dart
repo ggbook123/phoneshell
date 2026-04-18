@@ -508,21 +508,36 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     }
 
     if (ConnectionManager.instance.isInGroup()) {
-      if (httpUrl.isEmpty) {
+      final currentRelayUrl = ConnectionManager.instance.getCurrentGroupRelayUrl();
+      final previousRelayHttp = _wsUrlToHttpUrl(currentRelayUrl);
+      if (previousRelayHttp.isEmpty) {
         setState(() {
           parseError = _t(
-            '该设备不支持邀请加入群组（缺少HTTP地址）',
-            'This device cannot be invited (missing HTTP address)',
+            '无法解析旧群组地址',
+            'Unable to resolve previous group relay address.',
+          );
+        });
+        return;
+      }
+      final targetRelayUrl = _stripWsQuery(wsUrl);
+      final targetSecret = _extractTokenFromWsUrl(wsUrl);
+      if (targetRelayUrl.isEmpty || targetSecret.isEmpty) {
+        setState(() {
+          parseError = _t(
+            '目标设备缺少可迁移群组参数（token）',
+            'Target device is missing migration token.',
           );
         });
         return;
       }
       setState(() {
-        inviteDeviceName = displayName;
-        scanInviteHttpUrl = httpUrl;
-        scanInviteDeviceId = '';
-        showInviteConfirmDialog = true;
+        scanStatus = _t(
+          '正在切换到 $displayName 的新群组...',
+          'Switching to $displayName group...',
+        );
+        parseError = '';
       });
+      _executeBindQr(targetRelayUrl, '', targetSecret, previousRelayHttp);
       return;
     }
 
@@ -661,24 +676,28 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
         });
         return;
       }
-      final httpUrl = _wsUrlToHttpUrl(server);
-      if (httpUrl.isEmpty) {
+      final currentRelayUrl = ConnectionManager.instance.getCurrentGroupRelayUrl();
+      final previousRelayHttp = _wsUrlToHttpUrl(currentRelayUrl);
+      if (previousRelayHttp.isEmpty) {
         setState(() {
           parseError = _t(
-            '无法解析设备HTTP地址',
-            'Unable to parse device HTTP address',
+            '无法解析旧群组地址',
+            'Unable to resolve previous group relay address.',
           );
         });
         return;
       }
+      final targetName = serverDeviceId.isNotEmpty
+          ? serverDeviceId
+          : _t('新设备', 'New Device');
       setState(() {
-        inviteDeviceName = serverDeviceId.isNotEmpty
-            ? serverDeviceId
-            : _t('新设备', 'New Device');
-        scanInviteHttpUrl = httpUrl;
-        showInviteConfirmDialog = true;
+        scanStatus = _t(
+          '正在切换到 $targetName 的新群组...',
+          'Switching to $targetName group...',
+        );
         parseError = '';
       });
+      await _executeBindQr(server, groupId, groupSecret, previousRelayHttp);
       return;
     }
 
@@ -703,6 +722,21 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
       url = url.substring(0, url.length - 1);
     }
     return url;
+  }
+
+  String _stripWsQuery(String wsUrl) {
+    final qIdx = wsUrl.indexOf('?');
+    return qIdx >= 0 ? wsUrl.substring(0, qIdx) : wsUrl;
+  }
+
+  String _extractTokenFromWsUrl(String wsUrl) {
+    try {
+      final parsed = Uri.parse(wsUrl);
+      final token = parsed.queryParameters['token'] ?? '';
+      return token.trim();
+    } catch (_) {
+      return '';
+    }
   }
 
   String _normalizeHttpUrl(String url) {
@@ -794,6 +828,7 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     String server,
     String groupId,
     String groupSecret,
+    [String previousRelayHttp = '']
   ) async {
     await PreferencesUtil.setLastServerUrl(server);
     await PreferencesUtil.setString(StorageKeys.groupSecret, groupSecret);
@@ -816,6 +851,9 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     scanMessageListenerId = ConnectionManager.instance.addOnMessage((type, _) {
       if (type == 'group.join.accepted') {
         _cleanupScanListeners();
+        final effectiveGroupId = groupId.isNotEmpty
+            ? groupId
+            : ConnectionManager.instance.getGroupId();
         setState(() {
           scanStatus = '';
           parseError = '';
@@ -823,12 +861,13 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
           _syncDeviceLists();
           isInGroup = true;
           currentMode = DeviceMode.group;
-          this.groupId = groupId.isNotEmpty
-              ? groupId
-              : ConnectionManager.instance.getGroupId();
+          this.groupId = effectiveGroupId;
         });
-        ConnectionManager.instance.sendMobileBindRequest(groupId);
+        ConnectionManager.instance.sendMobileBindRequest(effectiveGroupId);
         ConnectionManager.instance.requestDeviceList();
+        if (previousRelayHttp.isNotEmpty) {
+          _autoInvitePreviousRelay(previousRelayHttp);
+        }
       } else if (type == 'group.join.rejected') {
         _cleanupScanListeners();
         setState(() {

@@ -40,13 +40,6 @@ type ClientGroupState = {
   members: GroupMemberInfo[];
 };
 
-type PendingInviteJoinResult = {
-  ok: boolean;
-  reason?: string;
-  groupId?: string;
-  groupSecret?: string;
-};
-
 function resolveTlsRuntime(config: AppConfig): TlsRuntime {
   const tls = config.tls;
   if (!tls) return { enabled: false, port: 0 };
@@ -341,9 +334,6 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
   let relayClient: RelayClient | null = null;
   let pendingServerMigration: { groupId: string; groupSecret: string; newServerUrl: string } | null = null;
-  let pendingInviteJoin:
-    | { timeout: NodeJS.Timeout; resolve: (result: PendingInviteJoinResult) => void }
-    | null = null;
   let resolvedPublicHost = '';
   let panelAccessCache = panelAccessDefault;
   let panelAccessCacheAt = 0;
@@ -384,34 +374,6 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
 
   function resetLocalAuthToken(): void {
     syncLocalAuthToken(defaultAuthToken);
-  }
-
-  function resolvePendingInviteJoin(result: PendingInviteJoinResult): void {
-    if (!pendingInviteJoin) return;
-    const pending = pendingInviteJoin;
-    pendingInviteJoin = null;
-    clearTimeout(pending.timeout);
-    pending.resolve(result);
-  }
-
-  function beginPendingInviteJoin(timeoutMs = 10000): Promise<PendingInviteJoinResult> {
-    if (pendingInviteJoin) {
-      return Promise.resolve({
-        ok: false,
-        reason: 'Another invite transition is already in progress.',
-      });
-    }
-    return new Promise<PendingInviteJoinResult>((resolve) => {
-      const timeout = setTimeout(() => {
-        if (!pendingInviteJoin) return;
-        pendingInviteJoin = null;
-        resolve({
-          ok: false,
-          reason: 'Timed out waiting for invite join confirmation.',
-        });
-      }, timeoutMs);
-      pendingInviteJoin = { timeout, resolve };
-    });
   }
 
   function clearClientCaches(): void {
@@ -717,8 +679,7 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     const normalizedInviteCode = inviteCode.trim();
     const normalizedGroupSecret = groupSecret.trim();
     if (!normalizedRelayUrl || (!normalizedInviteCode && !normalizedGroupSecret)) {
-      log(`[invite] Invalid relay join parameters: relay=${relayUrl}`);
-      resolvePendingInviteJoin({ ok: false, reason: 'Invalid relay URL or missing invite credentials.' });
+      log(`[relay-client] Invalid relay join parameters: relay=${relayUrl}`);
       return;
     }
 
@@ -748,22 +709,15 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
       },
       onGroupJoined: (groupId, effectiveSecret) => {
         saveClientMembership(groupId, effectiveSecret, normalizedRelayUrl);
-        resolvePendingInviteJoin({
-          ok: true,
-          groupId,
-          groupSecret: effectiveSecret,
-        });
         requestClientDeviceList();
       },
       onKicked: (reason) => {
         log(`Kicked from group: ${reason}`);
-        resolvePendingInviteJoin({ ok: false, reason: reason || 'Kicked while joining group.' });
         membershipStore.clear();
         transitionBackToStandalone();
       },
       onGroupDissolved: (reason) => {
         log(`Group dissolved: ${reason}`);
-        resolvePendingInviteJoin({ ok: false, reason: reason || 'Group dissolved while joining.' });
         membershipStore.clear();
         transitionBackToStandalone();
       },
@@ -987,40 +941,11 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
     startRelayClient(newUrl, '', newSecret);
   }
 
-  function transitionToClientFromInvite(relayUrl: string, inviteCode: string, groupSecret: string = ''): void {
-    const normalizedRelayUrl = relayUrl.trim();
-    const normalizedInviteCode = inviteCode.trim();
-    const normalizedGroupSecret = groupSecret.trim();
-    if (!normalizedRelayUrl || (!normalizedInviteCode && !normalizedGroupSecret)) return;
-
-    log(`[invite] Transitioning to client mode: ${normalizedRelayUrl}`);
-    pendingServerMigration = null;
-    membershipStore.clear();
-    clearClientCaches();
-
-    if (modeManager.isStandalone()) {
-      groupStore.clearGroup();
-      if (!modeManager.transitionToClient(normalizedRelayUrl, normalizedInviteCode)) {
-        log('[invite] Failed to transition standalone -> client before joining invite.');
-        return false;
-      }
-    } else if (modeManager.isRelay()) {
-      groupStore.clearGroup();
-      if (!modeManager.transitionToClientFromRelay(normalizedRelayUrl)) {
-        log('[invite] Failed to transition relay -> client before joining invite.');
-        return false;
-      }
-    }
-
-    startRelayClient(normalizedRelayUrl, normalizedInviteCode, normalizedGroupSecret);
-  }
-
   function transitionBackToStandalone(): void {
     if (relayClient) {
       relayClient.disconnect();
       relayClient = null;
     }
-    resolvePendingInviteJoin({ ok: false, reason: 'Transitioned back to standalone mode before invite completed.' });
     pendingServerMigration = null;
     clearClientCaches();
     closeClientPanelSockets();
@@ -1148,11 +1073,15 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
       return;
     }
 
-    // --- POST /api/invite — receive invite to join a group (standalone devices) ---
+    // --- POST /api/invite ---
+    // Keep compatibility for mobile "invite send" flow, but do not transition Linux
+    // into client mode (Linux must not be forced to connect to another intranet relay).
     if (pathname === '/api/invite' && req.method === 'POST') {
       let body = '';
-      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
-      req.on('end', async () => {
+      req.on('data', (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      req.on('end', () => {
         try {
           const invite = JSON.parse(body) as {
             relayUrl?: string;
@@ -1160,43 +1089,34 @@ export function createApp(config: AppConfig): { start: () => void; stop: () => v
             groupId?: string;
             groupSecret?: string;
           };
-          const relayUrl = (invite.relayUrl || '').trim();
+          const relayUrl = sanitizeRelayUrl(invite.relayUrl || '');
           const inviteCode = (invite.inviteCode || '').trim();
           const groupSecret = (invite.groupSecret || '').trim();
+
           if (!relayUrl || (!inviteCode && !groupSecret)) {
             writeJson(res, 400, {
               type: 'error',
               code: 'bad_request',
-              message: 'relayUrl and (inviteCode or groupSecret) are required.'
+              message: 'relayUrl and (inviteCode or groupSecret) are required.',
             });
             return;
           }
-          if (pendingInviteJoin) {
-            writeJson(res, 409, {
-              type: 'error',
-              code: 'invite_busy',
-              message: 'Another invite transition is currently in progress.',
-            });
-            return;
-          }
-          log(`[invite] Received invite: relay=${relayUrl} code=${inviteCode || '-'} secret=${groupSecret ? 'yes' : 'no'}`);
 
-          if (modeManager.isClient()) {
-            startRelayClient(relayUrl, inviteCode, groupSecret);
-            writeJson(res, 200, { status: 'accepted', relayUrl, mode: 'client' });
-            return;
-          }
-
-          writeJson(res, 200, { status: 'accepted', relayUrl, mode: 'client' });
-          setTimeout(() => {
-            try {
-              transitionToClientFromInvite(relayUrl, inviteCode, groupSecret);
-            } catch (err) {
-              log(`[invite] Client transition failed: ${(err as Error).message}`);
-            }
-          }, 200);
+          log(
+            `[invite] Accepted compatibility invite without transition: relay=${relayUrl} code=${inviteCode || '-'} secret=${groupSecret ? 'yes' : 'no'}`,
+          );
+          writeJson(res, 200, {
+            status: 'accepted',
+            mode: modeManager.mode,
+            transitioned: false,
+            reason: 'linux_invite_transition_disabled',
+          });
         } catch {
-          writeJson(res, 400, { type: 'error', code: 'bad_request', message: 'Invalid JSON body.' });
+          writeJson(res, 400, {
+            type: 'error',
+            code: 'bad_request',
+            message: 'Invalid JSON body.',
+          });
         }
       });
       return;
