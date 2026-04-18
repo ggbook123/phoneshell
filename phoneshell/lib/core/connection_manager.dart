@@ -640,8 +640,6 @@ class ConnectionManager {
     return _stripRelayAuthQuery(conn.serverUrl);
   }
 
-  String getCurrentGroupSecret() => _groupSecret;
-
   bool isInGroup() => _isGroupJoined;
 
   ConnectionState getConnectionStateForDevice(String deviceId) {
@@ -660,12 +658,6 @@ class ConnectionManager {
     record.wsUrl = conn.serverUrl;
     record.httpUrl = _singleDeviceHttpUrls[deviceId] ?? '';
     return record;
-  }
-
-  String getCurrentGroupRelayUrl() {
-    final conn = _groupConnection;
-    if (conn == null) return '';
-    return _stripRelayAuthQuery(conn.serverUrl);
   }
 
   String _stripRelayAuthQuery(String wsUrl) {
@@ -1376,24 +1368,5 @@ class ConnectionManager {
     }
     if (baseUrl.contains('?')) return '$baseUrl&token=$token';
     return '$baseUrl?token=$token';
-  }
-
-  String _stripRelayAuthQuery(String wsUrl) {
-    var sanitized = wsUrl.trim();
-    if (sanitized.isEmpty) return '';
-    sanitized = sanitized.replaceAllMapped(
-      RegExp(r'([?&])(token|invite)=[^&]*', caseSensitive: false),
-      (match) => match.group(1) == '?' ? '?' : '',
-    );
-    while (sanitized.contains('?&')) {
-      sanitized = sanitized.replaceAll('?&', '?');
-    }
-    while (sanitized.contains('&&')) {
-      sanitized = sanitized.replaceAll('&&', '&');
-    }
-    while (sanitized.endsWith('?') || sanitized.endsWith('&')) {
-      sanitized = sanitized.substring(0, sanitized.length - 1);
-    }
-    return sanitized;
   }
 }
