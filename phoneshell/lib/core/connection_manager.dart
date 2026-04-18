@@ -287,6 +287,26 @@ class ConnectionManager {
         body: body,
       );
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        try {
+          final decoded = jsonDecode(resp.body);
+          if (decoded is Map<String, dynamic>) {
+            final transitioned = decoded['transitioned'];
+            if (transitioned is bool && !transitioned) {
+              final reason = (decoded['reason'] ?? decoded['message'] ?? '')
+                  .toString()
+                  .trim();
+              onResult?.call(
+                false,
+                reason.isNotEmpty
+                    ? 'Target did not transition: $reason'
+                    : 'Target accepted invite but did not transition',
+              );
+              return;
+            }
+          }
+        } catch (_) {
+          // Ignore non-JSON or empty success body.
+        }
         onResult?.call(true, '');
       } else {
         var message = 'HTTP ${resp.statusCode}';

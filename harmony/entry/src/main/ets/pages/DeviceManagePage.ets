@@ -482,6 +482,19 @@ struct DeviceManagePage {
     // then migrate previous group devices into the new relay.
     if (ConnectionManager.isInGroup()) {
       const currentRelayUrl: string = ConnectionManager.getCurrentGroupRelayUrl();
+      if (this.preferInviteScannedIntoCurrentGroup(currentRelayUrl, wsUrl)) {
+        if (httpUrl.length === 0) {
+          this.parseError = this.t('该设备不支持邀请加入群组（缺少HTTP地址）',
+            'This device cannot be invited (missing HTTP address)');
+          return;
+        }
+        this.scanInviteHttpUrl = httpUrl;
+        this.inviteDeviceName = displayName;
+        this.pendingInviteDeviceId = '';
+        this.parseError = '';
+        this.inviteDeviceToGroup();
+        return;
+      }
       const previousRelayHttp: string = this.wsUrlToHttpUrl(currentRelayUrl);
       if (previousRelayHttp.length === 0) {
         this.parseError = this.t('无法解析旧群组地址', 'Unable to resolve previous group relay address');
@@ -576,6 +589,19 @@ struct DeviceManagePage {
         return;
       }
       const currentRelayUrl: string = ConnectionManager.getCurrentGroupRelayUrl();
+      if (this.preferInviteScannedIntoCurrentGroup(currentRelayUrl, server)) {
+        const httpUrl: string = this.wsUrlToHttpUrl(server);
+        if (httpUrl.length === 0) {
+          this.parseError = this.t('无法解析设备HTTP地址', 'Unable to parse device HTTP address');
+          return;
+        }
+        this.scanInviteHttpUrl = httpUrl;
+        this.inviteDeviceName = params.get('serverDeviceId') ?? this.t('新设备', 'New Device');
+        this.pendingInviteDeviceId = '';
+        this.parseError = '';
+        this.inviteDeviceToGroup();
+        return;
+      }
       const previousRelayHttp: string = this.wsUrlToHttpUrl(currentRelayUrl);
       if (previousRelayHttp.length === 0) {
         this.parseError = this.t('无法解析旧群组地址', 'Unable to resolve previous group relay address');
@@ -636,6 +662,67 @@ struct DeviceManagePage {
       return decodeURIComponent(value).trim();
     }
     return '';
+  }
+
+  private extractWsHost(wsUrl: string): string {
+    let url: string = wsUrl.trim();
+    const schemeIdx: number = url.indexOf('://');
+    if (schemeIdx < 0) return '';
+    url = url.substring(schemeIdx + 3);
+    const slashIdx: number = url.indexOf('/');
+    const hostPort: string = slashIdx >= 0 ? url.substring(0, slashIdx) : url;
+    if (hostPort.length === 0) return '';
+
+    if (hostPort.startsWith('[')) {
+      const end: number = hostPort.indexOf(']');
+      if (end <= 1) return '';
+      return hostPort.substring(1, end).trim().toLowerCase();
+    }
+
+    const firstColon: number = hostPort.indexOf(':');
+    const lastColon: number = hostPort.lastIndexOf(':');
+    if (firstColon >= 0 && firstColon === lastColon) {
+      return hostPort.substring(0, firstColon).trim().toLowerCase();
+    }
+    return hostPort.trim().toLowerCase();
+  }
+
+  private isPrivateOrLocalHost(host: string): boolean {
+    const h: string = host.trim().toLowerCase();
+    if (h.length === 0) return true;
+    if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return true;
+    if (h.endsWith('.local')) return true;
+
+    const ipv4Pattern: RegExp = /^(\d{1,3})(\.\d{1,3}){3}$/;
+    if (ipv4Pattern.test(h)) {
+      const parts: Array<number> = h.split('.').map((part: string) => Number(part));
+      if (parts.length !== 4 || parts.some((part: number) => Number.isNaN(part) || part < 0 || part > 255)) {
+        return false;
+      }
+      const a: number = parts[0];
+      const b: number = parts[1];
+      if (a === 10) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 192 && b === 168) return true;
+      if (a === 169 && b === 254) return true;
+      return false;
+    }
+
+    if (h.includes(':')) {
+      if (h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80') || h === '::1') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private preferInviteScannedIntoCurrentGroup(currentRelayWsUrl: string, scannedRelayWsUrl: string): boolean {
+    const currentHost: string = this.extractWsHost(currentRelayWsUrl);
+    const scannedHost: string = this.extractWsHost(scannedRelayWsUrl);
+    if (currentHost.length === 0 || scannedHost.length === 0) return false;
+    const currentPrivate: boolean = this.isPrivateOrLocalHost(currentHost);
+    const scannedPrivate: boolean = this.isPrivateOrLocalHost(scannedHost);
+    return !currentPrivate && scannedPrivate;
   }
 
   private normalizeHttpUrl(httpUrl: string): string {

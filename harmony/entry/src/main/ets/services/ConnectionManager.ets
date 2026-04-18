@@ -513,7 +513,7 @@ class ConnectionManagerClass {
   // --- Invite another device to group via HTTP POST ---
 
   inviteToGroup(httpUrl: string, inviteCode: string, relayUrl: string,
-    onResult?: (success: boolean, message: string) => void): void {
+    onResult?: (success: boolean, message: string) => void, groupSecret: string = ''): void {
     if (httpUrl.length === 0 || inviteCode.length === 0 || relayUrl.length === 0) {
       if (onResult !== undefined) onResult(false, 'Missing parameters');
       return;
@@ -527,6 +527,10 @@ class ConnectionManagerClass {
     body['relayUrl'] = relayUrl;
     body['inviteCode'] = inviteCode;
     body['groupId'] = this.groupId;
+    const normalizedSecret: string = groupSecret.trim();
+    if (normalizedSecret.length > 0) {
+      body['groupSecret'] = normalizedSecret;
+    }
 
     const httpRequest: http.HttpRequest = http.createHttp();
     httpRequest.request(inviteUrl, {
@@ -537,6 +541,33 @@ class ConnectionManagerClass {
       const code: number = resp.responseCode;
       hilog.info(DOMAIN, TAG, 'inviteToGroup response code=%{public}d', code);
       if (code >= 200 && code < 300) {
+        try {
+          let parsed: Record<string, Object> | null = null;
+          if (typeof resp.result === 'string') {
+            const text: string = (resp.result as string).trim();
+            if (text.length > 0) {
+              parsed = JSON.parse(text) as Record<string, Object>;
+            }
+          } else if (resp.result !== null && typeof resp.result === 'object') {
+            parsed = resp.result as Record<string, Object>;
+          }
+          if (parsed !== null) {
+            const transitioned: Object | undefined = parsed['transitioned'];
+            if (typeof transitioned === 'boolean' && transitioned === false) {
+              const rawReason: Object | undefined = parsed['reason'] ?? parsed['message'];
+              const reason: string = rawReason !== undefined ? `${rawReason}`.trim() : '';
+              const failMsg: string = reason.length > 0
+                ? `Target did not transition: ${reason}`
+                : 'Target accepted invite but did not transition';
+              hilog.error(DOMAIN, TAG, 'inviteToGroup no transition: %{public}s', failMsg);
+              if (onResult !== undefined) onResult(false, failMsg);
+              httpRequest.destroy();
+              return;
+            }
+          }
+        } catch (_) {
+          // Ignore malformed/empty success body.
+        }
         hilog.info(DOMAIN, TAG, 'inviteToGroup success');
         if (onResult !== undefined) onResult(true, '');
       } else {

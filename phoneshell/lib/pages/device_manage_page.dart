@@ -509,6 +509,25 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
 
     if (ConnectionManager.instance.isInGroup()) {
       final currentRelayUrl = ConnectionManager.instance.getCurrentGroupRelayUrl();
+      if (_preferInviteScannedIntoCurrentGroup(currentRelayUrl, wsUrl)) {
+        if (httpUrl.isEmpty) {
+          setState(() {
+            parseError = _t(
+              '该设备不支持邀请加入群组（缺少HTTP地址）',
+              'This device cannot be invited (missing HTTP address)',
+            );
+          });
+          return;
+        }
+        setState(() {
+          scanInviteHttpUrl = httpUrl;
+          inviteDeviceName = displayName;
+          scanInviteDeviceId = '';
+          parseError = '';
+        });
+        _inviteDeviceToGroup();
+        return;
+      }
       final previousRelayHttp = _wsUrlToHttpUrl(currentRelayUrl);
       if (previousRelayHttp.isEmpty) {
         setState(() {
@@ -677,6 +696,29 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
         return;
       }
       final currentRelayUrl = ConnectionManager.instance.getCurrentGroupRelayUrl();
+      if (_preferInviteScannedIntoCurrentGroup(currentRelayUrl, server)) {
+        final httpUrl = _wsUrlToHttpUrl(server);
+        if (httpUrl.isEmpty) {
+          setState(() {
+            parseError = _t(
+              '无法解析设备HTTP地址',
+              'Unable to parse device HTTP address',
+            );
+          });
+          return;
+        }
+        final targetName = serverDeviceId.isNotEmpty
+            ? serverDeviceId
+            : _t('新设备', 'New Device');
+        setState(() {
+          scanInviteHttpUrl = httpUrl;
+          inviteDeviceName = targetName;
+          scanInviteDeviceId = '';
+          parseError = '';
+        });
+        _inviteDeviceToGroup();
+        return;
+      }
       final previousRelayHttp = _wsUrlToHttpUrl(currentRelayUrl);
       if (previousRelayHttp.isEmpty) {
         setState(() {
@@ -737,6 +779,55 @@ class _DeviceManagePageState extends State<DeviceManagePage> {
     } catch (_) {
       return '';
     }
+  }
+
+  String _extractWsHost(String wsUrl) {
+    try {
+      final parsed = Uri.parse(wsUrl);
+      return parsed.host.trim().toLowerCase();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  bool _isPrivateOrLocalHost(String host) {
+    final h = host.trim().toLowerCase();
+    if (h.isEmpty) return true;
+    if (h == 'localhost' || h == '127.0.0.1' || h == '::1') return true;
+    if (h.endsWith('.local')) return true;
+
+    final ipv4 = RegExp(r'^(\d{1,3})(\.\d{1,3}){3}$');
+    if (ipv4.hasMatch(h)) {
+      final parts = h.split('.').map(int.tryParse).toList();
+      if (parts.length != 4 || parts.any((p) => p == null || p! < 0 || p! > 255)) {
+        return false;
+      }
+      final a = parts[0]!;
+      final b = parts[1]!;
+      if (a == 10) return true;
+      if (a == 172 && b >= 16 && b <= 31) return true;
+      if (a == 192 && b == 168) return true;
+      if (a == 169 && b == 254) return true;
+      return false;
+    }
+
+    if (h.contains(':')) {
+      if (h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80')) return true;
+      if (h == '::1') return true;
+    }
+    return false;
+  }
+
+  bool _preferInviteScannedIntoCurrentGroup(
+    String currentRelayWsUrl,
+    String scannedRelayWsUrl,
+  ) {
+    final currentHost = _extractWsHost(currentRelayWsUrl);
+    final scannedHost = _extractWsHost(scannedRelayWsUrl);
+    if (currentHost.isEmpty || scannedHost.isEmpty) return false;
+    final currentPrivate = _isPrivateOrLocalHost(currentHost);
+    final scannedPrivate = _isPrivateOrLocalHost(scannedHost);
+    return !currentPrivate && scannedPrivate;
   }
 
   String _normalizeHttpUrl(String url) {
